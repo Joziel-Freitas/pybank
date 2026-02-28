@@ -1,20 +1,53 @@
-# Cache e Compilados Python
+# ========================================
+# 1. SEGURANÇA E CREDENCIAIS (CRÍTICO)
+# ========================================
+.env
+.env.*
+*.pem
+*.key
+secrets/
+
+# ========================================
+# 2. BANCO DE DADOS E VOLUMES DOCKER
+# ========================================
+# Ignora a pasta mapeada do MySQL local
+mysql_data/
+db_data/
+# Ignora arquivos de banco baseados em arquivo (SQLite)
+*.sqlite3
+*.db
+# Seu legado do repositório em JSON
+data/*.json
+
+# ========================================
+# 3. CACHE DO PYTHON E TIPAGEM
+# ========================================
 __pycache__/
 *.py[cod]
+*$py.class
+# Cache do Mypy (validador de Type Hints)
+.mypy_cache/
+# Cache do Pytest (para testes automatizados no futuro)
+.pytest_cache/
 
-# Ambientes Virtuais
+# ========================================
+# 4. AMBIENTES VIRTUAIS
+# ========================================
 .venv/
 venv/
 env/
+ENV/
 
-# Configurações de IDE
+# ========================================
+# 5. LOGS E DEPURAÇÃO
+# ========================================
+*.log
+logs/
+
+# ========================================
+# 6. IDEs E SISTEMA OPERACIONAL
+# ========================================
 .vscode/
 .idea/
-
-# Dados da Aplicação (Banco de Dados)
-# Ignora todos os JSONs dentro da pasta data
-data/*.json
-
-# Arquivos do Sistema Operacional
 .DS_Store
 Thumbs.db

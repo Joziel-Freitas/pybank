@@ -34,10 +34,10 @@ from shared.exceptions import (
     map_exceptions,
 )
 from shared.types import BankContext, OperationType, TransactionType
-from shared.validators import ValidatorCallback, boolean_validator_dec, validate_cpf
+from shared.validators import ValidatorCallback, boolean_validator_dec
 
 COMMON_VALIDATORS: dict[str, ValidatorCallback] = {
-    "cpf": boolean_validator_dec(validate_cpf),
+    "cpf": boolean_validator_dec(Person.validate_cpf),
     "branch_code": boolean_validator_dec(Account.validate_branch_code),
     "account_num": boolean_validator_dec(Account.validate_account_number),
     "password": boolean_validator_dec(Bank.validate_password),

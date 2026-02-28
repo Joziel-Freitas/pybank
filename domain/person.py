@@ -9,6 +9,7 @@ bank accounts, and storing access credentials (cards) for quick login.
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
@@ -97,7 +98,7 @@ class Person(ABC):
         """
         self.name = name
         self._birth_date = Person.validate_birth_date(birth_date)
-        self._cpf = validators.validate_cpf(cpf)
+        self._cpf = Person.validate_cpf(cpf)
 
     def __repr__(self) -> str:
         """
@@ -158,13 +159,15 @@ class Person(ABC):
     @staticmethod
     def validate_name(name: str) -> str:
         """
-        Validates the provided name string based on length and character type rules.
+        Validates the provided name string using Regular Expressions.
 
         Rules:
         - Must be a string.
-        - Must have at least three letters.
+        - Must have at least three characters.
+        - Must contain only alphabetic characters (including accents).
+        - Cannot contain numbers or special symbols.
         - Cannot start or end with a blank space.
-        - Must contain only alphabetic characters (spaces allowed internally).
+        - Cannot contain consecutive blank spaces.
 
         Args:
             name (str): The name to validate.
@@ -175,37 +178,21 @@ class Person(ABC):
         Raises:
             InvalidNameError: If any validation rule is violated.
         """
-        error_msg: str | None = None
-
         if not isinstance(name, str):
-            error_msg = f"Value {name} must be a string"
-        elif len(name) < 3:
-            error_msg = f"Value {name} must have a least three letters"
-        elif name.startswith(" ") or name.endswith(" "):
-            error_msg = f"Value {name} cannot start or end with blank space"
-        elif not name.replace(" ", "").isalpha():
-            error_msg = f"Value {name} must have only alphabetic characters"
+            raise InvalidNameError(f"Value {name} must be a string")
 
-        if error_msg is not None:
-            raise InvalidNameError(error_msg)
+        if len(name) < 3:
+            raise InvalidNameError(f"Value '{name}' must have at least three letters")
+
+        # Pattern: Accented letters, separated by a maximum of one space.
+        pattern = r"^[A-Za-zÀ-ÿ]+(?: [A-Za-zÀ-ÿ]+)*$"
+
+        if not re.match(pattern, name):
+            raise InvalidNameError(
+                f"Value '{name}' is invalid. Use only letters and single spaces."
+            )
 
         return name
-
-    @staticmethod
-    def _calculate_age(birth_date: date) -> int:
-        """
-        Calculates the person's age in years based on the birth date.
-        Returns:
-            int: The calculated age.
-        """
-        today = date.today()
-        age = today.year - birth_date.year
-
-        # Adjust age if the birth date for the current year has not yet passed
-        if (today.day, today.month) < (birth_date.day, birth_date.month):
-            age -= 1
-
-        return age
 
     @staticmethod
     def validate_birth_date(birth_date: str) -> date:
@@ -247,6 +234,33 @@ class Person(ABC):
             raise InvalidBirthDateError(
                 f"Value {birth_date} is invalid for date of birth. Cause: {e}"
             ) from e
+
+    @staticmethod
+    def _calculate_age(birth_date: date) -> int:
+        """
+        Calculates the person's age in years based on the birth date.
+        Returns:
+            int: The calculated age.
+        """
+        today = date.today()
+        age = today.year - birth_date.year
+
+        # Adjust age if the birth date for the current year has not yet passed
+        if (today.day, today.month) < (birth_date.day, birth_date.month):
+            age -= 1
+
+        return age
+
+    @staticmethod
+    def validate_cpf(cpf: str) -> str:
+        """
+        Validates the CPF by delegating the complex mathematical verification
+        to the shared validator module.
+
+        This maintains the Person class as the single entry point (Facade)
+        for all personal attribute validations used by the Controllers.
+        """
+        return validators.validate_cpf(cpf)
 
     def to_dict(self) -> dict:
         """
