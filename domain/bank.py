@@ -12,78 +12,44 @@ properly linked to their accounts and that security credentials (passwords)
 are validated before access is granted.
 """
 
-from __future__ import annotations
+import hashlib
+import hmac
+from typing import Any
 
-from dataclasses import dataclass
-from typing import Any, cast
-
+import bcrypt
 from infra import verify
+from infra.mysql_repository import MySQLRepository
+from shared.credentials import AccountCard, AuthToken
 from shared.exceptions import (
-    AccountAlreadyActiveError,
-    AccountNotFoundError,
+    AuthenticationError,
     BankPasswordError,
     BankSecurityError,
     BlockedAccountError,
     ClientNotFoundError,
+    DataNotFoundError,
     DuplicatedAccountError,
     DuplicatedClientError,
-    NotEmptyAccountError,
+    DuplicatedDataError,
 )
 
 from .account import Account
-from .person import AccountCard, Client, Person
-
-
-@dataclass(frozen=True)
-class AuthToken:
-    """
-    Represents a secure access token for stateless authentication.
-
-    Attributes:
-        client_cpf (str): The client's unique identifier.
-        branch_code (str): The branch code associated with the session.
-        account_num (str): The account number associated with the session.
-        signature (bool): A validity flag indicating if the token was formally
-            issued by the Bank (True) or instantiated externally (False).
-            Defaults to False.
-    """
-
-    client_cpf: str
-    branch_code: str
-    account_num: str
-    signature: bool = False
+from .person import Client
 
 
 class Bank:
-    """
-    Represents a banking institution that aggregates Clients and Accounts.
-
-    The Bank maintains the relationships between clients, their accounts, and
-    security credentials. It uses a complex internal mapping to allow clients
-    to possess multiple accounts, distinguished by unique passwords.
-
-    This class operates in a stateless manner regarding user sessions, issuing
-    secure tokens for authentication instead of maintaining internal flags.
-
-    Attributes:
-        _bank_name (str): The name of the bank.
-        _bank_branch_code (str): The 4-digit branch identifier for this bank instance.
-        _bank_clients (dict[str, Client]): Registry of clients indexed by CPF.
-        _bank_accounts (dict[tuple[str, str], Account]): Registry of accounts
-            indexed by (branch_code, account_number).
-        _associated_clients (dict[str, dict[str, tuple[str, str]]]):
-            Mapping structure: {client_cpf: {password: (branch, account_num)}}.
-            Links a client to specific accounts via passwords.
-    """
 
     _bank_name: str
-    _bank_branch_code: str
-    _bank_clients: dict[str, Client]
-    _bank_accounts: dict[tuple[str, str], Account]
-    _associated_clients: dict[str, dict[str, tuple[str, str]]]
-    _access_attempts: dict[str, int]
+    _branch_code: str
+    _repository: MySQLRepository
+    _secret_key: bytes
 
-    def __init__(self, bank_name: str, branch_code: str):
+    def __init__(
+        self,
+        bank_name: str,
+        branch_code: str,
+        repository: MySQLRepository,
+        secret_key: str,
+    ):
         """
         Initializes a new Bank instance.
 
@@ -100,12 +66,11 @@ class Bank:
 
         verify.verify_instance(branch_code, str)
         verify.verify_digits(branch_code, 4)
-        self._bank_branch_code = branch_code
+        self._branch_code = branch_code
 
-        self._bank_clients = {}
-        self._bank_accounts = {}
-        self._associated_clients = {}
-        self._access_attempts = {}
+        verify.verify_instance(repository, MySQLRepository)
+        self._repository = repository
+        self._secret_key = secret_key.encode("utf-8")
 
     def __repr__(self) -> str:
         """
@@ -118,38 +83,9 @@ class Bank:
         """
 
         class_name = type(self).__name__
-        num_clients = len(self._bank_clients)
-        num_accounts = len(self._bank_accounts)
-        num_flagged = len(self._access_attempts)
-
         return (
-            f"{class_name}(name={self._bank_name!r}), "
-            f"clients={num_clients!r}, accounts={num_accounts!r}, monitored_users={num_flagged}"
+            f"{class_name}(name={self._bank_name!r}, branch_code={self._branch_code}),"
         )
-
-    def __contains__(self, item: Client | Account) -> bool:
-        """
-        Checks if a Client or Account is registered in the bank.
-
-        Polymorphic behavior:
-        - If item is Client: Checks existence by CPF.
-        - If item is Account: Checks existence by (branch, number) key.
-
-        Args:
-            item (Client | Account): The entity to check.
-
-        Returns:
-            bool: True if registered, False otherwise.
-        """
-        match item:
-            case Client():
-                client_cpf = item.client_cpf
-                return client_cpf in self._bank_clients
-            case Account():
-                branch_account = (item.branch_code, item.account_num)
-                return branch_account in self._bank_accounts
-            case _:
-                return False
 
     @property
     def bank_name(self) -> str:
@@ -159,17 +95,7 @@ class Bank:
     @property
     def bank_branch_code(self) -> str:
         """Returns the bank's branch code."""
-        return self._bank_branch_code
-
-    @staticmethod
-    def _extract_client_key(client_obj: Client) -> str:
-        """Helper to extract the unique key (CPF) from a Client object."""
-        return client_obj.client_cpf
-
-    @staticmethod
-    def _extract_account_key(account_obj: Account) -> tuple[str, str]:
-        """Helper to extract the unique key (Branch, Number) from an Account object."""
-        return (account_obj.branch_code, account_obj.account_num)
+        return self._branch_code
 
     @staticmethod
     def validate_password(password: str) -> None:
@@ -188,514 +114,132 @@ class Bank:
         except verify.VERIFY_ERRORS as e:
             raise BankPasswordError(f"Invalid password. Cause: {e}")
 
-    def to_dict(self) -> dict[str, Any]:
-        """
-        Serializes the Bank state into a dictionary compatible with JSON.
+    def _insert_client(self, new_client: Client) -> None:
+        try:
+            self._repository.save_client(new_client)
+        except DuplicatedDataError as e:
+            raise DuplicatedClientError(
+                "Client already registered in the system"
+            ) from e
 
-        Implements a 'Flattening Strategy' for persistence:
-        1. Converts internal object registries (Clients/Accounts) into simple lists
-           to bypass JSON limitations regarding complex dictionary keys.
-        2. Preserves the logical relationships in '_associated_clients' while
-           allowing tuples to be implicitly converted to lists by the serializer.
-        """
-        return {
-            "bank_name": self._bank_name,
-            "bank_branch_code": self._bank_branch_code,
-            "bank_clients": [c.to_dict() for c in self._bank_clients.values()],
-            "bank_accounts": [acc.to_dict() for acc in self._bank_accounts.values()],
-            "associated_clients": self._associated_clients,
-            "access_attempts": self._access_attempts,
-        }
+    def _generate_password_hash(self, password_str: str) -> str:
+        pwd = password_str
+        pwd_bytes = pwd.encode("utf-8")
+        salt = bcrypt.gensalt()
+        pwd_hash_bytes = bcrypt.hashpw(pwd_bytes, salt)
+        pwd_hash_str = pwd_hash_bytes.decode("utf-8")
 
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> Bank:
-        """
-        Reconstructs the Bank instance from serialized data (Rehydration).
+        return pwd_hash_str
 
-        This method acts as a massive Builder/Factory that:
-        1. Deserializes lists back into fully functioning Client/Account objects.
-        2. Rebuilds the internal Hash Maps (dictionaries) for O(1) complexity access.
-        3. Restores the tuple-based keys in '_associated_clients' (handling the
-           List->Tuple conversion required after JSON loading).
-        4. Enforces 'Fail-Secure' by requiring the presence of security counters.
-        """
-        clients_list = [Client.from_dict(obj_json) for obj_json in data["bank_clients"]]
-        accounts_list = [
-            Account.from_dict(obj_json) for obj_json in data["bank_accounts"]
-        ]
+    def _check_password(self, pwd_str: str, pwd_hash_str: str) -> None:
+        pdw_bytes = pwd_str.encode("utf-8")
+        hashed_pwd_bytes = pwd_hash_str.encode("utf-8")
 
-        associated_clients: dict[str, dict[str, list[str]]] = data["associated_clients"]
-
-        instance = cls(
-            bank_name=data["bank_name"], branch_code=data["bank_branch_code"]
-        )
-
-        for client in clients_list:
-            client_key = Bank._extract_client_key(client)
-            instance._bank_clients[client_key] = client
-
-        for account in accounts_list:
-            acc_key = Bank._extract_account_key(account)
-            instance._bank_accounts[acc_key] = account
-
-        for cpf, inner_dict in associated_clients.items():
-            instance._associated_clients[cpf] = {}
-            for pwd, list_key in inner_dict.items():
-                tuple_key_raw = tuple(list_key)
-                tuple_key = cast(tuple[str, str], tuple_key_raw)
-                instance._associated_clients[cpf][pwd] = tuple_key
-
-        instance._access_attempts = data["access_attempts"]
-
-        return instance
-
-    def _validate_client(self, client: Client) -> None:
-        """
-        Validates if a client is suitable for registration (not duplicated).
-
-        Args:
-            client (Client): The client instance.
-
-        Raises:
-            DuplicatedClientError: If the client is already registered.
-        """
-        verify.verify_instance(client, Client)
-        if client in self:
-            raise DuplicatedClientError("Client already registered")
-
-    def _validate_account(self, account: Account) -> None:
-        """
-        Validates if an account is suitable for registration (not duplicated).
-
-        Args:
-            account (Account): The account instance.
-
-        Raises:
-            DuplicatedAccountError: If the account is already registered.
-        """
-        verify.verify_instance(account, Account)
-        if account in self:
-            raise DuplicatedAccountError("Account already registered")
-
-    def _associate(
-        self, client_key: str, account_key: tuple[str, str], password: str
-    ) -> None:
-        """
-        Links an account to a client using a password as the unique key.
-
-        Internal method used during aggregation. It ensures that a specific
-        password maps to a specific account for a given client.
-
-        Args:
-            client_key (str): The client's CPF.
-            account_key (tuple[str, str]): The account's (branch, number).
-            password (str): The 6-digit password for this specific link.
-
-        Raises:
-            BankPasswordError: If the password is already in use for another account
-                belonging to this client.
-        """
-
-        client_accounts = self._associated_clients.setdefault(client_key, {})
-
-        if password in client_accounts:
-            raise BankPasswordError(
-                "Password already linked to this CPF. The password must be unique"
+        if not bcrypt.checkpw(pdw_bytes, hashed_pwd_bytes):
+            raise AuthenticationError(
+                "Given password doesn't match with registered password"
             )
 
-        client_accounts[password] = account_key
+    def _sign_token_payload(self, cpf: str, branch_code: str, account_num: str) -> str:
+        payload = f"{cpf}:{branch_code}:{account_num}".encode("utf-8")
 
-    def _agg_client(self, client_key: str, client_to_agg: Client) -> None:
-        """Stores the client object in the internal registry."""
-        self._bank_clients[client_key] = client_to_agg
+        signature = hmac.new(self._secret_key, payload, hashlib.sha256).hexdigest()
 
-    def _agg_account(self, account_key, account_to_agg: Account) -> None:
-        """Stores the account object in the internal registry."""
-        self._bank_accounts[account_key] = account_to_agg
+        return signature
 
-    def _check_access(self, token: AuthToken) -> None:
-        """
-        Performs preliminary security and integrity checks before password validation.
+    def _validate_token(self, token: AuthToken) -> None:
+        verify.verify_instance(token, AuthToken)
 
-        Implements the 'Fail Fast' pattern by rejecting invalid tokens, structural
-        inconsistencies, or frozen accounts immediately, preventing unnecessary
-        processing of passwords.
-
-        Args:
-            token (AuthToken): The authentication token to be validated.
-
-        Raises:
-            BankSecurityError: If the token signature is missing or invalid.
-            RuntimeError: If the client data is corrupted or missing from internal maps.
-            BlockedAccountError: If the target account is frozen (is_active=False).
-        """
-        if not token.signature:
-            raise BankSecurityError("Invalid token! The token must be signed by Bank")
-
-        if token.client_cpf not in self._associated_clients:
-            raise RuntimeError("No associated account found in _associated_clients.")
-
-        target_key = (token.branch_code, token.account_num)
-
-        if target_key not in self._bank_accounts:
-            raise RuntimeError("Token points to a non-existent account (Stale Token).")
-
-        target_account = self._bank_accounts[target_key]
-
-        if not target_account.is_active:
-            raise BlockedAccountError(
-                "Account is frozen due to security reasons. Access denied"
-            )
-
-    def _reset_password(
-        self, client_cpf: str, account_key: tuple[str, str], new_password: str
-    ) -> None:
-        """
-        Helper method to safely replace the password linked to a specific account.
-
-        Locates the old password key associated with the given account, removes it,
-        and establishes a new association using the provided new password.
-        """
-        client_accounts = self._associated_clients[client_cpf]
-        old_pwd = None
-
-        for pwd, acc_key in client_accounts.items():
-            if acc_key == account_key:
-                old_pwd = pwd
-                break
-
-        if old_pwd:
-            del client_accounts[old_pwd]
-
-        self._associate(client_cpf, account_key, new_password)
-
-    def _issue_card(
-        self, client_cpf: str, branch_code: str, account_num: str
-    ) -> AccountCard:
-        """
-        Factory method that generates a new access card (Value Object).
-
-        Creates an immutable AccountCard containing the essential credentials
-        (CPF, Branch, Account Number) required for future 'Quick Login' operations.
-
-        Args:
-            client_cpf (str): The client's unique identifier.
-            branch_code (str): The branch code.
-            account_num (str): The account number.
-
-        Returns:
-            AccountCard: The populated card instance.
-        """
-        return AccountCard(
-            client_cpf=client_cpf,
-            branch_code=branch_code,
-            account_num=account_num,
+        bank_signature = self._sign_token_payload(
+            token.cpf, token.branch_code, token.account_num
         )
+        if not hmac.compare_digest(bank_signature, token.signature):
+            raise BankSecurityError("Invalid or tampered authentication token.")
+
+    def get_registered_client(self, cpf: str, get: bool = False) -> Client | None:
+        try:
+            client_obj = self._repository.get_client(cpf=cpf)
+            return client_obj if get else None
+        except DataNotFoundError as e:
+            raise ClientNotFoundError("Not client registered under this CPF") from e
+
+    def register_account(
+        self, new_account: Account, client_or_cpf: Client | str, password: str
+    ) -> None:
+        parameters = (new_account, client_or_cpf, password)
+        types = (Account, (Client, str), str)
+
+        for p, t in zip(parameters, types):
+            verify.verify_instance(p, t)
+
+        Bank.validate_password(password)
+
+        if isinstance(client_or_cpf, Client):
+            client_cpf = client_or_cpf.cpf
+            self._insert_client(client_or_cpf)
+        elif isinstance(client_or_cpf, str):
+            client_cpf = client_or_cpf
+            self.get_registered_client(client_cpf)
+
+        pwd_hash = self._generate_password_hash(password_str=password)
+
+        try:
+            self._repository.save_account(new_account, client_cpf, pwd_hash)
+        except DuplicatedDataError as e:
+            raise DuplicatedAccountError("Account already registered") from e
 
     def authenticate(
-        self, client_cpf: str, branch_code: str, account_num: str
-    ) -> AuthToken | None:
-        """
-        Verifies credentials and issues a secure access token.
+        self, client: Client, branch_code: str, account_num: str
+    ) -> AuthToken:
 
-        Checks if the provided branch matches the bank's branch, and if both
-        client and account are valid and registered within the system.
-        This method is stateless and does not alter the internal state of the Bank.
+        temp_card = AccountCard(client.cpf, branch_code, account_num)
+        if not client.has_account(temp_card):
+            raise AuthenticationError("Account card not found between client's cards")
 
-        Args:
-            client_cpf (str): The client's CPF.
-            branch_code (str): The specific branch code of the account.
-            account_num (str): The account number.
+        signature = self._sign_token_payload(client.cpf, branch_code, account_num)
+        return AuthToken(client.cpf, branch_code, account_num, signature)
 
-        Returns:
-            AuthToken | None: A signed (signature=True) AuthToken object if
-            authentication succeeds, None otherwise.
-        """
-        valid_branch = self._bank_branch_code == branch_code
-        registered_client = client_cpf in self._bank_clients
-        account_id = (branch_code, account_num)
-        registered_account = account_id in self._bank_accounts
+    def _verify_credentials_dict(self, credentials: dict[str, Any]) -> None:
+        verify.verify_instance(credentials, dict)
 
-        if all([valid_branch, registered_client, registered_account]):
-            return AuthToken(
-                client_cpf=client_cpf,
-                branch_code=branch_code,
-                account_num=account_num,
-                signature=True,
-            )
-        return None
+        required_keys = {"is_active", "password_hash", "failed_login_attempts"}
 
-    def is_account_active(self, token: AuthToken) -> bool:
-        """
-        Checks if the account associated with the token is operational.
+        if not required_keys.issubset(credentials.keys()):
+            raise ValueError("Invalid credentials keys mapped from repository")
 
-        Acts as a public boolean facade for the internal '_check_access' method.
-        It allows Controllers to perform 'Fail Fast' checks on the session status
-        without needing to handle exceptions for blocked accounts.
+    def get_access(self, token: AuthToken, password: str) -> Account:
+        self._validate_token(token)
+        Bank.validate_password(password)
 
-        Args:
-            token (AuthToken): The session token.
+        branch_code = token.branch_code
+        account_num = token.account_num
 
-        Returns:
-            bool: True if the account is active.
-                  False if the account is frozen (BlockedAccountError is caught).
+        acc_credentials = self._repository.get_account_credentials(
+            branch_code, account_num
+        )
 
-        Raises:
-            BankSecurityError: If the token is invalid or corrupted (propagated).
-        """
+        self._verify_credentials_dict(acc_credentials)
+
+        hashed_pwd: str = acc_credentials["password_hash"]
+        is_active: bool = acc_credentials["is_active"]
+        failed_logins: int = acc_credentials["failed_login_attempts"]
+
+        if is_active is False:
+            raise BlockedAccountError("Inactive account. Access denied")
+
         try:
-            self._check_access(token)
-            return True
-        except BlockedAccountError:
-            return False
+            self._check_password(password, hashed_pwd)
 
-    def get_client(self, client_cpf: str) -> Client:
-        """
-        Retrieves the Client object associated with the provided CPF.
+            if failed_logins > 0:
+                self._repository.reset_login_attempts(branch_code, account_num)
 
-        Args:
-            client_cpf (str): The client's unique CPF.
-
-        Returns:
-            Client: The registered Client object.
-
-        Raises:
-            ClientNotFoundError: If the CPF is not registered in the bank.
-        """
-        if client_cpf not in self._bank_clients:
-            raise ClientNotFoundError(
-                "Not client registered under this CPF. Verify CPF"
-            )
-        client_obj = self._bank_clients[client_cpf]
-
-        return client_obj
-
-    def get_account(self, token: AuthToken, password: str) -> Account:
-        """
-        Retrieves the Account object associated with the client and password.
-
-        Delegates preliminary token integrity checks to '_check_access()' and focuses
-        on password validation and access attempt monitoring. Handles account
-        freezing logic upon repeated failed attempts.
-
-        Args:
-            token (AuthToken): The security token issued during authentication.
-            password (str): The password linked to the desired account.
-
-        Returns:
-            Account: The Account object if found and authorized.
-
-        Raises:
-            BankSecurityError: If the token signature or integrity is invalid.
-            BlockedAccountError: If the account is frozen due to security.
-            AccountNotFoundError: If the password is incorrect, or if the password
-                belongs to a different account than the one in the token (Cross-access
-                attempts are treated as 'Not Found' to prevent credential enumeration).
-            RuntimeError: If internal data integrity is compromised.
-        """
-        self._check_access(token)
-        Bank.validate_password(password)
-
-        client_accounts = self._associated_clients[token.client_cpf]
-        account_key = client_accounts.get(password)
-
-        if account_key != (token.branch_code, token.account_num):
-            account_key = None
-
-        self._access_attempts.setdefault(token.client_cpf, 0)
-
-        if account_key is None:
-            self._access_attempts[token.client_cpf] += 1
-            if self._access_attempts[token.client_cpf] >= 3:
-                target_key = (token.branch_code, token.account_num)
-                target_account = self._bank_accounts[target_key]
-                target_account.freeze()
+            account_obj = self._repository.get_account(branch_code, account_num)
+            return account_obj
+        except AuthenticationError as e:
+            self._repository.register_failed_login(branch_code, account_num)
+            if (failed_logins + 1) >= 2:
+                self._repository.update_account_status(branch_code, account_num, False)
                 raise BlockedAccountError(
-                    "Account is frozen due to security reasons. Access denied"
-                )
-
-            raise AccountNotFoundError(
-                "No account associated to this password in _associated_clients."
-            )
-
-        self._access_attempts[token.client_cpf] = 0
-        account_obj = self._bank_accounts[account_key]
-
-        return account_obj
-
-    def agg_new_client(
-        self, new_client: Client, new_account: Account, password: str
-    ) -> None:
-        """
-        Registers a new Client along with their first Account.
-
-        This method performs an atomic registration operation: validation,
-        association, and storage of both entities in the bank's registry.
-        Finally, it issues a 'Quick Access Card' and adds it to the client's wallet,
-        allowing the client to reference this account in the future.
-
-        Args:
-            new_client (Client): The new client instance.
-            new_account (Account): The new account instance.
-            password (str): The password to access this account.
-
-        Raises:
-            DuplicatedClientError: If client already exists.
-            DuplicatedAccountError: If account already exists.
-            BankPasswordError: If password format is invalid.
-        """
-        self._validate_client(new_client)
-        self._validate_account(new_account)
-        Bank.validate_password(password)
-
-        client_obj_key = Bank._extract_client_key(new_client)
-        account_obj_key = Bank._extract_account_key(new_account)
-
-        self._associate(client_obj_key, account_obj_key, password)
-
-        self._agg_client(client_obj_key, new_client)
-        self._agg_account(account_obj_key, new_account)
-
-        new_card = self._issue_card(
-            client_cpf=new_client.client_cpf,
-            branch_code=new_account.branch_code,
-            account_num=new_account.account_num,
-        )
-        new_client.add_card(new_card)
-
-    def agg_new_account(
-        self, client_cpf: str, new_account: Account, password: str
-    ) -> None:
-        """
-        Adds a new Account to an existing Client.
-
-        Validates the client existence, registers the new account in the bank's
-        internal map, and associates it with the client via the password.
-        Finally, issues a new 'Quick Access Card' and adds it to the client's
-        wallet for easy access.
-
-        Args:
-            client_cpf (str): The CPF of the existing client.
-            new_account (Account): The new account instance.
-            password (str): The password to access this new account.
-
-        Raises:
-            ClientNotFoundError: If the client CPF is not found.
-            DuplicatedAccountError: If account already exists.
-            BankPasswordError: If password is invalid or already used.
-        """
-        if client_cpf not in self._associated_clients:
-            raise ClientNotFoundError(
-                "Not client registered under this CPF. Verify CPF"
-            )
-        self._validate_account(new_account)
-        Bank.validate_password(password)
-
-        new_account_key = Bank._extract_account_key(new_account)
-
-        self._associate(client_cpf, new_account_key, password)
-        self._agg_account(new_account_key, new_account)
-
-        new_card = self._issue_card(
-            client_cpf=client_cpf,
-            branch_code=new_account.branch_code,
-            account_num=new_account.account_num,
-        )
-        client_obj = self.get_client(client_cpf)
-        client_obj.add_card(new_card)
-
-    def unfreeze_account(
-        self, token: AuthToken, client_name: str, birth_date: str, new_password: str
-    ) -> bool:
-        """
-        Unlocks a frozen account and resets its password after verifying personal data.
-
-        Implements Knowledge-Based Authentication (KBA). Verifies the client's
-        Identity (Name and Birth Date) before allowing the password reset and
-        account reactivation.
-
-        It applies a 'Fail-Fast' check to ensure the account is actually
-        frozen before processing any validation logic.
-
-        Args:
-            token (AuthToken): The active session token.
-            client_name (str): The name provided for verification.
-            birth_date (str): The birth date string ('dd/mm/yyyy').
-            new_password (str): The new password to be set.
-
-        Returns:
-            bool: True if verification succeeds and account is unlocked.
-                  False if Name or Birth Date do not match records.
-
-        Raises:
-            AccountAlreadyActiveError: If the account is fully operational (not frozen).
-            BankPasswordError: If the new password format is invalid.
-        """
-        account_key = (token.branch_code, token.account_num)
-        account_obj = self._bank_accounts[account_key]
-
-        if account_obj.is_active:
-            raise AccountAlreadyActiveError("Account is already active.")
-
-        name = Person.validate_name(client_name)
-        date = Person.validate_birth_date(birth_date)
-        Bank.validate_password(new_password)
-
-        client_obj = self._bank_clients[token.client_cpf]
-
-        if (name, date) != (client_obj.name, client_obj.birth_date):
-            return False
-
-        self._reset_password(token.client_cpf, account_key, new_password)
-
-        account_obj.unfreeze()
-        self._access_attempts[token.client_cpf] = 0
-
-        return True
-
-    def close_account(self, token: AuthToken, password: str) -> None:
-        """
-        Permanently closes an account and removes all its system associations.
-
-        This operation enforces strict business rules: the account must have a
-        balance of zero. It validates credentials and removes the account from
-        the bank's registry.
-
-        Additionally, it identifies and destroys the specific 'Quick Access Card'
-        associated with this account from the client's wallet. If this was the
-        client's last link to the bank, the client entity is also removed.
-
-        Args:
-            token (AuthToken): The active session token.
-            password (str): The password linked to the account.
-
-        Raises:
-            NotEmptyAccountError: If the account has a non-zero balance.
-            BankSecurityError: If the token is invalid.
-            BlockedAccountError: If the account is frozen.
-            AccountNotFoundError: If credentials do not match.
-        """
-        account_obj = self.get_account(token, password)
-        account_key = (token.branch_code, token.account_num)
-
-        if account_obj.balance != 0:
-            raise NotEmptyAccountError(
-                "Impossible to close an account with non-zero balance"
-            )
-
-        client_obj = self.get_client(token.client_cpf)
-        client_accounts = self._associated_clients[token.client_cpf]
-
-        for card in client_obj.cards:
-            if (card.client_cpf, card.branch_code, card.account_num) == (
-                token.client_cpf,
-                token.branch_code,
-                token.account_num,
-            ):
-                client_obj.remove_card(card)
-        del self._bank_accounts[account_key]
-        del client_accounts[password]
-
-        if len(client_accounts) == 0:
-            del self._bank_clients[token.client_cpf]
-            del self._associated_clients[token.client_cpf]
+                    "The account was frozen due to 3 consecutive failed login attempts."
+                ) from e
+            raise e
