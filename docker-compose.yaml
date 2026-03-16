@@ -1,0 +1,28 @@
+services:
+  db:
+    container_name: pybank_db
+    image: mysql:8.0
+    restart: always
+
+    # 1. Segurança: Puxa as senhas do seu arquivo oculto
+    env_file:
+      - .env
+
+    # 2. Configurações de Fuso Horário
+    environment:
+      TZ: America/Sao_Paulo
+
+    # 3. Comandos de codificação (Português e Emojis) e autenticação padrão
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+
+    # 4. Comunicação com seu Python
+    ports:
+      - "3306:3306"
+
+    # 5. Persistência: Impede que as contas sumam se o PC desligar
+    volumes:
+      - ./mysql_data:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql

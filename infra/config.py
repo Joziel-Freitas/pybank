@@ -24,12 +24,6 @@ class InnerConfig(TypedDict):
 ConfigMap = dict[str, InnerConfig]
 
 initial_config: ConfigMap = {
-    "bank": {
-        "info": "Opções de Banco",
-        "prompt": "1 - Banco do Dev S.A.  Ag: 1234\n2 - Banco do Analista S.A.  Ag: 4321\nSua opção: ",
-        "value_type": int,
-        "error_msg": "Opção inválida para banco. Escolha entre 1 ou 2",
-    },
     "is_client": {
         "info": "Registro do cliente",
         "prompt": "1 - Já sou cliente\n2 - Ainda não sou cliente\nSua opção: ",
