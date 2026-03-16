@@ -464,7 +464,69 @@ class MySQLRepository:
             cursor.execute(sql, (new_password_hash, branch_code, account_num))
             self._connection.commit()
 
+    def update_security_credentials(
+        self,
+        branch_code: str,
+        account_num: str,
+        new_password_hash: str,
+        is_active: bool,
+    ) -> None:
+        """
+        Executes an atomic update of the account's security credentials.
+
+        Updates the password hash, modifies the active status (frozen/unfrozen),
+        and resets the failed login attempts counter back to zero in a single
+        database query to guarantee atomicity and performance.
+
+        Args:
+            branch_code (str): The 4-digit string representing the branch.
+            account_num (str): The target 8-digit account number.
+            new_password_hash (str): The new securely hashed password.
+            is_active (bool): The new status of the account (True for active, False for frozen).
+
+        Raises:
+            TypeError: If any of the provided arguments have incorrect types.
+            RuntimeError: If a database error occurs, triggering a transaction rollback.
+        """
+        verify_instance(is_active, bool)
+        str_parameters = (branch_code, account_num, new_password_hash)
+
+        for p in str_parameters:
+            verify_instance(p, str)
+
+        sql = (
+            "UPDATE accounts "
+            "SET password_hash = %s, is_active = %s, failed_login_attempts = 0 "
+            "WHERE branch_code = %s AND account_num = %s"
+        )
+
+        try:
+            with self._connection.cursor() as cursor:
+                cursor.execute(
+                    sql, (new_password_hash, is_active, branch_code, account_num)
+                )
+                self._connection.commit()
+        except Exception as e:
+            self._connection.rollback()
+            raise RuntimeError(
+                f"Failed to update account credentials due to DB error: {e}"
+            )
+
     def delete_account(self, account: Account) -> None:
+        """
+        Permanently removes an account and its transaction history from the database.
+
+        Executes an ACID-compliant transaction to ensure referential integrity.
+        It first deletes all associated records in the 'transactions' table
+        before deleting the parent record in the 'accounts' table.
+
+        Args:
+            account (Account): The fully hydrated domain Account entity to be deleted.
+
+        Raises:
+            RuntimeError: If a database error occurs during the deletion process,
+                triggering a full transaction rollback to prevent orphaned records.
+        """
         branch_code = account.branch_code
         account_num = account.account_num
 
