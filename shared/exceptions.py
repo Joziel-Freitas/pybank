@@ -23,6 +23,55 @@ from shared.types import (
 )
 
 
+class RepositoryError(Exception):
+    """
+    Base exception for all errors originating from the Infrastructure/Repository layer.
+
+    This acts as a generic wrapper for database-specific exceptions (e.g., PyMySQL
+    errors), ensuring that the Domain and Application layers do not depend on
+    third-party library exceptions.
+    """
+
+
+class DataNotFoundError(RepositoryError):
+    """
+    Raised when a requested record is not found in the database.
+
+    Used by the Repository to signal that a `SELECT` query returned empty
+    results for a specific identifier (like CPF or Account Number).
+    The Domain service (Bank) should catch this and translate it into a
+    business-specific error (e.g., ClientNotFoundError).
+    """
+
+
+class DuplicatedDataError(RepositoryError):
+    """
+    Raised when an attempt to insert or update a record violates a unique constraint.
+
+    Used by the Repository to abstract database IntegrityErrors (like trying to
+    insert a CPF that already exists). The Domain service (Bank) should catch
+    this and translate it into a business-specific error (e.g., DuplicatedClientError).
+    """
+
+
+class SecurityError(Exception):
+    """Base exception for all critical security violations in the system."""
+
+
+class BankSecurityError(SecurityError):
+    """
+    Raised when a critical security violation is detected during a Bank operation.
+
+    This exception acts as the primary defense mechanism against malicious activities,
+    such as AuthToken tampering (HMAC signature mismatch) or unauthorized cross-account
+    access attempts.
+
+    Controllers must catch this exception at the session level to immediately
+    invalidate the user's state (destroy token/card) and return to the main menu,
+    preventing enumeration attacks.
+    """
+
+
 class DomainError(Exception):
     """Base exception for all domain-specific errors (entities and services)."""
 
@@ -80,10 +129,6 @@ class BankError(DomainError):
     """Base exception for errors related to the Bank service layer."""
 
 
-class BankSecurityError(BankError):
-    """Raised when the authentication token does not match the target account ID"""
-
-
 class BankAttributeError(BankError):
     """Base exception for validation errors on Bank attributes (e.g., name)."""
 
@@ -116,14 +161,16 @@ class AccountNotFoundError(BankMethodError):
     """Raised when an account is not found in the Bank's central registry."""
 
 
+class AuthenticationError(BankMethodError):
+    """Raised when authentication process fails"""
+
+
 class NotEmptyAccountError(BankMethodError):
     """Raised when attempting to close an account with a non-zero balance."""
 
 
 class AccountAlreadyActiveError(BankMethodError):
     """Raised when trying to unfreeze an account that is fully operational."""
-
-    pass
 
 
 # --- Entity Layer Exceptions (Person/Client) ---
@@ -226,7 +273,6 @@ BANK_ERROR_MAP: ErrorMapType = {
         ClientNotFoundError: BankContext.CLIENT,
         DuplicatedAccountError: BankContext.ACCOUNT,
         AccountNotFoundError: BankContext.ACCOUNT,
-        BankSecurityError: BankContext.TOKEN,
     },
 }
 
