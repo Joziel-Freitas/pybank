@@ -51,7 +51,6 @@ class Account(ABC):
     _account_num: str
     _balance: Decimal
     _transactions: list[tuple[Decimal, datetime]]
-    _is_active: bool
 
     def __init__(
         self, branch_code: str, account_num: str, balance: Decimal = Decimal("0.00")
@@ -80,7 +79,6 @@ class Account(ABC):
         self._transactions = []
         if self._balance > 0:
             self._transactions.append((self._balance, datetime.now()))
-        self._is_active = True
 
     def __repr__(self) -> str:
         """Returns the canonical string representation of the Account instance."""
@@ -88,7 +86,7 @@ class Account(ABC):
 
         return (
             f"{class_name}("
-            f"account_num={self._account_num!r}, balance={self._balance!r}, is_active={self._is_active!r})"
+            f"account_num={self._account_num!r}, balance={self._balance!r})"
         )
 
     def __eq__(self, other: object) -> bool:
@@ -145,17 +143,6 @@ class Account(ABC):
                 transactions (amount and timestamp).
         """
         return self._transactions.copy()
-
-    @property
-    def is_active(self) -> bool:
-        """
-        Returns the current operational status of the account.
-
-        Returns:
-            bool: True if the account is fully operational, False if it is
-            frozen due to security reasons or administrative blocks.
-        """
-        return self._is_active
 
     @abstractmethod
     def withdraw(self, value: Decimal) -> None:
@@ -295,7 +282,6 @@ class Account(ABC):
             "account_num": self._account_num,
             "balance": self._balance,
             "transactions": self._transactions,
-            "is_active": self._is_active,
             "type": type(self).__name__,
         }
 
@@ -341,7 +327,6 @@ class Account(ABC):
         )
 
         instance._transactions = data["transactions"]
-        instance._is_active = data["is_active"]
 
         return instance
 
@@ -362,25 +347,6 @@ class Account(ABC):
         Account._validate_account_deposit(value)
         self._balance += value
         self._transactions.append((value, datetime.now()))
-
-    def freeze(self) -> None:
-        """
-        Freezes the account, disabling sensitive operations.
-
-        This state change is typically triggered by the Bank entity upon detecting
-        suspicious activity (e.g., repeated failed login attempts).
-        A frozen account cannot perform withdrawals or be accessed until unfrozen.
-        """
-        self._is_active = False
-
-    def unfreeze(self) -> None:
-        """
-        Restores the account to an active status.
-
-        This method is called after a successful security verification process,
-        allowing the account to resume normal operations.
-        """
-        self._is_active = True
 
     def check_withdrawal(self, value: Decimal) -> WithdrawalInfo:
         """
