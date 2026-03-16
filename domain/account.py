@@ -10,6 +10,7 @@ transaction history tracking.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, ClassVar, NamedTuple, cast
 
@@ -40,15 +41,16 @@ class Account(ABC):
         _branch_code (str): The validated branch code.
         _account_num (str): The validated account number.
         _balance (Decimal): The current account balance.
-        _transactions (list[Decimal]): Chronological record of transactions
-            (positive for deposits, negative for withdrawals).
+        _transactions (list[tuple[Decimal, datetime]]): Chronological record of transactions
+            containing the amount and the exact timestamp.
+        _is_active (bool): The operational status of the account.
     """
 
     # Type hints for the instance's variables
     _branch_code: str
     _account_num: str
     _balance: Decimal
-    _transactions: list[Decimal]
+    _transactions: list[tuple[Decimal, datetime]]
     _is_active: bool
 
     def __init__(
@@ -58,7 +60,8 @@ class Account(ABC):
         Initializes a new Account instance with validated attributes.
 
         Initializes the transaction history. If a positive initial balance is
-        provided, it is recorded as the first transaction (opening deposit).
+        provided, it is recorded as the first transaction (opening deposit) with
+        the current timestamp.
 
         Args:
             branch_code (str): The code of the bank branch (validated for format).
@@ -76,7 +79,7 @@ class Account(ABC):
         self._balance = Account.validate_account_initial_balance(balance)
         self._transactions = []
         if self._balance > 0:
-            self._transactions.append(self._balance)
+            self._transactions.append((self._balance, datetime.now()))
         self._is_active = True
 
     def __repr__(self) -> str:
@@ -84,7 +87,7 @@ class Account(ABC):
         class_name = type(self).__name__
 
         return (
-            f"{class_name}(branch_code={self._branch_code!r}, "
+            f"{class_name}("
             f"account_num={self._account_num!r}, balance={self._balance!r}, is_active={self._is_active!r})"
         )
 
@@ -133,13 +136,13 @@ class Account(ABC):
         return self._balance
 
     @property
-    def get_statement(self) -> list[Decimal]:
+    def get_statement(self) -> list[tuple[Decimal, datetime]]:
         """
         Retrieves a safe copy of the transaction history.
 
         Returns:
-            list[Decimal]: A copy of the list containing all transaction values
-            (positive for deposits, negative for withdrawals).
+            list[tuple[Decimal, datetime]]: A copy of the list containing all
+                transactions (amount and timestamp).
         """
         return self._transactions.copy()
 
@@ -278,21 +281,20 @@ class Account(ABC):
 
     def to_dict(self) -> dict[str, Any]:
         """
-        Serializes the account state into a dictionary compatible with JSON.
+        Serializes the account state into a dictionary.
 
-        Converts rich types like Decimal into strings to ensure serialization safety.
         Includes a 'type' field (e.g., 'CheckingAccount') to allow the Factory method
         to reconstruct the correct concrete class implementation upon deserialization.
 
         Returns:
-            dict: The dictionary containing branch, account number, balance,
+            dict: The dictionary containing account number, balance,
                   transaction history, status, and class type.
         """
         return {
             "branch_code": self._branch_code,
             "account_num": self._account_num,
-            "balance": str(self._balance),
-            "transactions": [str(t) for t in self._transactions],
+            "balance": self._balance,
+            "transactions": self._transactions,
             "is_active": self._is_active,
             "type": type(self).__name__,
         }
@@ -338,7 +340,7 @@ class Account(ABC):
             balance=Decimal(data["balance"]),
         )
 
-        instance._transactions = [Decimal(t) for t in data["transactions"]]
+        instance._transactions = data["transactions"]
         instance._is_active = data["is_active"]
 
         return instance
@@ -359,7 +361,7 @@ class Account(ABC):
         """
         Account._validate_account_deposit(value)
         self._balance += value
-        self._transactions.append(value)
+        self._transactions.append((value, datetime.now()))
 
     def freeze(self) -> None:
         """
@@ -424,7 +426,7 @@ class SavingsAccount(Account):
         """
         Account._validate_account_withdraw(val=value, available_val=self._balance)
         self._balance -= value
-        self._transactions.append(-value)
+        self._transactions.append((-value, datetime.now()))
 
 
 class CheckingAccount(Account):
@@ -466,8 +468,7 @@ class CheckingAccount(Account):
             dict: The complete dictionary with base account data plus credit info.
         """
         obj_data = super().to_dict()
-        obj_data["CREDIT_LIMIT"] = str(CheckingAccount.CREDIT_LIMIT)
-        obj_data["used_credit"] = str(self._used_credit)
+        obj_data["used_credit"] = self._used_credit
 
         return obj_data
 
@@ -486,7 +487,7 @@ class CheckingAccount(Account):
             CheckingAccount: The restored instance with the correct credit usage state.
         """
         instance = cast(CheckingAccount, super().from_dict(data))
-        instance._used_credit = Decimal(data["used_credit"])
+        instance._used_credit = data["used_credit"]
 
         return instance
 
@@ -549,7 +550,7 @@ class CheckingAccount(Account):
         available = CheckingAccount.CREDIT_LIMIT + self._balance
         Account._validate_account_withdraw(val=value, available_val=available)
         self._balance -= value
-        self._transactions.append(-value)
+        self._transactions.append((-value, datetime.now()))
 
         # Update used credit if we enter or remain in overdraft
         if self._balance < 0:

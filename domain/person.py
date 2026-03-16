@@ -11,59 +11,19 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass
-from datetime import date, datetime
+from dataclasses import asdict
+from datetime import date
 from typing import ClassVar, cast
 
 from infra import verify
 from shared import validators
+from shared.credentials import AccountCard
 from shared.exceptions import (
     InvalidBirthDateError,
     InvalidNameError,
     PersonCardNotFoundError,
     PersonDuplicatedCardError,
 )
-
-
-@dataclass(frozen=True)
-class AccountCard:
-    """
-    Immutable value object representing the credentials for quick account access.
-    Acts as a 'saved card' in the client's wallet.
-    """
-
-    client_cpf: str
-    branch_code: str
-    account_num: str
-
-    def __str__(self) -> str:
-        """User-friendly string representation for UI/Menus."""
-        return (
-            f"CPF: {self.client_cpf} | Ag: {self.branch_code} Conta: {self.account_num}"
-        )
-
-    def to_dict(self) -> dict:
-        """
-        Converts the immutable card object into a dictionary.
-
-        Returns:
-            dict: A dictionary representation compatible with JSON serialization.
-        """
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: dict[str, str]) -> AccountCard:
-        """
-        Factory method to reconstruct an AccountCard from a dictionary.
-
-        Args:
-            data (dict[str, str]): A dictionary containing 'client_cpf', 'branch_code',
-                                   and 'account_num'.
-
-        Returns:
-            AccountCard: A new immutable instance of AccountCard.
-        """
-        return cls(**data)
 
 
 class Person(ABC):
@@ -82,22 +42,23 @@ class Person(ABC):
     _birth_date: date
     _cpf: str
 
-    def __init__(self, name: str, birth_date: str, cpf: str):
+    def __init__(self, name: str, birth_date: str | date, cpf: str):
         """
         Initializes a Person instance with validated attributes.
 
         Args:
             name (str): The person's full name.
-            birth_date (str): The person's date of birth in 'dd/mm/yyyy' string format.
+            birth_date (str | date): The person's date of birth. Can be a 'dd/mm/yyyy'
+                string (from user input) or a native date object (from the database).
             cpf (str): The person's CPF string (11 digits).
 
         Raises:
             InvalidNameError: If the name is invalid.
-            InvalidBirthDateError: If the date format is wrong or is a future date.
+            InvalidBirthDateError: If the date format is wrong, in the future, or age is invalid.
             InvalidCpfError: If the CPF is mathematically invalid or poorly formatted.
         """
         self.name = name
-        self._birth_date = Person.validate_birth_date(birth_date)
+        self._birth_date: date = Person.validate_birth_date(birth_date)
         self._cpf = Person.validate_cpf(cpf)
 
     def __repr__(self) -> str:
@@ -195,41 +156,50 @@ class Person(ABC):
         return name
 
     @staticmethod
-    def validate_birth_date(birth_date: str) -> date:
+    def validate_birth_date(birth_date: str | date) -> date:
         """
-        Validates and converts the birth date string to a date object.
+        Validates a given birth date against domain business rules.
 
-        This method enforces strict validation rules:
-        1. Must be a string in 'dd/mm/yyyy' format.
+        This method acts as a flexible facade, accepting both formatted strings
+        (from user input) and native date objects (from the database adapter).
+        It enforces the following strict rules:
+        1. If it's a string, it must be convertible from the 'dd/mm/yyyy' format.
         2. Cannot be a future date.
         3. The resulting age must be within the allowed range (`Person.MIN_AGE` to `Person.MAX_AGE`).
 
         Args:
-            birth_date (str): The date string to validate.
+            birth_date (str | date): The date of birth to validate.
 
         Returns:
-            date: The validated date object.
+            date: The validated native Python date object.
 
         Raises:
             InvalidBirthDateError: If the format is incorrect, the date is in the future,
-                                   or the calculated age is outside the valid limits.
+                the calculated age is outside the valid limits, or the type is invalid.
         """
         try:
-            verify.verify_instance(birth_date, str)
-            birth_date_obj = datetime.strptime(birth_date, "%d/%m/%Y").date()
-            today = date.today()
+            match birth_date:
+                case str():
+                    date_obj = validators.validate_date_format(birth_date)
+                case date():
+                    date_obj = birth_date
+                case _:
+                    raise TypeError(
+                        f"Expected str or date. Got {type(birth_date).__name__}"
+                    )
 
-            if birth_date_obj > today:
+            today = date.today()
+            if date_obj > today:
                 raise ValueError("Date of birth cannot be in the future")
 
-            age = Person._calculate_age(birth_date_obj)
+            age = Person._calculate_age(date_obj)
 
             if not Person.MIN_AGE <= age <= Person.MAX_AGE:
                 raise ValueError(
                     f"Invalid age. Age must be between {Person.MIN_AGE} and {Person.MAX_AGE} (inclusive)"
                 )
 
-            return birth_date_obj
+            return date_obj
         except verify.VERIFY_ERRORS as e:
             raise InvalidBirthDateError(
                 f"Value {birth_date} is invalid for date of birth. Cause: {e}"
@@ -264,17 +234,17 @@ class Person(ABC):
 
     def to_dict(self) -> dict:
         """
-        Serializes the person's core data into a dictionary format compatible with JSON.
+        Serializes the person's core data into a dictionary format.
 
-        Converts the internal date object to an ISO 8601 string format (YYYY-MM-DD)
-        to ensure standardization and easy storage.
+        Retains the native Python `date` object for `birth_date`, delegating
+        the SQL format translation to the database driver (e.g., PyMySQL).
 
         Returns:
-            dict: A dictionary containing 'name', 'cpf', and 'birth_date' (ISO format).
+            dict: A dictionary containing 'name', 'cpf', and 'birth_date'.
         """
         return {
             "name": self._name,
-            "birth_date": self._birth_date.isoformat(),
+            "birth_date": self._birth_date,
             "cpf": self._cpf,
         }
 
@@ -283,9 +253,9 @@ class Person(ABC):
         """
         Factory method that reconstructs a Person (or subclass) instance from a dictionary.
 
-        It handles the conversion of the ISO 8601 date string found in the JSON
-        back to the 'dd/mm/yyyy' string format required by the class constructor.
-        This ensures that all original validations (age, date format) are executed again.
+        Expects a native Python `date` object from the database adapter and passes
+        it directly to the class constructor, bypassing string formatting gymnastics.
+        This ensures all original business validations are executed cleanly.
 
         Args:
             data (dict): The dictionary containing raw user data.
@@ -293,9 +263,7 @@ class Person(ABC):
         Returns:
             Person: A fully initialized instance of the class (or subclass).
         """
-        iso_date = datetime.fromisoformat(data["birth_date"])
-        date_str = iso_date.strftime("%d/%m/%Y")
-        return cls(name=data["name"], birth_date=date_str, cpf=data["cpf"])
+        return cls(name=data["name"], birth_date=data["birth_date"], cpf=data["cpf"])
 
 
 class Client(Person):
@@ -309,7 +277,7 @@ class Client(Person):
 
     _account_cards: set[AccountCard]
 
-    def __init__(self, name: str, birth_date: str, cpf: str):
+    def __init__(self, name: str, birth_date: str | date, cpf: str):
         """
         Initializes a Client instance.
 
@@ -355,7 +323,7 @@ class Client(Person):
         return False
 
     @property
-    def client_cpf(self) -> str:
+    def cpf(self) -> str:
         """Returns the client's unique identifier (the CPF)."""
         return self._cpf
 
@@ -379,7 +347,7 @@ class Client(Person):
             dict: The complete client state dictionary, including personal info and cards.
         """
         data_dict = super().to_dict()
-        data_dict["account_cards"] = [card.to_dict() for card in self._account_cards]
+        data_dict["account_cards"] = [asdict(card) for card in self._account_cards]
         return data_dict
 
     @classmethod
@@ -399,7 +367,7 @@ class Client(Person):
         """
         instance = cast(Client, super().from_dict(data))
         cards_list = data.get("account_cards", [])
-        instance._account_cards = {AccountCard.from_dict(card) for card in cards_list}
+        instance._account_cards = {AccountCard(**card) for card in cards_list}
         return instance
 
     def has_account(self, card: AccountCard) -> bool:
