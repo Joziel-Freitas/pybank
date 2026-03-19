@@ -3,14 +3,12 @@ Account Management Module.
 
 Defines the abstract base class Account and its concrete implementations:
 SavingsAccount and CheckingAccount. This module handles account initialization,
-attribute validation, core banking operations (deposit and withdraw), and
-transaction history tracking.
+attribute validation, and core banking mathematical operations (deposit and withdraw).
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import datetime
 from decimal import Decimal
 from typing import Any, ClassVar, NamedTuple, cast
 
@@ -33,34 +31,26 @@ class Account(ABC):
     """
     Abstract Base Class (ABC) for all bank accounts.
 
-    Enforces mandatory attributes, behaviors (deposit, withdraw), and transaction
-    tracking across all concrete account types. Handles initial attribute validation
+    Enforces mandatory attributes and mathematical behaviors (deposit, withdraw)
+    across all concrete account types. Handles initial attribute validation
     via static methods.
 
     Attributes:
         _branch_code (str): The validated branch code.
         _account_num (str): The validated account number.
         _balance (Decimal): The current account balance.
-        _transactions (list[tuple[Decimal, datetime]]): Chronological record of transactions
-            containing the amount and the exact timestamp.
-        _is_active (bool): The operational status of the account.
     """
 
     # Type hints for the instance's variables
     _branch_code: str
     _account_num: str
     _balance: Decimal
-    _transactions: list[tuple[Decimal, datetime]]
 
     def __init__(
         self, branch_code: str, account_num: str, balance: Decimal = Decimal("0.00")
     ):
         """
         Initializes a new Account instance with validated attributes.
-
-        Initializes the transaction history. If a positive initial balance is
-        provided, it is recorded as the first transaction (opening deposit) with
-        the current timestamp.
 
         Args:
             branch_code (str): The code of the bank branch (validated for format).
@@ -76,9 +66,6 @@ class Account(ABC):
         self._branch_code = Account.validate_branch_code(branch_code)
         self._account_num = Account.validate_account_number(account_num)
         self._balance = Account.validate_account_initial_balance(balance)
-        self._transactions = []
-        if self._balance > 0:
-            self._transactions.append((self._balance, datetime.now()))
 
     def __repr__(self) -> str:
         """Returns the canonical string representation of the Account instance."""
@@ -133,24 +120,13 @@ class Account(ABC):
         """Returns the current balance of the account."""
         return self._balance
 
-    @property
-    def get_statement(self) -> list[tuple[Decimal, datetime]]:
-        """
-        Retrieves a safe copy of the transaction history.
-
-        Returns:
-            list[tuple[Decimal, datetime]]: A copy of the list containing all
-                transactions (amount and timestamp).
-        """
-        return self._transactions.copy()
-
     @abstractmethod
     def withdraw(self, value: Decimal) -> None:
         """
         Abstract method for withdrawing an amount from the account.
 
-        Concrete implementations must handle specific withdrawal logic and
-        record the transaction in the history.
+        Concrete implementations must handle specific withdrawal logic,
+        such as checking available limits or minimum balances.
 
         Args:
             value (Decimal): The amount to withdraw.
@@ -227,7 +203,7 @@ class Account(ABC):
             raise InvalidBalanceError(f"Invalid balance value. Cause: {e}") from e
 
     @staticmethod
-    def _validate_account_deposit(val: Decimal) -> None:
+    def validate_account_deposit(val: Decimal) -> None:
         """
         Validates the deposit value.
 
@@ -246,7 +222,7 @@ class Account(ABC):
             raise InvalidDepositError(f"Invalid deposit value. Cause: {e}") from e
 
     @staticmethod
-    def _validate_account_withdraw(val: Decimal, available_val: Decimal) -> None:
+    def validate_account_withdraw(val: Decimal, available_val: Decimal) -> None:
         """
         Validates a withdrawal value against availability rules.
 
@@ -274,14 +250,13 @@ class Account(ABC):
         to reconstruct the correct concrete class implementation upon deserialization.
 
         Returns:
-            dict: The dictionary containing account number, balance,
-                  transaction history, status, and class type.
+            dict[str, Any]: The dictionary containing account number, balance,
+                            and class type.
         """
         return {
             "branch_code": self._branch_code,
             "account_num": self._account_num,
             "balance": self._balance,
-            "transactions": self._transactions,
             "type": type(self).__name__,
         }
 
@@ -294,10 +269,10 @@ class Account(ABC):
         1. If called on the base Account class, it inspects the 'type' field in the data
            and delegates instantiation to the correct subclass (Checking or Savings).
         2. If called on (or dispatched to) a subclass, it restores the common attributes
-           (balance, transactions, status) and returns the hydrated instance.
+           (balance) and returns the hydrated instance.
 
         Args:
-            data (dict): The dictionary containing raw account data.
+            data (dict[str, Any]): The dictionary containing raw account data.
 
         Returns:
             Account: A fully initialized instance of the specific Account subclass.
@@ -325,18 +300,15 @@ class Account(ABC):
             account_num=data["account_num"],
             balance=Decimal(data["balance"]),
         )
-
-        instance._transactions = data["transactions"]
-
         return instance
 
     def deposit(self, value: Decimal) -> None:
         """
         Performs a standard deposit operation.
 
-        Validates the input value, increments the account balance, and records
-        the transaction in the history. This implementation serves as the default
-        behavior for SavingsAccount and is extended by CheckingAccount.
+        Validates the input value and increments the account balance.
+        This implementation serves as the default behavior for SavingsAccount
+        and is extended by CheckingAccount.
 
         Args:
             value (Decimal): The amount to deposit.
@@ -344,9 +316,8 @@ class Account(ABC):
         Raises:
             InvalidDepositError: If the value is not a Decimal or is less than 0.5.
         """
-        Account._validate_account_deposit(value)
+        Account.validate_account_deposit(value)
         self._balance += value
-        self._transactions.append((value, datetime.now()))
 
     def check_withdrawal(self, value: Decimal) -> WithdrawalInfo:
         """
@@ -380,7 +351,7 @@ class SavingsAccount(Account):
 
     def withdraw(self, value: Decimal) -> None:
         """
-        Withdraws a given amount from the account and records the transaction.
+        Withdraws a given amount from the account balance.
 
         For a SavingsAccount, `available_val` is simply the current positive balance.
 
@@ -390,9 +361,8 @@ class SavingsAccount(Account):
         Raises:
             InvalidWithdrawError: If the withdrawal amount is invalid or exceeds the current balance.
         """
-        Account._validate_account_withdraw(val=value, available_val=self._balance)
+        Account.validate_account_withdraw(val=value, available_val=self._balance)
         self._balance -= value
-        self._transactions.append((-value, datetime.now()))
 
 
 class CheckingAccount(Account):
@@ -478,20 +448,16 @@ class CheckingAccount(Account):
 
     def check_withdrawal(self, value: Decimal) -> WithdrawalInfo:
         """
-        Evaluates the withdrawal request against available funds and limit usage.
+        Withdraws an amount using credit if needed.
 
-        Checks if the requested value is within the total purchasing power (balance
-        plus remaining credit). It calculates whether the transaction is authorized
-        and if it necessitates the use of the overdraft limit.
+        The total available funds are calculated as `balance + CREDIT_LIMIT`.
+        `_used_credit` is updated if the balance becomes negative.
 
         Args:
-            value (Decimal): The amount requested for withdrawal.
+            value (Decimal): The amount to withdraw.
 
-        Returns:
-            WithdrawalInfo: An immutable object containing:
-                - authorized (bool): True if the total funds cover the withdrawal, False otherwise.
-                - uses_limit (bool | None): True if the operation requires overdraft,
-                  False if covered strictly by the balance, or None if unauthorized.
+        Raises:
+            InvalidWithdrawError: If the withdrawal amount is invalid or exceeds the total available funds.
         """
         total_funds = self.balance + self.remaining_credit
 
@@ -514,9 +480,8 @@ class CheckingAccount(Account):
             InvalidWithdrawError: If the withdrawal amount is invalid or exceeds the total available funds.
         """
         available = CheckingAccount.CREDIT_LIMIT + self._balance
-        Account._validate_account_withdraw(val=value, available_val=available)
+        Account.validate_account_withdraw(val=value, available_val=available)
         self._balance -= value
-        self._transactions.append((-value, datetime.now()))
 
         # Update used credit if we enter or remain in overdraft
         if self._balance < 0:
