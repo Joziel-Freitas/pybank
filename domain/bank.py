@@ -30,6 +30,7 @@ from infra.mysql_repository import MySQLRepository
 from shared.credentials import AccountCard, AuthToken
 from shared.exceptions import (
     AccountAlreadyActiveError,
+    AccountNotFoundError,
     AuthenticationError,
     BankPasswordError,
     BankSecurityError,
@@ -227,7 +228,9 @@ class Bank:
         if not hmac.compare_digest(bank_signature, token.signature):
             raise BankSecurityError("Invalid or tampered authentication token.")
 
-    def _get_account_credentials(self, token: AuthToken) -> dict[str, Any]:
+    def _get_account_credentials(
+        self, branch_code: str, account_num: str
+    ) -> dict[str, Any]:
         """
         Retrieves and validates the security credentials dictionary from the repository.
 
@@ -236,7 +239,8 @@ class Bank:
         any sensitive validation occurs.
 
         Args:
-            token (AuthToken): The valid session token containing the account reference.
+            branch_code (str): The branch code of the target account.
+            account_num (str): The target account number.
 
         Returns:
             dict[str, Any]: A validated dictionary containing the account credentials.
@@ -244,10 +248,16 @@ class Bank:
         Raises:
             TypeError: If the retrieved data is not a dictionary.
             ValueError: If any strictly required security keys are missing.
+            AccountNotFoundError: If the account does not exist in the repository.
         """
-        acc_credentials = self._repository.get_account_credentials(
-            token.branch_code, token.account_num
-        )
+        try:
+            acc_credentials = self._repository.get_account_credentials(
+                branch_code, account_num
+            )
+        except DataNotFoundError as e:
+            raise AccountNotFoundError(
+                "The requested account does not exist in our records."
+            ) from e
 
         verify.verify_instance(acc_credentials, dict)
 
@@ -293,7 +303,9 @@ class Bank:
                 the maximum allowed failed login attempts during this check.
             AuthenticationError: If the provided password does not match the hash.
         """
-        acc_credentials = self._get_account_credentials(token)
+        acc_credentials = self._get_account_credentials(
+            token.branch_code, token.account_num
+        )
         self._ensure_account_is_active(acc_credentials)
 
         branch_code = token.branch_code
@@ -434,42 +446,47 @@ class Bank:
         return self._repository.get_account(token.branch_code, token.account_num)
 
     def execute_deposit(
-        self, token: AuthToken, amount: Decimal, account: Account | None = None
+        self,
+        branch_code: str,
+        account_num: str,
+        amount: Decimal,
+        account: Account | None = None,
     ) -> None:
         """
-        Executes a secure deposit operation directly to the repository.
+        Executes a secure, public-facing deposit operation directly to the repository.
 
-        This method bypasses the full 'Vault' access (does not require a password)
-        to allow fast deposits, while strictly verifying the token integrity
-        and ensuring the target account is active.
+        This method bypasses both 'Vault' access (no password required) and
+        session validation (no AuthToken required) to allow fast deposits from
+        third parties. It strictly ensures the target account exists and is active
+        before executing the transaction.
 
         It delegates mathematical validation to the Account domain entity.
         If an active Account instance is provided (e.g., from an open session),
         its in-memory balance is updated alongside the database to ensure state consistency.
 
         Args:
-            token (AuthToken): A valid, securely signed authentication token.
+            branch_code (str): The branch code of the target account.
+            account_num (str): The target account number.
             amount (Decimal): The positive amount to be deposited.
             account (Account | None, optional): An active account instance to be
                 synchronized in memory. Defaults to None.
 
         Raises:
             TypeError: If the provided account is not an Account instance.
-            BankSecurityError: If the AuthToken is invalid or tampered with.
             InvalidDepositError: If the deposit amount violates business rules.
             BlockedAccountError: If the target account is currently frozen.
+            AccountNotFoundError: If the provided branch or account number does not exist.
         """
-        self._validate_token(token)
         Account.validate_account_deposit(amount)
 
-        acc_credentials = self._get_account_credentials(token)
+        acc_credentials = self._get_account_credentials(branch_code, account_num)
         self._ensure_account_is_active(acc_credentials)
 
         if account is not None:
             verify.verify_instance(account, Account)
             account.deposit(amount)
 
-        self._repository.save_transaction(token.branch_code, token.account_num, amount)
+        self._repository.save_transaction(branch_code, account_num, amount)
 
     def execute_withdraw(
         self, token: AuthToken, account: Account, amount: Decimal
@@ -576,7 +593,9 @@ class Bank:
         Bank.validate_password(new_password)
         verify.verify_instance(birth_date, date)
 
-        acc_credentials = self._get_account_credentials(token)
+        acc_credentials = self._get_account_credentials(
+            token.branch_code, token.account_num
+        )
 
         if acc_credentials["is_active"]:
             raise AccountAlreadyActiveError(
