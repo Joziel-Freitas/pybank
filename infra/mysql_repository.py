@@ -1,3 +1,13 @@
+"""
+MySQL Repository Persistence Module.
+
+This module provides the `MySQLRepository` class, acting as the Anti-Corruption
+Layer (ACL) between the PyBank domain entities and the relational database.
+It encapsulates all SQL statements, manages database connections, guarantees
+ACID compliance for financial operations, and maps raw database rows back
+into pure Python domain objects.
+"""
+
 from datetime import datetime
 from decimal import Decimal
 from os import environ
@@ -15,8 +25,6 @@ from shared.exceptions import (
 from .verify import verify_instance
 
 load_dotenv()
-
-type TransactionListType = list[tuple[Decimal, datetime]]
 
 
 class MySQLRepository:
@@ -46,6 +54,16 @@ class MySQLRepository:
             host=environ["DB_HOST"],
             cursorclass=cursors.DictCursor,
         )
+
+    def _insert_transaction_record(
+        self, cursor, account_id: int, amount: Decimal
+    ) -> None:
+        """Helper method to insert a transaction. Does NOT manage commits."""
+
+        sql = """INSERT INTO transactions (account_id, amount)
+        VALUES (%s, %s)"""
+
+        cursor.execute(sql, (account_id, amount))
 
     def save_client(self, client: Client) -> None:
         """
@@ -119,68 +137,11 @@ class MySQLRepository:
         client_obj = Client.from_dict(client_dict)
         return client_obj
 
-    def _save_transactions(
-        self, account_id: int, transactions_list: TransactionListType
-    ) -> None:
-        """
-        Bulk inserts a list of transaction amounts into the database.
-
-        Acts as an internal helper for `save_account` and `save_transactions`.
-        It leverages `executemany` for optimized network and database performance.
-        This method does not commit the transaction, leaving ACID control to the caller.
-
-        Args:
-            account_id (int): The internal database ID of the parent account.
-            transactions_list (TransactionListType): A list of tuples containing
-                the amount (Decimal) and timestamp (datetime) to be saved.
-        """
-        if not transactions_list:
-            return
-
-        with self._connection.cursor() as cursor:
-            insert_sql = "INSERT INTO transactions (amount, created_at, account_id) VALUES (%s, %s, %s)"
-            insert_data = [(amount, dt, account_id) for amount, dt in transactions_list]
-            cursor.executemany(insert_sql, insert_data)
-
-    def save_transactions(
-        self, account_num: str, transactions_list: TransactionListType
-    ) -> None:
-        """
-        Persists a list of new transactions for an existing account.
-
-        Acts as the public interface for Controllers to update the transaction
-        history during a user session. Automatically resolves the account's
-        internal ID and commits the operation.
-
-        Args:
-            account_num (str): The account number.
-            transactions_list (TransactionListType): The list of transactions to save.
-
-        Raises:
-            DataNotFoundError: If the provided account_num does not exist.
-        """
-        verify_instance(account_num, str)
-        verify_instance(transactions_list, list)
-
-        sql = "SELECT id FROM accounts WHERE account_num = %s"
-
-        with self._connection.cursor() as cursor:
-            cursor.execute(sql, (account_num,))
-            result = cursor.fetchone()
-
-            if not result:
-                raise DataNotFoundError
-
-            acc_id = result["id"]
-
-        self._save_transactions(acc_id, transactions_list)
-        self._connection.commit()
-
     def save_account(
         self, account: Account, client_cpf: str, password_hash: str
     ) -> None:
         """
-        Persists a new Account and its initial transactions into the database.
+        Persists a new Account and its opening deposit (if applicable) into the database.
 
         Executes an ACID-compliant transaction to ensure that the account and
         its transaction history are saved indivisibly. Validates the existence
@@ -212,7 +173,6 @@ class MySQLRepository:
                 )
 
             acc_dict = account.to_dict()
-            transactions_list = acc_dict.pop("transactions")
 
             insert_query = (
                 "INSERT INTO accounts (branch_code, account_num, account_type, balance, is_active, used_credit, password_hash, client_id)"
@@ -224,19 +184,77 @@ class MySQLRepository:
                 acc_dict["account_num"],
                 acc_dict["account_type"],
                 acc_dict["balance"],
-                acc_dict["is_active"],
+                True,
                 acc_dict.get("used_credit", None),
                 password_hash,
                 result["id"],
             )
             try:
                 cursor.execute(insert_query, values)
-                new_acc_id = cursor.lastrowid
-                self._save_transactions(new_acc_id, transactions_list)
+                if acc_dict["balance"] > 0:
+                    new_acc_id = cursor.lastrowid
+                    self._insert_transaction_record(
+                        cursor, new_acc_id, acc_dict["balance"]
+                    )
                 self._connection.commit()
             except err.IntegrityError as e:
                 self._connection.rollback()
                 raise DuplicatedDataError from e
+
+    def save_transaction(
+        self, branch_code: str, account_num: str, amount: Decimal
+    ) -> None:
+        """
+        Executes an atomic transaction to update the account balance and
+        record the financial transaction in history.
+
+        This method guarantees data consistency by performing both the balance
+        update and the transaction insertion within the same database transaction.
+        If either operation fails, a rollback is triggered.
+
+        Args:
+            branch_code (str): The 4-digit string representing the branch.
+            account_num (str): The unique 8-digit string representing the account.
+            amount (Decimal): The monetary amount (positive for deposits, negative for withdrawals).
+
+        Raises:
+            TypeError: If the arguments are of incorrect types.
+            DataNotFoundError: If the account does not exist in the database.
+            RuntimeError: If a database error occurs during the operation, triggering a rollback.
+        """
+        verify_instance(branch_code, str)
+        verify_instance(account_num, str)
+        verify_instance(amount, Decimal)
+
+        select_sql = (
+            "SELECT id FROM accounts WHERE branch_code = %s AND account_num = %s"
+        )
+
+        update_sql = "UPDATE accounts SET balance = balance + %s WHERE id = %s"
+
+        with self._connection.cursor() as cursor:
+            cursor.execute(
+                select_sql,
+                (
+                    branch_code,
+                    account_num,
+                ),
+            )
+            result = cursor.fetchone()
+
+            if not result:
+                raise DataNotFoundError("Account not found in the database")
+
+            account_id = result["id"]
+            try:
+                self._insert_transaction_record(cursor, account_id, amount)
+                cursor.execute(update_sql, (amount, account_id))
+                self._connection.commit()
+            except Exception as e:
+                self._connection.rollback()
+                raise RuntimeError(
+                    f"Failed to update account transactions due to DB error: {e}"
+                )
 
     def get_account_credentials(
         self, branch_code: str, account_num: str
@@ -264,12 +282,12 @@ class MySQLRepository:
 
     def get_account(self, branch_code: str, account_num: str) -> Account:
         """
-        Retrieves an account and its transaction history from the database.
+        Retrieves an account from the database.
 
         Acts as an Anti-Corruption Layer, mapping raw database columns back to
         the keys expected by the domain's `Account.from_dict()` factory.
-        Transactions are retrieved in descending chronological order.
-        Searches using the composite unique key (branch_code + account_num).
+        This method is highly optimized and fetches only the current state
+        of the account, omitting the transaction history for performance.
 
         Args:
             branch_code (str): The 4-digit string representing the branch.
@@ -277,7 +295,7 @@ class MySQLRepository:
 
         Returns:
             Account: A fully hydrated Account domain object (either CheckingAccount
-                or SavingsAccount), including its transaction history.
+                or SavingsAccount).
 
         Raises:
             TypeError: If the provided arguments are not strings.
@@ -291,7 +309,6 @@ class MySQLRepository:
             "account_num": "account_num",
             "account_type": "type",
             "balance": "balance",
-            "is_active": "is_active",
             "used_credit": "used_credit",
         }
         main_sql = "SELECT * FROM accounts WHERE branch_code = %s AND account_num = %s"
@@ -301,24 +318,13 @@ class MySQLRepository:
             db_acc_dict = cursor.fetchone()
 
             if not db_acc_dict:
-                raise DataNotFoundError
+                raise DataNotFoundError("Account not found in the database")
 
-            trans_sql = "SELECT amount, created_at FROM transactions WHERE account_id = %s ORDER BY created_at DESC"
-            account_id = db_acc_dict["id"]
-
-            cursor.execute(trans_sql, (account_id,))
-
-            trans_dict_list = cursor.fetchall()
-
-            transactions_list: list[tuple[Decimal, datetime]] = [
-                (row["amount"], row["created_at"]) for row in trans_dict_list
-            ]
             acc_dict: dict[str, Any] = {
                 acc_keys_mapper[k]: v
                 for k, v in db_acc_dict.items()
                 if k in acc_keys_mapper
             }
-            acc_dict["transactions"] = transactions_list
 
             if acc_dict.get("used_credit") is None:
                 acc_dict.pop("used_credit")
@@ -326,29 +332,51 @@ class MySQLRepository:
             account_obj = Account.from_dict(acc_dict)
             return account_obj
 
-    def update_balance(
-        self, branch_code: str, account_num: str, amount: Decimal
-    ) -> None:
+    def get_transactions(
+        self, branch_code: str, account_num: str, start_date: datetime
+    ) -> tuple[dict[str, Any], ...]:
         """
-        Updates the balance of an existing account in the database.
+        Retrieves a chronological record of transactions for a specific account.
+
+        Filters transactions based on a provided start date, pushing the
+        computational load of date filtering and ordering to the database motor.
+        Executes an optimized JOIN operation to link the account identifiers to
+        their respective transaction history.
 
         Args:
             branch_code (str): The 4-digit string representing the branch.
-            account_num (str): The target 8-digit account number.
-            amount (Decimal): The amount to add or subtract.
+            account_num (str): The unique 8-digit string representing the account.
+            start_date (datetime): The cutoff date; fetches all transactions occurring
+                on or after this exact timestamp.
+
+        Returns:
+            tuple[dict[str, Any], ...]: A tuple of dictionaries, where each dictionary
+                represents a transaction containing the 'amount' (Decimal) and
+                'created_at' (datetime). Ordered from newest to oldest.
 
         Raises:
-            TypeError: If the arguments are of incorrect types.
+            TypeError: If the provided arguments are not of the expected types.
         """
         verify_instance(branch_code, str)
         verify_instance(account_num, str)
-        verify_instance(amount, Decimal)
+        verify_instance(start_date, datetime)
 
-        sql = "UPDATE accounts SET balance = balance + %s WHERE branch_code = %s AND account_num = %s"
+        sql = (
+            "SELECT t.amount, t.created_at "
+            "FROM transactions AS t "
+            "JOIN accounts AS a "
+            "ON t.account_id = a.id "
+            "WHERE a.branch_code = %s "
+            "AND a.account_num = %s "
+            "AND t.created_at >= %s "
+            "ORDER BY t.created_at DESC"
+        )
 
         with self._connection.cursor() as cursor:
-            cursor.execute(sql, (amount, branch_code, account_num))
-            self._connection.commit()
+            cursor.execute(sql, (branch_code, account_num, start_date))
+            result = cursor.fetchall()
+
+        return result
 
     def register_failed_login(self, branch_code: str, account_num: str) -> None:
         """
