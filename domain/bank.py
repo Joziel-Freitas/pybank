@@ -20,7 +20,8 @@ verification, maintaining absolute consistency across the financial domain.
 
 import hashlib
 import hmac
-from datetime import date
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
 
 import bcrypt
@@ -226,6 +227,95 @@ class Bank:
         if not hmac.compare_digest(bank_signature, token.signature):
             raise BankSecurityError("Invalid or tampered authentication token.")
 
+    def _get_account_credentials(self, token: AuthToken) -> dict[str, Any]:
+        """
+        Retrieves and validates the security credentials dictionary from the repository.
+
+        Acts as an internal checkpoint to ensure that all necessary security keys
+        (active status, password hash, failed attempts) are properly loaded before
+        any sensitive validation occurs.
+
+        Args:
+            token (AuthToken): The valid session token containing the account reference.
+
+        Returns:
+            dict[str, Any]: A validated dictionary containing the account credentials.
+
+        Raises:
+            TypeError: If the retrieved data is not a dictionary.
+            ValueError: If any strictly required security keys are missing.
+        """
+        acc_credentials = self._repository.get_account_credentials(
+            token.branch_code, token.account_num
+        )
+
+        verify.verify_instance(acc_credentials, dict)
+
+        required_keys = {"is_active", "password_hash", "failed_login_attempts"}
+
+        if not required_keys.issubset(acc_credentials.keys()):
+            raise ValueError("Invalid credentials keys mapped from repository")
+
+        return acc_credentials
+
+    def _ensure_account_is_active(self, credentials_dict: dict[str, Any]) -> None:
+        """
+        Verifies the active status of an account from its credentials payload.
+
+        Acts as a centralized security checkpoint to prevent unauthorized
+        transactions on frozen or blocked accounts.
+
+        Args:
+            credentials_dict (dict[str, Any]): The validated credentials dictionary
+                retrieved from the repository.
+
+        Raises:
+            BlockedAccountError: If the 'is_active' flag is False.
+        """
+        if not credentials_dict["is_active"]:
+            raise BlockedAccountError("Account is unavailable for transactions.")
+
+    def _authorize_vault_access(self, token: AuthToken, password: str) -> None:
+        """
+        The internal security checkpoint and brute-force mitigation mechanism.
+
+        This method performs the heavy lifting of security validation without
+        incurring the cost of hydrating a full Account entity. It validates
+        the active status, verifies the Bcrypt password hash, increments failed
+        login attempts on failure, and freezes the account if the threshold is met.
+
+        Args:
+            token (AuthToken): A valid, securely signed authentication token.
+            password (str): The raw 6-digit password provided by the user.
+
+        Raises:
+            BlockedAccountError: If the account is already frozen, or if it reaches
+                the maximum allowed failed login attempts during this check.
+            AuthenticationError: If the provided password does not match the hash.
+        """
+        acc_credentials = self._get_account_credentials(token)
+        self._ensure_account_is_active(acc_credentials)
+
+        branch_code = token.branch_code
+        account_num = token.account_num
+        hashed_pwd: str = acc_credentials["password_hash"]
+        failed_logins: int = acc_credentials["failed_login_attempts"]
+
+        try:
+            self._check_password(password, hashed_pwd)
+
+            if failed_logins > 0:
+                self._repository.reset_login_attempts(branch_code, account_num)
+
+        except AuthenticationError as e:
+            self._repository.register_failed_login(branch_code, account_num)
+            if (failed_logins + 1) >= 3:
+                self._repository.update_account_status(branch_code, account_num, False)
+                raise BlockedAccountError(
+                    "The account was frozen due to 3 consecutive failed login attempts."
+                ) from e
+            raise e
+
     def get_registered_client(self, cpf: str) -> Client:
         """
         Retrieves a fully hydrated client entity from the repository.
@@ -315,35 +405,13 @@ class Bank:
         signature = self._sign_token_payload(client.cpf, branch_code, account_num)
         return AuthToken(client.cpf, branch_code, account_num, signature)
 
-    def _verify_credentials_dict(self, credentials: dict[str, Any]) -> None:
-        """
-        Validates the structure of the security credentials dictionary.
-
-        Ensures that the repository returned all the necessary keys to process
-        authentication and account status checks.
-
-        Args:
-            credentials (dict[str, Any]): The raw credentials fetched from the DB.
-
-        Raises:
-            TypeError: If the argument is not a dictionary.
-            ValueError: If any strictly required security keys are missing.
-        """
-        verify.verify_instance(credentials, dict)
-
-        required_keys = {"is_active", "password_hash", "failed_login_attempts"}
-
-        if not required_keys.issubset(credentials.keys()):
-            raise ValueError("Invalid credentials keys mapped from repository")
-
     def get_access(self, token: AuthToken, password: str) -> Account:
         """
         The Vault Door. Grants access to an active, fully hydrated Account entity.
 
-        This method is the ultimate gatekeeper. It validates the AuthToken,
-        checks the account's active status, and verifies the Bcrypt password.
-        It also manages security constraints by incrementing failed login
-        attempts and freezing the account if the brute-force threshold is met.
+        This method acts as the primary gateway for sensitive operations. It delegates
+        strict security checks (brute-force mitigation, status validation, password verification)
+        to the internal authorization mechanism before securely fetching the account state.
 
         Args:
             token (AuthToken): A valid, securely signed authentication token.
@@ -361,39 +429,126 @@ class Bank:
         """
         self._validate_token(token)
         Bank.validate_password(password)
+        self._authorize_vault_access(token, password)
 
-        branch_code = token.branch_code
-        account_num = token.account_num
+        return self._repository.get_account(token.branch_code, token.account_num)
 
-        acc_credentials = self._repository.get_account_credentials(
-            branch_code, account_num
+    def execute_deposit(
+        self, token: AuthToken, amount: Decimal, account: Account | None = None
+    ) -> None:
+        """
+        Executes a secure deposit operation directly to the repository.
+
+        This method bypasses the full 'Vault' access (does not require a password)
+        to allow fast deposits, while strictly verifying the token integrity
+        and ensuring the target account is active.
+
+        It delegates mathematical validation to the Account domain entity.
+        If an active Account instance is provided (e.g., from an open session),
+        its in-memory balance is updated alongside the database to ensure state consistency.
+
+        Args:
+            token (AuthToken): A valid, securely signed authentication token.
+            amount (Decimal): The positive amount to be deposited.
+            account (Account | None, optional): An active account instance to be
+                synchronized in memory. Defaults to None.
+
+        Raises:
+            TypeError: If the provided account is not an Account instance.
+            BankSecurityError: If the AuthToken is invalid or tampered with.
+            InvalidDepositError: If the deposit amount violates business rules.
+            BlockedAccountError: If the target account is currently frozen.
+        """
+        self._validate_token(token)
+        Account.validate_account_deposit(amount)
+
+        acc_credentials = self._get_account_credentials(token)
+        self._ensure_account_is_active(acc_credentials)
+
+        if account is not None:
+            verify.verify_instance(account, Account)
+            account.deposit(amount)
+
+        self._repository.save_transaction(token.branch_code, token.account_num, amount)
+
+    def execute_withdraw(
+        self, token: AuthToken, account: Account, amount: Decimal
+    ) -> None:
+        """
+        Executes a secure withdrawal operation and persists it to the database.
+
+        This method operates under a 'Zero Trust' security model. It strictly
+        verifies that the provided AuthToken matches the identifiers of the
+        active Account object in memory, preventing cross-account manipulation
+        or session hijacking.
+
+        Business rules (such as sufficient balance and overdraft limits) are
+        delegated entirely to the Account entity. Upon successful memory update,
+        the transaction is atomically persisted to the repository as a negative value.
+
+        Args:
+            token (AuthToken): A valid, securely signed authentication token.
+            account (Account): The active, fully hydrated Account domain entity.
+            amount (Decimal): The positive monetary amount to be withdrawn.
+
+        Raises:
+            TypeError: If the arguments are not of the expected types.
+            BankSecurityError: If the token is invalid, tampered with, or if its
+                credentials do not exactly match the provided Account's identifiers.
+            InvalidWithdrawError: If the withdrawal amount violates business rules
+                (e.g., insufficient funds or exceeding overdraft limits).
+        """
+        self._validate_token(token)
+        verify.verify_instance(account, Account)
+        verify.verify_instance(amount, Decimal)
+
+        if (token.branch_code, token.account_num) != (
+            account.branch_code,
+            account.account_num,
+        ):
+            raise BankSecurityError(
+                "Security breach: Token credentials do not match the provided Account."
+            )
+        account.withdraw(amount)
+        self._repository.save_transaction(token.branch_code, token.account_num, -amount)
+
+    def get_statement(
+        self, token: AuthToken, password: str, start_date: datetime
+    ) -> tuple[dict[str, Any], ...]:
+        """
+        Retrieves a secure, chronologically ordered bank statement for a given period.
+
+        Operates under a Zero Trust model for data privacy. To avoid the heavy
+        hydration of a full Account object, this method bypasses full account retrieval
+        but strictly enforces vault authorization. This guarantees brute-force protection
+        and prevents password enumeration attacks without compromising performance.
+
+        Args:
+            token (AuthToken): A valid, securely signed authentication token.
+            password (str): The account's raw password for authorization.
+            start_date (datetime): The cutoff date for filtering transactions.
+
+        Returns:
+            tuple[dict[str, Any], ...]: A tuple of dictionaries containing the
+                'amount' and 'created_at' of each transaction, ordered from newest to oldest.
+
+        Raises:
+            TypeError: If the arguments do not match the expected types.
+            BankSecurityError: If the token is tampered with or invalid.
+            BlockedAccountError: If the account is frozen or gets frozen during the attempt.
+            AuthenticationError: If the password does not match.
+        """
+        self._validate_token(token)
+        Bank.validate_password(password)
+        verify.verify_instance(start_date, datetime)
+
+        self._authorize_vault_access(token, password)
+
+        transactions = self._repository.get_transactions(
+            token.branch_code, token.account_num, start_date
         )
 
-        self._verify_credentials_dict(acc_credentials)
-
-        hashed_pwd: str = acc_credentials["password_hash"]
-        is_active: bool = acc_credentials["is_active"]
-        failed_logins: int = acc_credentials["failed_login_attempts"]
-
-        if is_active is False:
-            raise BlockedAccountError("Inactive account. Access denied")
-
-        try:
-            self._check_password(password, hashed_pwd)
-
-            if failed_logins > 0:
-                self._repository.reset_login_attempts(branch_code, account_num)
-
-            account_obj = self._repository.get_account(branch_code, account_num)
-            return account_obj
-        except AuthenticationError as e:
-            self._repository.register_failed_login(branch_code, account_num)
-            if (failed_logins + 1) >= 3:
-                self._repository.update_account_status(branch_code, account_num, False)
-                raise BlockedAccountError(
-                    "The account was frozen due to 3 consecutive failed login attempts."
-                ) from e
-            raise e
+        return transactions
 
     def unfreeze_account(
         self, token: AuthToken, birth_date: date, new_password: str
@@ -421,13 +576,9 @@ class Bank:
         Bank.validate_password(new_password)
         verify.verify_instance(birth_date, date)
 
-        acc_credentials = self._repository.get_account_credentials(
-            token.branch_code, token.account_num
-        )
+        acc_credentials = self._get_account_credentials(token)
 
-        self._verify_credentials_dict(acc_credentials)
-
-        if acc_credentials["is_active"] is True:
+        if acc_credentials["is_active"]:
             raise AccountAlreadyActiveError(
                 "Impossible to unfreeze an operational account"
             )
