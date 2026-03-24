@@ -6,8 +6,9 @@ and visual delimiters. It acts as the 'View' in the MVC architecture, keeping th
 business logic (Controllers) decoupled from the specific output mechanism (Print/Console).
 """
 
+import os
+import subprocess
 from decimal import Decimal
-from os import system
 from time import sleep
 
 from domain.person import AccountCard
@@ -15,16 +16,16 @@ from domain.person import AccountCard
 
 def welcome() -> None:
     """Displays the application's startup banner and initial instructions."""
-    system("cls")
+    subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
     print(f"{' PyBank System ':*^43}")
     print()
-    print(f"{'Escolha o banco de sua preferência': ^43}")
+    print(f"{'Escolha uma das opções no menu': ^43}")
     print("-" * 43)
 
 
 def bye() -> None:
     """Displays the system shutdown message and exit banner."""
-    system("cls")
+    subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
     print("*" * 10, "PyBank System", "*" * 10)
     print()
     print("Saindo do sistema", end="")
@@ -126,7 +127,7 @@ def show_statement(
             'total_limit' and 'remaining' keys to display overdraft details.
             Defaults to None.
     """
-    system("cls")
+    subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
     print("\n" + "=" * 45)
     print(f"{'EXTRATO BANCÁRIO':^45}")
     print("=" * 45 + "\n")
@@ -155,7 +156,7 @@ def show_statement(
 
 
 def show_cards(client_cards: list[AccountCard]) -> None:
-    system("cls")
+    subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
     print(f"{' Seus cartões ':-^50}")
     for idx, card in enumerate(client_cards):
         print(f"{idx}: {card}")
@@ -171,7 +172,7 @@ def show_close_account_status(balance: Decimal) -> None:
     Args:
         balance (Decimal): The current balance of the account being closed.
     """
-    system("cls")
+    subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
     if balance > 0:
         print(
             f"ERRO: Você possui saldo de R${balance}. Realize o SAQUE total antes de encerrar."

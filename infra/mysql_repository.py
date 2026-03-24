@@ -276,7 +276,7 @@ class MySQLRepository:
             result = cursor.fetchone()
 
             if not result:
-                raise DataNotFoundError
+                raise DataNotFoundError("Account not found in the database")
 
             return result
 

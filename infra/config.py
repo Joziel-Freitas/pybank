@@ -24,23 +24,29 @@ class InnerConfig(TypedDict):
 ConfigMap = dict[str, InnerConfig]
 
 initial_config: ConfigMap = {
+    "main_menu": {
+        "info": "Menu principal",
+        "prompt": "1 - Transações\n2 - Gerenciamento de conta\n 3 - Criar conta\nSua opção: ",
+        "value_type": int,
+        "error_msg": "Opção inválida. Escolha entre as opções 1, 2 ou 3",
+    },
+    "transactions": {
+        "info": "Menu de transações",
+        "prompt": "1 - Depósito\n2 - Saque\n3 - Extrato\nSua opção: ",
+        "value_type": int,
+        "error_msg": "Opção inválida. Escolha entre as opções 1, 2 ou 3",
+    },
+    "management": {
+        "info": "Gerenciamento de conta",
+        "prompt": "1 - Mudança de senha\n2 - Desbloquear conta\n3 - Encerrar conta\nSua opção: ",
+        "value_type": int,
+        "error_msg": "Opção inválida. Escolha entre as opções disponíveis no menu",
+    },
     "is_client": {
-        "info": "Registro do cliente",
+        "info": "Abertura de Conta",
         "prompt": "1 - Já sou cliente\n2 - Ainda não sou cliente\nSua opção: ",
         "value_type": int,
         "error_msg": "Opção inválida. Escolha entre as opções 1 ou 2",
-    },
-    "new_account": {
-        "info": "Tipo de acesso",
-        "prompt": "1 - Acessar minha conta\n2 - Abrir nova conta\nSua opção: ",
-        "value_type": int,
-        "error_msg": "Opção inválida. Escolha entre as opções 1 ou 2",
-    },
-    "account_menu": {
-        "info": "Opções de acesso",
-        "prompt": "1 - Transações\n2 - Desbloquear conta\n3 - Encerrar conta\nSua opção: ",
-        "value_type": int,
-        "error_msg": "Opção inválida. Escolha entre as opções 1, 2 ou 3",
     },
 }
 
@@ -73,12 +79,6 @@ new_account_config: ConfigMap = {
         "value_type": int,
         "error_msg": "Opção inválida para tipo de conta. Escolha entre 1 ou 2",
     },
-    "password": {
-        "info": "Conta - Senha",
-        "prompt": "Informe um número de 6 dígitos para senha: ",
-        "value_type": str,
-        "error_msg": "Formato de senha inválido. A senha deve ser um número inteiro positivo de 6 dígitos",
-    },
     "branch_code": {
         "info": "Conta - Agência",
         "prompt": "Informe o número da agência: ",
@@ -96,6 +96,12 @@ new_account_config: ConfigMap = {
         "prompt": "Informe um valor inicial para o saldo da conta: ",
         "value_type": Decimal,
         "error_msg": "Valor inválido. O saldo deve ser um número real não negativo",
+    },
+    "password": {
+        "info": "Conta - Senha",
+        "prompt": "Informe um número de 6 dígitos para senha: ",
+        "value_type": str,
+        "error_msg": "Formato de senha inválido. A senha deve ser um número inteiro positivo de 6 dígitos",
     },
 }
 
@@ -127,11 +133,11 @@ auth_config: ConfigMap = {
 }
 
 transaction_config: ConfigMap = {
-    "operations": {
-        "info": "Transação - Escolha a operação desejada",
-        "prompt": "1 - Saque\n2 - Depósito\n3 - Extrato\nSua opção: ",
+    "use_card": {
+        "info": "Formas de acesso",
+        "prompt": "1 - Operações com cartão\n2 - Operações sem cartão\nSua opção: ",
         "value_type": int,
-        "error_msg": "Opção inválida. Escolha entre 1, 2 ou 3",
+        "error_msg": "Opção inválida. Escolha entre as opções 1 ou 2",
     },
     "password": {
         "info": "Transação - Senha",
@@ -139,11 +145,11 @@ transaction_config: ConfigMap = {
         "value_type": str,
         "error_msg": "Formato de senha inválido. A senha é um número inteiro positivo de 6 dígitos",
     },
-    "use_card": {
-        "info": "Formas de acesso",
-        "prompt": "1 - Operações com cartão\n2 - Operações sem cartão\nSua opção: ",
-        "value_type": int,
-        "error_msg": "Opção inválida. Escolha entre as opções 1 ou 2",
+    "deposit": {
+        "info": "Transação - Depósito",
+        "prompt": "Valor a depositar: ",
+        "value_type": Decimal,
+        "error_msg": "Valor inválido para depósito. Informe um valor maior que 0.5",
     },
     "withdraw": {
         "info": "Transação - Saque",
@@ -151,17 +157,17 @@ transaction_config: ConfigMap = {
         "value_type": Decimal,
         "error_msg": "Valor inválido para saque. Informe um valor maior que 0.5",
     },
-    "deposit": {
-        "info": "Transação - Depósito",
-        "prompt": "Valor a depositar: ",
-        "value_type": Decimal,
-        "error_msg": "Valor inválido para depósito. Informe um valor maior que 0.5",
-    },
     "limit": {
         "info": "Transação - Cheque Especial",
         "prompt": "Deseja usar o cheque especial?\n1 - Sim\n2 - Não\nSua opção: ",
         "value_type": int,
         "error_msg": "Opção inválida. Escolha entre as opções 1 ou 2",
+    },
+    "statement": {
+        "info": "Transação - Extrato",
+        "prompt": "1 - 30 dias\n2 - 90 dias\n3 - 180 dias\nSua opção: ",
+        "value_type": int,
+        "error_msg": "Opção inválida. Escolha entre as opções disponíveis no menu",
     },
     "options": {
         "info": "Transação - Opções",
