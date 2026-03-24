@@ -22,7 +22,7 @@ import hashlib
 import hmac
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, ClassVar
 
 import bcrypt
 from infra import verify
@@ -48,6 +48,21 @@ from .person import Client
 
 
 class Bank:
+    """
+    The aggregate root and core domain service of the PyBank system.
+
+    This class encapsulates the absolute source of truth for all business and
+    security rules. It acts as a gateway for the presentation layer, ensuring
+    that no state changes (like deposits, withdrawals, or status updates) occur
+    without strict validation and cryptographic authentication.
+
+    Attributes:
+        MAX_LOGIN_ATTEMPTS (ClassVar[int]): The universal business rule defining
+            the maximum allowed consecutive failed authentication attempts before
+            an account is automatically frozen. Currently set to 3.
+    """
+
+    MAX_LOGIN_ATTEMPTS: ClassVar[int] = 3
 
     _bank_name: str
     _branch_code: str
@@ -321,7 +336,7 @@ class Bank:
 
         except AuthenticationError as e:
             self._repository.register_failed_login(branch_code, account_num)
-            if (failed_logins + 1) >= 3:
+            if (failed_logins + 1) >= Bank.MAX_LOGIN_ATTEMPTS:
                 self._repository.update_account_status(branch_code, account_num, False)
                 raise BlockedAccountError(
                     "The account was frozen due to 3 consecutive failed login attempts."

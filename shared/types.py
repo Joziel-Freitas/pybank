@@ -10,36 +10,54 @@ promoting type safety and reducing the usage of magic strings and numbers.
 from enum import IntEnum, StrEnum
 
 
+class MainMenuType(IntEnum):
+    """
+    Enumeration representing the root navigation menu of the banking system.
+
+    Acts as the primary router for the ATM interface, directing the user's
+    intent to the appropriate functional hub.
+
+    Attributes:
+        TRANSACTION (1): Routes to financial operations (Deposit, Withdraw, Statement).
+        MANAGEMENT (2): Routes to account administration and security settings.
+        ONBOARDING (3): Routes to the registration workflow for new clients or accounts.
+    """
+
+    TRANSACTION = 1
+    MANAGEMENT = 2
+    ONBOARDING = 3
+
+
 class TransactionType(IntEnum):
     """
     Enumeration representing the supported types of financial transactions.
 
     Attributes:
-        WITHDRAW (1): Represents a money withdrawal operation.
-        DEPOSIT (2): Represents a money deposit operation.
+        DEPOSIT (1): Represents a money deposit operation.
+        WITHDRAW (2): Represents a money withdrawal operation.
         STATEMENT (3): Represents a bank statement inquiry.
     """
 
-    WITHDRAW = 1
-    DEPOSIT = 2
+    DEPOSIT = 1
+    WITHDRAW = 2
     STATEMENT = 3
 
 
-class OperationType(IntEnum):
-    """Enumeration representing the high-level operations available in the main system menu.
+class ManagementType(IntEnum):
+    """
+    Enumeration representing the account administration and security operations.
 
-    Unlike 'TransactionType', which defines specific financial actions within an account,
-    this enum controls the primary navigation flow of the application, routing the user
-    to different controllers or administrative tasks.
+    Unlike 'TransactionType', which handles monetary flow, this enum controls
+    the lifecycle and access parameters of an existing account.
 
     Attributes:
-        TRANSACTION (1): Initiates the financial transaction workflow (Deposit, Withdraw, Statement).
+        PASSWORD (1): Triggers the secure workflow to change the account password.
         UNFREEZE (2): Triggers the administrative process to reactivate a frozen account.
         CLOSE (3): Triggers the irreversible process of closing the user's bank account
                    and removing their data (subject to business rules like zero balance).
     """
 
-    TRANSACTION = 1
+    PASSWORD = 1
     UNFREEZE = 2
     CLOSE = 3
 
