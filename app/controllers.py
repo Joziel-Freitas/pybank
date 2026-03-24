@@ -4,8 +4,8 @@ from functools import partial
 from typing import Any, Callable, ClassVar, Generic, NamedTuple, TypeVar, cast
 
 from domain.account import Account, CheckingAccount, SavingsAccount
-from domain.bank import AuthToken, Bank
-from domain.person import AccountCard, Client, Person
+from domain.bank import Bank
+from domain.person import Client, Person
 from infra import config, io_utils, verify, views
 from infra.io_utils import (
     CallbackReturn,
@@ -14,6 +14,8 @@ from infra.io_utils import (
     get_single_input,
     validate_entry,
 )
+from settings import ADMIN_EXIT_CODE
+from shared.credentials import AccountCard, AuthToken
 from shared.exceptions import (
     ACCOUNT_ERROR_MAP,
     BANK_ERROR_MAP,
@@ -33,12 +35,11 @@ from shared.exceptions import (
     UserAbortError,
     map_exceptions,
 )
-from shared.types import BankContext, OperationType, TransactionType
+from shared.types import BankContext, MainMenuType, TransactionType
 from shared.validators import ValidatorCallback, boolean_validator_dec
 
 COMMON_VALIDATORS: dict[str, ValidatorCallback] = {
     "cpf": boolean_validator_dec(Person.validate_cpf),
-    "branch_code": boolean_validator_dec(Account.validate_branch_code),
     "account_num": boolean_validator_dec(Account.validate_account_number),
     "password": boolean_validator_dec(Bank.validate_password),
 }
@@ -74,7 +75,7 @@ def _verify_config_map(obj_config: config.ConfigMap) -> None:
         for key, inner_dict in obj_config.items():
             verify.verify_instance(key, str)
             verify.verify_instance(inner_dict, dict)
-    except verify.VERIFY_ERRORS as e:
+    except TypeError as e:
         raise TypeError("Unsupported configuration format") from e
 
 
@@ -240,14 +241,16 @@ class TransactionController(BaseController[Account, None]):
 
     _bank_instance: Bank
     _transaction_config: config.ConfigMap
-    _auth_token: AuthToken
+    _transaction_type: TransactionType
+    _auth_token: AuthToken | None
     _model_account: Account | None
 
     def __init__(
         self,
         bank_instance: Bank,
-        auth_token: AuthToken,
         transaction_config: config.ConfigMap,
+        transaction_type: TransactionType,
+        auth_token: AuthToken | None = None,
     ):
 
         super().__init__(Account)
@@ -261,6 +264,7 @@ class TransactionController(BaseController[Account, None]):
         self._controller_validator_cb = partial(
             validate_entry, validation_mapper=self._validation_mapper
         )
+        self._transaction_type = transaction_type
         self._auth_token = auth_token
         self._model_account = None
 
@@ -271,7 +275,7 @@ class TransactionController(BaseController[Account, None]):
         return (
             f"{class_name}("
             f"bank={self._bank_instance._bank_name!r},"
-            f"user_cpf={self._auth_token.client_cpf!r}, "
+            f"user_cpf={self._auth_token.cpf!r}, "
             f"account_accessed={has_account})"
         )
 
@@ -287,7 +291,7 @@ class TransactionController(BaseController[Account, None]):
             raise RuntimeError("Account access failed. Execute _get_access() method")
         return self._model_account
 
-    def _get_access(self) -> bool:
+    def _get_acc_access(self) -> bool:
         """
         Attempts to authorize access to the Account using the provided password.
 
@@ -311,7 +315,7 @@ class TransactionController(BaseController[Account, None]):
         )
         user_in = _assert_input(user_in, str)
         try:
-            self._model_account = self._bank_instance.get_account(
+            self._model_account = self._bank_instance._authorize_vault_access(
                 self._auth_token, user_in
             )
             return True
@@ -338,7 +342,7 @@ class TransactionController(BaseController[Account, None]):
         """
         for attempt in range(3):
             try:
-                if self._get_access():
+                if self._get_acc_access():
                     views.controller_output(mapper_key="access", status_key=True)
                     return True
 
@@ -560,6 +564,15 @@ class TransactionController(BaseController[Account, None]):
 class BankSystemController(BaseController[Bank, None]):
 
     _validation_mapper = COMMON_VALIDATORS.copy() | {
+        "account_operations": boolean_validator_dec(
+            partial(verify.verify_interval, min_val=2, max_val=5)
+        ),
+        "transactions": boolean_validator_dec(
+            partial(verify.verify_interval, min_val=1, max_val=3)
+        ),
+        "management": boolean_validator_dec(
+            partial(verify.verify_interval, min_val=1, max_val=3)
+        ),
         "is_client": boolean_validator_dec(
             partial(verify.verify_interval, min_val=1, max_val=2)
         ),
@@ -580,13 +593,16 @@ class BankSystemController(BaseController[Bank, None]):
     }
 
     _bank_instance: Bank
-    _repository: Any
+    _init_config: config.ConfigMap
+    _identification_config: config.ConfigMap
+    _new_acc_config: config.ConfigMap
     _auth_config: config.ConfigMap
-    _system_config: config.ConfigMap
-    _auth_token: AuthToken | None
+    _transaction_config: config.ConfigMap
+    _active_client: Client | None
+    _active_token: AuthToken | None
     _active_card: AccountCard | None
 
-    def __init__(self, bank_instance: Bank, repository: Any):
+    def __init__(self, bank_instance: Bank):
         """
         Initializes the BankSystemController.
 
@@ -608,25 +624,34 @@ class BankSystemController(BaseController[Bank, None]):
         verify.verify_instance(bank_instance, Bank)
         self._bank_instance = bank_instance
 
-        BankSystemController._verify_repository(repository)
-        self._repository = repository
+        config_mappers = (
+            config.initial_config,
+            config.identification_config,
+            config.new_account_config,
+            config.auth_config,
+            config.transaction_config,
+        )
 
-        _verify_config_map(config.initial_config)
-        self._system_config = config.initial_config
+        for cfg_map in config_mappers:
+            _verify_config_map(cfg_map)
 
-        _verify_config_map(config.auth_config)
+        self._init_config = config.initial_config
+        self._identification_config = config.identification_config
+        self._new_acc_config = config.new_account_config
         self._auth_config = config.auth_config
+        self._transaction_config = config.transaction_config
 
         self._controller_validator_cb = partial(
             validate_entry, validation_mapper=self._validation_mapper
         )
-        self._auth_token = None
+        self._active_client = None
+        self._active_token = None
         self._active_card = None
 
     def __repr__(self) -> str:
         class_name = type(self).__name__
 
-        token_status = "Logged In" if self._auth_token else "Logged Out"
+        token_status = "Logged In" if self._active_token else "Logged Out"
         card_status = "Card Inserted" if self._active_card else "No Card"
 
         return (
@@ -635,64 +660,6 @@ class BankSystemController(BaseController[Bank, None]):
             f"session_status={token_status!r}"
             f"hardware_status={card_status!r})"
         )
-
-    @property
-    def _active_token(self) -> AuthToken:
-        """
-        Retrieves the currently active authentication token.
-
-        Acts as a strict guard for methods that require an authenticated session.
-        If called before login (or after logout), it raises a runtime error to
-        prevent operations on an invalid state.
-
-        Returns:
-            AuthToken: The active session token.
-
-        Raises:
-            RuntimeError: If called when no user is logged in.
-        """
-        if self._auth_token is None:
-            raise RuntimeError("Property called out of order")
-        return self._auth_token
-
-    @staticmethod
-    def _verify_repository(repository) -> None:
-        required_methods = ["save", "load"]
-
-        if not all(hasattr(repository, method) for method in required_methods):
-            raise TypeError(f"Invalid Repository. Must implement: {required_methods}")
-
-    def _get_initial_options(self) -> RegisterOptions:
-        """
-        Collects the user's initial intent (Login vs. Registration).
-
-        Prompts the user to identify if they are an existing client or wish to
-        open a new account. Maps the numeric menu inputs to a structured
-        RegisterOptions named tuple for easier decision making in the main loop.
-
-        Returns:
-            RegisterOptions: A tuple containing boolean flags for 'registered'
-                             and 'new_account'.
-        """
-        is_client_map = {1: True, 2: False}
-        new_account_map = {1: False, 2: True}
-
-        is_client_raw = get_single_input(
-            "is_client", config.initial_config, self._controller_validator_cb
-        )
-        is_client_op = _assert_input(is_client_raw, int)
-        is_client = is_client_map[is_client_op]
-
-        if not is_client:
-            return RegisterOptions(registered=False, new_account=None)
-
-        new_account_raw = get_single_input(
-            "new_account", config.initial_config, self._controller_validator_cb
-        )
-        new_account_op = _assert_input(new_account_raw, int)
-        new_account = new_account_map[new_account_op]
-
-        return RegisterOptions(registered=True, new_account=new_account)
 
     def _get_password(self) -> str:
         """
@@ -844,18 +811,15 @@ class BankSystemController(BaseController[Bank, None]):
                     skip_fields=["card"],
                 )
 
-                client_cpf = _assert_input(user_inputs["cpf"], str)
+                cpf = _assert_input(user_inputs["cpf"], str)
                 branch_code = _assert_input(user_inputs["branch_code"], str)
                 account_num = _assert_input(user_inputs["account_num"], str)
             case AccountCard():
-                client_cpf = self._active_card.client_cpf
-                branch_code = self._active_card.branch_code
+                cpf = self._active_card.cpf
                 account_num = self._active_card.account_num
 
-        self._auth_token = self._bank_instance.authenticate(
-            client_cpf, branch_code, account_num
-        )
-        if self._auth_token is not None:
+        self._active_token = self._bank_instance.authenticate(cpf, account_num)
+        if self._active_token is not None:
             return True
         return False
 
@@ -890,7 +854,7 @@ class BankSystemController(BaseController[Bank, None]):
             user_in = _assert_input(user_in_raw, int)
             return {"result": 0 <= user_in < len(client_cards)}
 
-        card_idx_raw = get_single_input("card", config.auth_config, local_validator_cb)
+        card_idx_raw = get_single_input("card", self._auth_config, local_validator_cb)
         card_idx = _assert_input(card_idx_raw, int)
         self._active_card = client_cards[card_idx]
 
@@ -906,7 +870,7 @@ class BankSystemController(BaseController[Bank, None]):
 
         use_card_raw = get_single_input(
             "use_card",
-            config.transaction_config,
+            self._transaction_config,
             self._controller_validator_cb,
         )
         use_card_int = _assert_input(use_card_raw, int)
@@ -954,36 +918,6 @@ class BankSystemController(BaseController[Bank, None]):
                     views.controller_output(mapper_key="auth", status_key="0")
         self._active_card = None
         raise ControllerLoginError("Maximum login attempts exceeded")
-
-    def _get_operation_context(self) -> OperationType:
-        """
-        Prompts the authenticated user to select a service from the main menu.
-
-        Returns:
-            OperationType: The selected high-level operation (Transaction,
-                           Unfreeze, or Close Account).
-        """
-        int_context = get_single_input(
-            "account_menu", config.initial_config, self._controller_validator_cb
-        )
-        operation_context = OperationType(int_context)
-        return operation_context
-
-    def _run_transaction(self) -> None:
-        """
-        Delegates control to the TransactionController for financial operations.
-
-        Injects the current session token (`_active_token`) and Bank instance
-        into the sub-controller. This method blocks until the transaction
-        session is finished (user logs out or cancels).
-        """
-
-        controller_obj = TransactionController(
-            self._bank_instance,
-            self._active_token,
-            config.transaction_config,
-        )
-        return controller_obj.run_controller()
 
     def _unfreeze_account(self) -> None:
         """
@@ -1059,7 +993,7 @@ class BankSystemController(BaseController[Bank, None]):
             self._bank_instance.close_account(self._active_token, password)
             views.show_close_account_status(account.balance)
 
-            self._auth_token = None
+            self._active_token = None
         except NotEmptyAccountError:
             views.show_close_account_status(account.balance)
 
@@ -1163,6 +1097,57 @@ class BankSystemController(BaseController[Bank, None]):
         except UserAbortError as e:
             raise ControllerOperationError from e
 
+    def _set_transaction_controller(self, transaction_type: TransactionType) -> None:
+        controller_obj = TransactionController(
+            self._bank_instance,
+            self._transaction_config,
+            transaction_type,
+            self._active_token,
+        )
+        controller_obj.run_controller()
+
+    def _transactions_menu(self) -> None:
+        transaction_option = get_single_input(
+            "transactions", self._init_config, self._controller_validator_cb
+        )
+        transaction = TransactionType(transaction_option)
+
+        match transaction:
+            case TransactionType.DEPOSIT:
+                self._set_transaction_controller(transaction)
+            case TransactionType.WITHDRAW | TransactionType.STATEMENT:
+                self._login_loop()
+                self._set_transaction_controller(transaction)
+            case _:
+                raise RuntimeError('Unexpected transaction type')
+
+    def _management_menu(self) -> None:
+
+
+    def _main_menu(self) -> MainMenuType | None:
+        is_admin_code = None
+
+        def _main_menu_validator_cb(
+            field: str, user_input: InputType
+        ) -> CallbackReturn:
+            nonlocal is_admin_code
+
+            int_user_input = _assert_input(user_input, int)
+            is_valid_menu = 1 <= int_user_input <= 3
+            is_admin_code = user_input == ADMIN_EXIT_CODE
+
+            return {"result": is_valid_menu or is_admin_code}
+
+        main_option = get_single_input(
+            "main_menu", self._init_config, _main_menu_validator_cb
+        )
+
+        if is_admin_code:
+            views.bye()
+            return None
+
+        return MainMenuType(main_option)
+
     def run_controller(self) -> None:
         """
         Main application lifecycle orchestrator.
@@ -1181,32 +1166,16 @@ class BankSystemController(BaseController[Bank, None]):
               to correctly terminate the controller execution and return to main.py.
         """
         while True:
-            try:
-                client = self._get_initial_options()
-                if not client.registered or client.new_account:
-                    self._register_orchestrator(client)
-                    self._repository.save(self._bank_instance)
-            except (UserAbortError, ControllerRegisterError):
-                views.controller_output("general", "exit")
-                return
-            while True:
-                try:
-                    if self._auth_token is None:
-                        self._login_loop()
+            menu = self._main_menu()
 
-                    operation = self._get_operation_context()
-                    self._session(operation)
-                    self._repository.save(self._bank_instance)
-                except UserAbortError:
-                    self._auth_token = None
-                    self._active_card = None
-                    views.controller_output("general", "exit")
+            match menu:
+                case None:
                     break
-                except ControllerLoginError:
-                    self._auth_token = None
-                    self._active_card = None
-                    views.controller_output("general", "exit")
-                    break
-                except ControllerOperationError:
-                    views.controller_output("general", "cancel")
-                    continue
+                case MainMenuType.TRANSACTION:
+                    ...
+                case MainMenuType.MANAGEMENT:
+                    ...
+                case MainMenuType.ONBOARDING:
+                    ...
+                case _:
+                    raise RuntimeError("Critical error in main menu logic")
