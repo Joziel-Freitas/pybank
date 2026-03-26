@@ -26,12 +26,18 @@ ConfigMap = dict[str, InnerConfig]
 initial_config: ConfigMap = {
     "main_menu": {
         "info": "Menu principal",
-        "prompt": "1 - Transações\n2 - Gerenciamento de conta\n 3 - Criar conta\nSua opção: ",
+        "prompt": "1 - Operações\n2 - Abertura de conta\nSua opção: ",
         "value_type": int,
-        "error_msg": "Opção inválida. Escolha entre as opções 1, 2 ou 3",
+        "error_msg": "Opção inválida. Escolha entre as opções 1 ou 2",
+    },
+    "operations": {
+        "info": "Operações",
+        "prompt": "1 - Transações\n2 - Gerenciamento de conta\nSua opção: ",
+        "value_type": int,
+        "error_msg": "Opção inválida. Escolha entre as opções 1 ou 2",
     },
     "transactions": {
-        "info": "Menu de transações",
+        "info": "Transações",
         "prompt": "1 - Depósito\n2 - Saque\n3 - Extrato\nSua opção: ",
         "value_type": int,
         "error_msg": "Opção inválida. Escolha entre as opções 1, 2 ou 3",
@@ -168,11 +174,5 @@ transaction_config: ConfigMap = {
         "prompt": "1 - 30 dias\n2 - 90 dias\n3 - 180 dias\nSua opção: ",
         "value_type": int,
         "error_msg": "Opção inválida. Escolha entre as opções disponíveis no menu",
-    },
-    "options": {
-        "info": "Transação - Opções",
-        "prompt": "1 - Outra operação\n2 ou 'S' - Sair\nSua opção: ",
-        "value_type": int,
-        "error_msg": "Opção inválida. Escolha entre as opções 1, 2 ou 3",
     },
 }

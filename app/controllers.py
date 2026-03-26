@@ -15,18 +15,18 @@ from infra.io_utils import (
     validate_entry,
 )
 from settings import ADMIN_EXIT_CODE
-from shared.credentials import AccountCard, AuthToken
+from shared.credentials import AccessToken, AccountCard, AuthToken
 from shared.exceptions import (
     ACCOUNT_ERROR_MAP,
     BANK_ERROR_MAP,
     PERSON_ERROR_MAP,
     AccountNotFoundError,
+    AuthenticationError,
     BankMethodError,
     BankPasswordError,
     BankSecurityError,
     BlockedAccountError,
     ClientNotFoundError,
-    ControllerLoginError,
     ControllerOperationError,
     ControllerRegisterError,
     DomainError,
@@ -35,7 +35,13 @@ from shared.exceptions import (
     UserAbortError,
     map_exceptions,
 )
-from shared.types import BankContext, MainMenuType, TransactionType
+from shared.types import (
+    BankContext,
+    MainMenuType,
+    ManagementType,
+    OperationMenuType,
+    TransactionType,
+)
 from shared.validators import ValidatorCallback, boolean_validator_dec
 
 COMMON_VALIDATORS: dict[str, ValidatorCallback] = {
@@ -242,7 +248,7 @@ class TransactionController(BaseController[Account, None]):
     _bank_instance: Bank
     _transaction_config: config.ConfigMap
     _transaction_type: TransactionType
-    _auth_token: AuthToken | None
+    _access_token: AccessToken | None
     _model_account: Account | None
 
     def __init__(
@@ -250,7 +256,7 @@ class TransactionController(BaseController[Account, None]):
         bank_instance: Bank,
         transaction_config: config.ConfigMap,
         transaction_type: TransactionType,
-        auth_token: AuthToken | None = None,
+        access_token: AccessToken | None = None,
     ):
 
         super().__init__(Account)
@@ -265,7 +271,7 @@ class TransactionController(BaseController[Account, None]):
             validate_entry, validation_mapper=self._validation_mapper
         )
         self._transaction_type = transaction_type
-        self._auth_token = auth_token
+        self._access_token = access_token
         self._model_account = None
 
     def __repr__(self) -> str:
@@ -275,7 +281,7 @@ class TransactionController(BaseController[Account, None]):
         return (
             f"{class_name}("
             f"bank={self._bank_instance._bank_name!r},"
-            f"user_cpf={self._auth_token.cpf!r}, "
+            f"user_cpf={self._access_token.cpf!r}, "
             f"account_accessed={has_account})"
         )
 
@@ -315,8 +321,8 @@ class TransactionController(BaseController[Account, None]):
         )
         user_in = _assert_input(user_in, str)
         try:
-            self._model_account = self._bank_instance._authorize_vault_access(
-                self._auth_token, user_in
+            self._model_account = self._bank_instance.authorize_vault_access(
+                self._access_token, user_in
             )
             return True
         except AccountNotFoundError:
@@ -564,8 +570,8 @@ class TransactionController(BaseController[Account, None]):
 class BankSystemController(BaseController[Bank, None]):
 
     _validation_mapper = COMMON_VALIDATORS.copy() | {
-        "account_operations": boolean_validator_dec(
-            partial(verify.verify_interval, min_val=2, max_val=5)
+        "operations": boolean_validator_dec(
+            partial(verify.verify_interval, min_val=1, max_val=2)
         ),
         "transactions": boolean_validator_dec(
             partial(verify.verify_interval, min_val=1, max_val=3)
@@ -579,9 +585,6 @@ class BankSystemController(BaseController[Bank, None]):
         "new_account": boolean_validator_dec(
             partial(verify.verify_interval, min_val=1, max_val=2)
         ),
-        "account_menu": boolean_validator_dec(
-            partial(verify.verify_interval, min_val=1, max_val=3)
-        ),
         "acc_type": boolean_validator_dec(
             partial(verify.verify_interval, min_val=1, max_val=2)
         ),
@@ -593,13 +596,14 @@ class BankSystemController(BaseController[Bank, None]):
     }
 
     _bank_instance: Bank
-    _init_config: config.ConfigMap
+    _initial_config: config.ConfigMap
     _identification_config: config.ConfigMap
     _new_acc_config: config.ConfigMap
     _auth_config: config.ConfigMap
     _transaction_config: config.ConfigMap
-    _active_client: Client | None
-    _active_token: AuthToken | None
+    _client: Client | None
+    _active_auth_token: AuthToken | None
+    _active_access_token: AccessToken | None
     _active_card: AccountCard | None
 
     def __init__(self, bank_instance: Bank):
@@ -635,7 +639,7 @@ class BankSystemController(BaseController[Bank, None]):
         for cfg_map in config_mappers:
             _verify_config_map(cfg_map)
 
-        self._init_config = config.initial_config
+        self._initial_config = config.initial_config
         self._identification_config = config.identification_config
         self._new_acc_config = config.new_account_config
         self._auth_config = config.auth_config
@@ -644,14 +648,15 @@ class BankSystemController(BaseController[Bank, None]):
         self._controller_validator_cb = partial(
             validate_entry, validation_mapper=self._validation_mapper
         )
-        self._active_client = None
-        self._active_token = None
+        self._client = None
+        self._active_auth_token = None
+        self._active_access_token = None
         self._active_card = None
 
     def __repr__(self) -> str:
         class_name = type(self).__name__
 
-        token_status = "Logged In" if self._active_token else "Logged Out"
+        token_status = "Logged In" if self._active_auth_token else "Logged Out"
         card_status = "Card Inserted" if self._active_card else "No Card"
 
         return (
@@ -660,6 +665,13 @@ class BankSystemController(BaseController[Bank, None]):
             f"session_status={token_status!r}"
             f"hardware_status={card_status!r})"
         )
+
+    @property
+    def _active_client(self):
+        if self._client is None:
+            raise RuntimeError("Getter called without an Client instance")
+
+        return self._client
 
     def _get_password(self) -> str:
         """
@@ -786,68 +798,36 @@ class BankSystemController(BaseController[Bank, None]):
                 case _:
                     raise RuntimeError("Invalid object context")
 
-    def _get_credentials(self) -> bool:
-        """
-        Collects login credentials and attempts to authenticate with the Bank.
+    def _end_session(self) -> None:
+        self._client = None
+        self._active_card = None
+        self._active_auth_token = None
+        self._active_access_token = None
 
-        Operates in two modes based on the state of `self._active_card`:
-        1. **Card-based:** If `self._active_card` is set, credentials (CPF, Branch, Account)
-           are extracted directly from the stored object.
-        2. **Manual:** If `self._active_card` is None, prompts the user to manually enter
-           their CPF, Branch Code, and Account Number.
-
-        Delegates validation to the Bank instance. If successful, the resulting
-        AuthToken is stored in `self._auth_token`.
-
-        Returns:
-            bool: True if authentication succeeded and a token was issued.
-                  False if authentication failed (invalid credentials).
-        """
-        match self._active_card:
-            case None:
-                user_inputs = config_loop(
-                    self._auth_config,
-                    self._controller_validator_cb,
-                    skip_fields=["card"],
-                )
-
-                cpf = _assert_input(user_inputs["cpf"], str)
-                branch_code = _assert_input(user_inputs["branch_code"], str)
-                account_num = _assert_input(user_inputs["account_num"], str)
-            case AccountCard():
-                cpf = self._active_card.cpf
-                account_num = self._active_card.account_num
-
-        self._active_token = self._bank_instance.authenticate(cpf, account_num)
-        if self._active_token is not None:
-            return True
-        return False
-
-    def _select_card(self) -> None:
-        """
-        Interactively selects an account card and inserts it into the active slot.
-
-        Retrieves the client based on CPF input and displays a numbered menu of
-        available AccountCards.
-
-        Side Effects:
-            - On success: Sets `self._active_card` with the selected card object.
-            - On failure (empty list): Sets `self._active_card` to None.
-
-        Raises:
-            UserAbortError: Propagated if the user enters the exit command ('S').
-            ClientNotFoundError: If the provided CPF does not correspond to a registered client.
-        """
-
+    def _get_client(self) -> Client:
         cpf = self._get_client_cpf()
-        client = self._bank_instance.get_client(cpf)
-        client_cards = client.cards
+        return self._bank_instance.get_registered_client(cpf)
 
-        if not client_cards:
-            views.controller_output("card", None)
-            self._active_card = None
-            return
+    def _authenticate_client(self) -> AuthToken:
 
+        if not self._active_card:
+            user_inputs = config_loop(
+                self._auth_config,
+                self._controller_validator_cb,
+                skip_fields=["card", "cpf"],
+            )
+            branch_code = _assert_input(user_inputs["branch_code"], str)
+            account_num = _assert_input(user_inputs["account_num"], str)
+        else:
+            branch_code = self._active_card.branch_code
+            account_num = self._active_card.account_num
+
+        return self._bank_instance.authenticate(
+            self._active_client, branch_code, account_num
+        )
+
+    def _select_card(self) -> AccountCard:
+        client_cards = self._active_client.cards
         views.show_cards(client_cards)
 
         def local_validator_cb(field: str, user_in_raw: InputType) -> CallbackReturn:
@@ -856,7 +836,8 @@ class BankSystemController(BaseController[Bank, None]):
 
         card_idx_raw = get_single_input("card", self._auth_config, local_validator_cb)
         card_idx = _assert_input(card_idx_raw, int)
-        self._active_card = client_cards[card_idx]
+
+        return client_cards[card_idx]
 
     def _use_card_menu(self) -> bool:
         """
@@ -878,46 +859,28 @@ class BankSystemController(BaseController[Bank, None]):
 
         return use_card
 
-    def _login_loop(self) -> None:
-        """
-        Manages the authentication process, including strategy selection and retry logic.
+    def _ensure_authentication(self) -> None:
+        while True:
+            try:
+                if not self._client:
+                    self._client = self._get_client()
 
-        Flow:
-        1. Prompts the user to choose the login method (Card vs. Manual).
-        2. Executes a loop (Max 3 attempts) to authenticate.
-        3. Handles 'Card Mode' with automatic fallback:
-           - If card selection is aborted or client not found, switches to Manual Mode.
-        4. Manages the `self._active_card` state.
+                with_card = False
+                if self._active_client.cards:
+                    with_card = self._use_card_menu()
 
-        Raises:
-            ControllerLoginError: If authentication fails after 3 attempts.
-            UserAbortError: If the user cancels the manual input process.
-        """
-        with_card = self._use_card_menu()
+                if with_card:
+                    self._active_card = self._select_card()
 
-        for attempt in range(3):
-            if with_card:
-                try:
-                    self._select_card()
-                except (UserAbortError, ClientNotFoundError):
-                    with_card = False
-                    self._active_card = None
-            authenticated = self._get_credentials()
-            if authenticated:
-                views.controller_output(mapper_key="auth", status_key=True)
-                return
-            if self._active_card:
-                views.controller_output("card", False)
+                self._active_auth_token = self._authenticate_client()
+                break
+            except ClientNotFoundError:
+                self._client = None
+                continue
+            except AuthenticationError:
                 self._active_card = None
-            if attempt < 2:
-                views.controller_output(mapper_key="auth", status_key=False)
-            match attempt:
-                case 1:
-                    views.controller_output(mapper_key="auth", status_key="1")
-                case 2:
-                    views.controller_output(mapper_key="auth", status_key="0")
-        self._active_card = None
-        raise ControllerLoginError("Maximum login attempts exceeded")
+
+    def _ensure_access(self) -> None: ...
 
     def _unfreeze_account(self) -> None:
         """
@@ -946,7 +909,7 @@ class BankSystemController(BaseController[Bank, None]):
 
         try:
             success = self._bank_instance.unfreeze_account(
-                self._active_token, name, birth_date, new_password
+                self._active_auth_token, name, birth_date, new_password
             )
 
             if success:
@@ -977,7 +940,7 @@ class BankSystemController(BaseController[Bank, None]):
         """
         try:
             password = self._get_password()
-            account = self._bank_instance.get_account(self._active_token, password)
+            account = self._bank_instance.get_account(self._active_auth_token, password)
             views.controller_output("access", True)
         except AccountNotFoundError:
             views.controller_output("access", False)
@@ -990,10 +953,10 @@ class BankSystemController(BaseController[Bank, None]):
             return
 
         try:
-            self._bank_instance.close_account(self._active_token, password)
+            self._bank_instance.close_account(self._active_auth_token, password)
             views.show_close_account_status(account.balance)
 
-            self._active_token = None
+            self._active_auth_token = None
         except NotEmptyAccountError:
             views.show_close_account_status(account.balance)
 
@@ -1046,83 +1009,55 @@ class BankSystemController(BaseController[Bank, None]):
                 "The registration process was interrupted by the user"
             ) from e
 
-    def _session(self, operation: OperationType) -> None:
-        """
-        Executes the provided operation with pre-emptive status checks.
-
-        Dispatcher method that routes to specific handlers (Transaction, Unfreeze, Close).
-        It implements a 'Fail Fast' strategy:
-        1. Blocks standard operations if the account is frozen.
-        2. Blocks unfreeze attempts if the account is already active.
-
-        Note:
-            This method does NOT persist the changes to disk. The persistence layer
-            is invoked by the caller (run_controller) upon successful execution.
-
-        Args:
-            operation (OperationType): The operation selected by the user.
-
-        Raises:
-            ControllerOperationError: If the operation is blocked by status checks
-                                      or aborted by the user.
-            RuntimeError: If called without a session or with an invalid operation type.
-        """
-        # Boolean Facade: Checks status once to avoid repeated calls
-        is_active = self._bank_instance.is_account_active(self._active_token)
-
-        try:
-            # 1. Fail Fast: Block standard operations if account is frozen
-            if not is_active and operation != OperationType.UNFREEZE:
-                views.controller_output("access", "0")
-                raise ControllerOperationError()
-
-            # 2. Fail Fast: Block unfreeze attempts if already active
-            if is_active and operation == OperationType.UNFREEZE:
-                views.controller_output("unfreeze", "already_active")
-                raise ControllerOperationError()
-
-            # 3. Router
-            match operation:
-                case OperationType.TRANSACTION:
-                    self._run_transaction()
-                case OperationType.CLOSE:
-                    self._close_account()
-                case OperationType.UNFREEZE:
-                    self._unfreeze_account()
-                case _:
-                    raise RuntimeError("Invalid type for operation type")
-        except BlockedAccountError as e:
-            views.controller_output("access", "0")
-            raise ControllerOperationError from e
-        except UserAbortError as e:
-            raise ControllerOperationError from e
-
-    def _set_transaction_controller(self, transaction_type: TransactionType) -> None:
+    def _set_transaction_controller(self, transaction_type) -> None:
         controller_obj = TransactionController(
             self._bank_instance,
             self._transaction_config,
             transaction_type,
-            self._active_token,
+            self._active_access_token,
         )
         controller_obj.run_controller()
 
-    def _transactions_menu(self) -> None:
-        transaction_option = get_single_input(
-            "transactions", self._init_config, self._controller_validator_cb
-        )
-        transaction = TransactionType(transaction_option)
-
-        match transaction:
+    def _ensure_credentials(self, operation: TransactionType | ManagementType) -> None:
+        match operation:
             case TransactionType.DEPOSIT:
-                self._set_transaction_controller(transaction)
-            case TransactionType.WITHDRAW | TransactionType.STATEMENT:
-                self._login_loop()
-                self._set_transaction_controller(transaction)
+                pass
+            case ManagementType.UNFREEZE:
+                if not self._active_auth_token:
+                    self._ensure_authentication()
+            case (
+                TransactionType.WITHDRAW
+                | TransactionType.STATEMENT
+                | ManagementType.PASSWORD
+                | ManagementType.CLOSE
+            ):
+                if not self._active_auth_token:
+                    self._ensure_authentication()
+                if not self._active_access_token:
+                    self._ensure_access()
             case _:
-                raise RuntimeError('Unexpected transaction type')
+                raise RuntimeError("Critical Security Error: Unmapped operation type.")
 
-    def _management_menu(self) -> None:
+    def _continue_prompt(self) -> bool:
+        continue_mapper = {1: True, 2: False}
+        raw_option = get_single_input(
+            "session", self._initial_config, self._controller_validator_cb
+        )
+        int_option = _assert_input(raw_option, int)
+        return continue_mapper[int_option]
 
+    def _transactions_menu(self) -> None:
+        try:
+            transaction_option = get_single_input(
+                "transactions", self._initial_config, self._controller_validator_cb
+            )
+            transaction = TransactionType(transaction_option)
+            self._ensure_credentials(transaction)
+            self._set_transaction_controller(transaction)
+        except UserAbortError:
+            return
+
+    def _management_menu(self) -> None: ...
 
     def _main_menu(self) -> MainMenuType | None:
         is_admin_code = None
@@ -1133,13 +1068,13 @@ class BankSystemController(BaseController[Bank, None]):
             nonlocal is_admin_code
 
             int_user_input = _assert_input(user_input, int)
-            is_valid_menu = 1 <= int_user_input <= 3
+            is_valid_menu = int_user_input in (1, 2)
             is_admin_code = user_input == ADMIN_EXIT_CODE
 
             return {"result": is_valid_menu or is_admin_code}
 
         main_option = get_single_input(
-            "main_menu", self._init_config, _main_menu_validator_cb
+            "main_menu", self._initial_config, _main_menu_validator_cb
         )
 
         if is_admin_code:
@@ -1148,33 +1083,35 @@ class BankSystemController(BaseController[Bank, None]):
 
         return MainMenuType(main_option)
 
+    def _operation_hub(self) -> None:
+        while True:
+            try:
+                raw_operation = get_single_input(
+                    "operations", self._initial_config, self._controller_validator_cb
+                )
+                operation = OperationMenuType(_assert_input(raw_operation, int))
+            except UserAbortError:
+                self._end_session()
+                break
+
+            match operation:
+                case OperationMenuType.TRANSACTIONS:
+                    self._transactions_menu()
+                case OperationMenuType.MANAGEMENT:
+                    self._management_menu()
+                case _:
+                    raise RuntimeError("Unmapped OperationMenuType")
+
     def run_controller(self) -> None:
-        """
-        Main application lifecycle orchestrator.
-
-        Manages the high-level flow of the application using a nested loop architecture
-        and acts as the 'Transaction Boundary' for data persistence.
-
-        Responsibilities:
-        1. Global Loop: Handles User Identification (Login vs. Register).
-        2. Session Loop: Handles banking operations while logged in.
-        3. Persistence: Triggers 'repository.save()' automatically after any
-           successful registration or financial operation (Write-Through).
-
-        Exit Strategy:
-            - Catches 'UserAbortError' or 'ControllerRegisterError' in the outer loop
-              to correctly terminate the controller execution and return to main.py.
-        """
         while True:
             menu = self._main_menu()
 
+            if menu is None:
+                break
+
             match menu:
-                case None:
-                    break
-                case MainMenuType.TRANSACTION:
-                    ...
-                case MainMenuType.MANAGEMENT:
-                    ...
+                case MainMenuType.OPERATIONS:
+                    self._operation_hub()
                 case MainMenuType.ONBOARDING:
                     ...
                 case _:

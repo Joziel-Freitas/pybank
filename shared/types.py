@@ -14,18 +14,32 @@ class MainMenuType(IntEnum):
     """
     Enumeration representing the root navigation menu of the banking system.
 
-    Acts as the primary router for the ATM interface, directing the user's
-    intent to the appropriate functional hub.
+    Acts as the primary router for the ATM interface (the "External Lobby"),
+    separating existing clients seeking services from new users creating accounts.
 
     Attributes:
-        TRANSACTION (1): Routes to financial operations (Deposit, Withdraw, Statement).
-        MANAGEMENT (2): Routes to account administration and security settings.
-        ONBOARDING (3): Routes to the registration workflow for new clients or accounts.
+        OPERATIONS (1): Routes to the internal operations hub for active clients.
+        ONBOARDING (2): Routes to the registration workflow for new clients or accounts.
     """
 
-    TRANSACTION = 1
+    OPERATIONS = 1
+    ONBOARDING = 2
+
+
+class OperationMenuType(IntEnum):
+    """
+    Enumeration representing the internal operations hub (Layer 2 navigation).
+
+    Acts as the central dashboard for users entering the system, segregating
+    day-to-day financial transactions from administrative and security tasks.
+
+    Attributes:
+        TRANSACTIONS (1): Routes to financial operations (Deposit, Withdraw, Statement).
+        MANAGEMENT (2): Routes to account administration and security settings.
+    """
+
+    TRANSACTIONS = 1
     MANAGEMENT = 2
-    ONBOARDING = 3
 
 
 class TransactionType(IntEnum):
