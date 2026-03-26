@@ -27,7 +27,7 @@ from typing import Any, ClassVar
 import bcrypt
 from infra import verify
 from infra.mysql_repository import MySQLRepository
-from shared.credentials import AccountCard, AuthToken
+from shared.credentials import AccessToken, AccountCard, AuthToken
 from shared.exceptions import (
     AccountAlreadyActiveError,
     AccountNotFoundError,
@@ -139,26 +139,6 @@ class Bank:
         except verify.VERIFY_ERRORS as e:
             raise BankPasswordError(f"Invalid password. Cause: {e}")
 
-    def _insert_client(self, new_client: Client) -> None:
-        """
-        Persists a new client into the database.
-
-        Acts as an anti-corruption layer, catching database-specific integrity
-        errors and translating them into Domain exceptions.
-
-        Args:
-            new_client (Client): The fully hydrated Client domain entity.
-
-        Raises:
-            DuplicatedClientError: If a client with the same CPF already exists.
-        """
-        try:
-            self._repository.save_client(new_client)
-        except DuplicatedDataError as e:
-            raise DuplicatedClientError(
-                "Client already registered in the system"
-            ) from e
-
     def _generate_password_hash(self, password_str: str) -> str:
         """
         Generates a secure cryptographic hash for a plain-text password.
@@ -199,49 +179,113 @@ class Bank:
                 "Given password doesn't match with registered password"
             )
 
-    def _sign_token_payload(self, cpf: str, branch_code: str, account_num: str) -> str:
+    def _validate_token(self, token: AccessToken | AuthToken) -> None:
         """
-        Generates a cryptographic signature for an account payload.
+        Validates the cryptographic integrity and authenticity of a session token.
 
-        Uses HMAC with SHA-256 and the bank's secret key to ensure the payload
-        cannot be forged or altered by external entities.
+        Operates seamlessly with both AuthToken (Lobby access) and AccessToken
+        (Vault access). Utilizing a pattern matching approach, it dynamically
+        reconstructs the expected payload. For AccessTokens, it enforces a Zero
+        Trust model by fetching the freshest password hash from the repository,
+        acting as an automatic session invalidator if the user's password was
+        recently changed.
 
         Args:
-            cpf (str): The client's CPF.
-            branch_code (str): The account's branch code.
-            account_num (str): The account number.
+            token (AccessToken | AuthToken): The token instance to be validated.
+
+        Raises:
+            BankSecurityError: If the token instance is unknown, or if the
+                cryptographic signature has been tampered with or invalidated.
+        """
+        match token:
+            case AuthToken():
+                payload = f"{token.cpf}:{token.branch_code}:{token.account_num}"
+            case AccessToken():
+                acc_credentials = self._get_account_credentials(
+                    token.branch_code, token.account_num
+                )
+                pwd_hash = acc_credentials["password_hash"]
+                payload = f"{token.branch_code}:{token.account_num}:{pwd_hash}"
+            case _:
+                raise BankSecurityError("Security breach: Invalid token instance")
+
+        bank_signature = self._sign_token_payload(payload)
+
+        if not hmac.compare_digest(bank_signature, token.signature):
+            raise BankSecurityError("Security breach: Tampered token.")
+
+    def _sign_token_payload(self, payload_str: str) -> str:
+        """
+        Generates a secure cryptographic signature for a given payload.
+
+        Uses HMAC (Hash-based Message Authentication Code) with SHA-256 and the
+        internal bank's secret key to ensure the payload cannot be forged or
+        altered by malicious actors.
+
+        Args:
+            payload_str (str): The raw string payload to be signed.
 
         Returns:
             str: A hexadecimal string representing the cryptographic signature.
         """
-        payload = f"{cpf}:{branch_code}:{account_num}".encode("utf-8")
+        payload_bytes = payload_str.encode("utf-8")
+        return hmac.new(self._secret_key, payload_bytes, hashlib.sha256).hexdigest()
 
-        signature = hmac.new(self._secret_key, payload, hashlib.sha256).hexdigest()
-
-        return signature
-
-    def _validate_token(self, token: AuthToken) -> None:
+    def _generate_auth_token(
+        self, cpf: str, branch_code: str, account_num: str
+    ) -> AuthToken:
         """
-        Validates the integrity and authenticity of an authentication token.
+        Issues an AuthToken for initial client identification.
 
-        Recalculates the expected signature and securely compares it to the
-        provided token's signature using a constant-time comparison to
-        prevent timing attacks.
+        This token grants 'Lobby' access, proving the client's identity and
+        allowing standard, non-sensitive operations (such as deposits) without
+        granting access to the account's vault.
 
         Args:
-            token (AuthToken): The token to be validated.
+            cpf (str): The client's unique identification number.
+            branch_code (str): The 4-digit numeric branch code.
+            account_num (str): The account number.
 
-        Raises:
-            TypeError: If the provided object is not an AuthToken.
-            BankSecurityError: If the token signature is invalid or tampered with.
+        Returns:
+            AuthToken: A securely signed identification token.
         """
-        verify.verify_instance(token, AuthToken)
+        payload = f"{cpf}:{branch_code}:{account_num}"
+        signature = self._sign_token_payload(payload)
 
-        bank_signature = self._sign_token_payload(
-            token.cpf, token.branch_code, token.account_num
+        return AuthToken(
+            cpf=cpf,
+            branch_code=branch_code,
+            account_num=account_num,
+            signature=signature,
         )
-        if not hmac.compare_digest(bank_signature, token.signature):
-            raise BankSecurityError("Invalid or tampered authentication token.")
+
+    def _generate_access_token(
+        self, auth_token: AuthToken, password_hash: str
+    ) -> AccessToken:
+        """
+        Issues a highly secure AccessToken for vault authorization.
+
+        This token represents a fully authenticated session. By injecting the
+        current database password hash into the cryptographic payload, it ensures
+        that the token becomes immediately invalid if the account password is
+        changed, providing defense-in-depth against session hijacking.
+
+        Args:
+            auth_token (AuthToken): The pre-validated identification token.
+            password_hash (str): The latest bcrypt password hash retrieved from
+                the database.
+
+        Returns:
+            AccessToken: A securely signed vault access token.
+        """
+        payload = f"{auth_token.branch_code}:{auth_token.account_num}:{password_hash}"
+        signature = self._sign_token_payload(payload)
+
+        return AccessToken(
+            branch_code=auth_token.branch_code,
+            account_num=auth_token.account_num,
+            signature=signature,
+        )
 
     def _get_account_credentials(
         self, branch_code: str, account_num: str
@@ -300,48 +344,25 @@ class Bank:
         if not credentials_dict["is_active"]:
             raise BlockedAccountError("Account is unavailable for transactions.")
 
-    def _authorize_vault_access(self, token: AuthToken, password: str) -> None:
+    def _insert_client(self, new_client: Client) -> None:
         """
-        The internal security checkpoint and brute-force mitigation mechanism.
+        Persists a new client into the database.
 
-        This method performs the heavy lifting of security validation without
-        incurring the cost of hydrating a full Account entity. It validates
-        the active status, verifies the Bcrypt password hash, increments failed
-        login attempts on failure, and freezes the account if the threshold is met.
+        Acts as an anti-corruption layer, catching database-specific integrity
+        errors and translating them into Domain exceptions.
 
         Args:
-            token (AuthToken): A valid, securely signed authentication token.
-            password (str): The raw 6-digit password provided by the user.
+            new_client (Client): The fully hydrated Client domain entity.
 
         Raises:
-            BlockedAccountError: If the account is already frozen, or if it reaches
-                the maximum allowed failed login attempts during this check.
-            AuthenticationError: If the provided password does not match the hash.
+            DuplicatedClientError: If a client with the same CPF already exists.
         """
-        acc_credentials = self._get_account_credentials(
-            token.branch_code, token.account_num
-        )
-        self._ensure_account_is_active(acc_credentials)
-
-        branch_code = token.branch_code
-        account_num = token.account_num
-        hashed_pwd: str = acc_credentials["password_hash"]
-        failed_logins: int = acc_credentials["failed_login_attempts"]
-
         try:
-            self._check_password(password, hashed_pwd)
-
-            if failed_logins > 0:
-                self._repository.reset_login_attempts(branch_code, account_num)
-
-        except AuthenticationError as e:
-            self._repository.register_failed_login(branch_code, account_num)
-            if (failed_logins + 1) >= Bank.MAX_LOGIN_ATTEMPTS:
-                self._repository.update_account_status(branch_code, account_num, False)
-                raise BlockedAccountError(
-                    "The account was frozen due to 3 consecutive failed login attempts."
-                ) from e
-            raise e
+            self._repository.save_client(new_client)
+        except DuplicatedDataError as e:
+            raise DuplicatedClientError(
+                "Client already registered in the system"
+            ) from e
 
     def get_registered_client(self, cpf: str) -> Client:
         """
@@ -429,36 +450,89 @@ class Bank:
         if not client.has_account(temp_card):
             raise AuthenticationError("Account card not found between client's cards")
 
-        signature = self._sign_token_payload(client.cpf, branch_code, account_num)
-        return AuthToken(client.cpf, branch_code, account_num, signature)
+        return self._generate_auth_token(
+            cpf=client.cpf, branch_code=branch_code, account_num=account_num
+        )
 
-    def get_access(self, token: AuthToken, password: str) -> Account:
+    def authorize_vault_access(
+        self, auth_token: AuthToken, password: str
+    ) -> AccessToken:
+        """
+        The public security checkpoint and brute-force mitigation mechanism.
+
+        This method performs the heavy lifting of security validation without
+        incurring the cost of hydrating a full Account entity. It validates
+        the active status, verifies the Bcrypt password hash, increments failed
+        login attempts on failure, and freezes the account if the threshold is met.
+        Upon success, it issues the highly secure AccessToken.
+
+        Args:
+            auth_token (AuthToken): A valid, securely signed authentication token.
+            password (str): The raw 6-digit password provided by the user.
+
+        Returns:
+            AccessToken: The cryptographic key granting full vault access.
+
+        Raises:
+            BlockedAccountError: If the account is already frozen, or if it reaches
+                the maximum allowed failed login attempts during this check.
+            AuthenticationError: If the provided password does not match the hash.
+            BankSecurityError: If the AuthToken is tampered with.
+        """
+        Bank.validate_password(password)
+        self._validate_token(auth_token)
+
+        acc_credentials = self._get_account_credentials(
+            auth_token.branch_code, auth_token.account_num
+        )
+        self._ensure_account_is_active(acc_credentials)
+
+        branch_code = auth_token.branch_code
+        account_num = auth_token.account_num
+        hashed_pwd: str = acc_credentials["password_hash"]
+        failed_logins: int = acc_credentials["failed_login_attempts"]
+
+        try:
+            self._check_password(password, hashed_pwd)
+
+            if failed_logins > 0:
+                self._repository.reset_login_attempts(branch_code, account_num)
+
+            return self._generate_access_token(
+                auth_token=auth_token, password_hash=hashed_pwd
+            )
+        except AuthenticationError as e:
+            self._repository.register_failed_login(branch_code, account_num)
+            if (failed_logins + 1) >= Bank.MAX_LOGIN_ATTEMPTS:
+                self._repository.update_account_status(branch_code, account_num, False)
+                raise BlockedAccountError(
+                    "The account was frozen due to 3 consecutive failed login attempts."
+                ) from e
+            raise e
+
+    def get_account(self, access_token: AccessToken) -> Account:
         """
         The Vault Door. Grants access to an active, fully hydrated Account entity.
 
-        This method acts as the primary gateway for sensitive operations. It delegates
-        strict security checks (brute-force mitigation, status validation, password verification)
-        to the internal authorization mechanism before securely fetching the account state.
+        This method acts as the primary gateway for sensitive operations. It relies
+        on the Zero Trust verification of the AccessToken to guarantee that strict
+        security checks have already been passed.
 
         Args:
-            token (AuthToken): A valid, securely signed authentication token.
-            password (str): The raw 6-digit password provided by the user.
+            access_token (AccessToken): A valid, securely signed vault token.
 
         Returns:
             Account: The fully hydrated Account domain entity.
 
         Raises:
-            BankSecurityError: If the AuthToken is invalid or tampered with.
-            BankPasswordError: If the password format is invalid.
-            BlockedAccountError: If the account is frozen, or gets frozen
-                due to excessive failed login attempts.
-            AuthenticationError: If the provided password does not match the hash.
+            BankSecurityError: If the AccessToken is invalid, tampered with, or
+                invalidated by a recent password change.
         """
-        self._validate_token(token)
-        Bank.validate_password(password)
-        self._authorize_vault_access(token, password)
+        self._validate_token(access_token)
 
-        return self._repository.get_account(token.branch_code, token.account_num)
+        return self._repository.get_account(
+            access_token.branch_code, access_token.account_num
+        )
 
     def execute_deposit(
         self,
@@ -504,22 +578,18 @@ class Bank:
         self._repository.save_transaction(branch_code, account_num, amount)
 
     def execute_withdraw(
-        self, token: AuthToken, account: Account, amount: Decimal
+        self, access_token: AccessToken, account: Account, amount: Decimal
     ) -> None:
         """
         Executes a secure withdrawal operation and persists it to the database.
 
         This method operates under a 'Zero Trust' security model. It strictly
-        verifies that the provided AuthToken matches the identifiers of the
+        verifies that the provided AccessToken matches the identifiers of the
         active Account object in memory, preventing cross-account manipulation
         or session hijacking.
 
-        Business rules (such as sufficient balance and overdraft limits) are
-        delegated entirely to the Account entity. Upon successful memory update,
-        the transaction is atomically persisted to the repository as a negative value.
-
         Args:
-            token (AuthToken): A valid, securely signed authentication token.
+            access_token (AccessToken): A valid, securely signed vault token.
             account (Account): The active, fully hydrated Account domain entity.
             amount (Decimal): The positive monetary amount to be withdrawn.
 
@@ -527,14 +597,13 @@ class Bank:
             TypeError: If the arguments are not of the expected types.
             BankSecurityError: If the token is invalid, tampered with, or if its
                 credentials do not exactly match the provided Account's identifiers.
-            InvalidWithdrawError: If the withdrawal amount violates business rules
-                (e.g., insufficient funds or exceeding overdraft limits).
+            InvalidWithdrawError: If the withdrawal amount violates business rules.
         """
-        self._validate_token(token)
+        self._validate_token(access_token)
         verify.verify_instance(account, Account)
         verify.verify_instance(amount, Decimal)
 
-        if (token.branch_code, token.account_num) != (
+        if (access_token.branch_code, access_token.account_num) != (
             account.branch_code,
             account.account_num,
         ):
@@ -542,48 +611,44 @@ class Bank:
                 "Security breach: Token credentials do not match the provided Account."
             )
         account.withdraw(amount)
-        self._repository.save_transaction(token.branch_code, token.account_num, -amount)
+        self._repository.save_transaction(
+            access_token.branch_code, access_token.account_num, -amount
+        )
 
     def get_statement(
-        self, token: AuthToken, password: str, start_date: datetime
+        self, access_token: AccessToken, start_date: datetime
     ) -> tuple[dict[str, Any], ...]:
         """
         Retrieves a secure, chronologically ordered bank statement for a given period.
 
         Operates under a Zero Trust model for data privacy. To avoid the heavy
         hydration of a full Account object, this method bypasses full account retrieval
-        but strictly enforces vault authorization. This guarantees brute-force protection
-        and prevents password enumeration attacks without compromising performance.
+        but strictly enforces vault authorization via the AccessToken.
 
         Args:
-            token (AuthToken): A valid, securely signed authentication token.
-            password (str): The account's raw password for authorization.
+            access_token (AccessToken): A valid, securely signed vault token.
             start_date (datetime): The cutoff date for filtering transactions.
 
         Returns:
             tuple[dict[str, Any], ...]: A tuple of dictionaries containing the
-                'amount' and 'created_at' of each transaction, ordered from newest to oldest.
+                'amount' and 'created_at' of each transaction, ordered newest to oldest.
 
         Raises:
             TypeError: If the arguments do not match the expected types.
-            BankSecurityError: If the token is tampered with or invalid.
-            BlockedAccountError: If the account is frozen or gets frozen during the attempt.
-            AuthenticationError: If the password does not match.
+            BankSecurityError: If the AccessToken is tampered with or invalid.
         """
-        self._validate_token(token)
-        Bank.validate_password(password)
+        self._validate_token(access_token)
+
         verify.verify_instance(start_date, datetime)
 
-        self._authorize_vault_access(token, password)
-
         transactions = self._repository.get_transactions(
-            token.branch_code, token.account_num, start_date
+            access_token.branch_code, access_token.account_num, start_date
         )
 
         return transactions
 
     def unfreeze_account(
-        self, token: AuthToken, birth_date: date, new_password: str
+        self, auth_token: AuthToken, birth_date: date, new_password: str
     ) -> None:
         """
         Recovers and unfreezes a blocked account.
@@ -594,7 +659,7 @@ class Bank:
         account to active status.
 
         Args:
-            token (AuthToken): A valid, securely signed authentication token.
+            auth_token (AuthToken): A valid, securely signed authentication token.
             birth_date (date): The client's birth date for identity verification.
             new_password (str): The new 6-digit password to be set.
 
@@ -604,12 +669,12 @@ class Bank:
             AccountAlreadyActiveError: If the account is already operational.
             AuthenticationError: If the provided birth date does not match.
         """
-        self._validate_token(token)
+        self._validate_token(auth_token)
         Bank.validate_password(new_password)
         verify.verify_instance(birth_date, date)
 
         acc_credentials = self._get_account_credentials(
-            token.branch_code, token.account_num
+            auth_token.branch_code, auth_token.account_num
         )
 
         if acc_credentials["is_active"]:
@@ -617,7 +682,7 @@ class Bank:
                 "Impossible to unfreeze an operational account"
             )
 
-        client = self.get_registered_client(token.cpf)
+        client = self.get_registered_client(auth_token.cpf)
 
         if client.birth_date != birth_date:
             raise AuthenticationError(
@@ -627,28 +692,25 @@ class Bank:
         pwd_hash = self._generate_password_hash(new_password)
 
         self._repository.update_security_credentials(
-            token.branch_code, token.account_num, pwd_hash, True
+            auth_token.branch_code, auth_token.account_num, pwd_hash, True
         )
 
-    def close_account(self, token: AuthToken, password: str) -> None:
+    def close_account(self, access_token: AccessToken) -> None:
         """
         Permanently closes and deletes an account from the system.
 
         This method enforces a strict business rule: accounts can only be closed
-        if their financial balance is exactly zero. It requires full authentication
-        through the 'get_access' gateway before execution.
+        if their financial balance is exactly zero. It relies on the AccessToken
+        to guarantee full vault authorization.
 
         Args:
-            token (AuthToken): A valid, securely signed authentication token.
-            password (str): The raw account password to confirm the critical action.
+            access_token (AccessToken): A valid, securely signed vault token.
 
         Raises:
             NotEmptyAccountError: If the account has a positive or negative balance.
-            BlockedAccountError: If the account is frozen.
-            AuthenticationError: If the password does not match.
-            BankSecurityError: If the token is invalid.
+            BankSecurityError: If the token is invalid or tampered with.
         """
-        account_obj = self.get_access(token, password)
+        account_obj = self.get_account(access_token)
 
         if account_obj.balance != 0:
             raise NotEmptyAccountError("Account has a non-zero balance")
