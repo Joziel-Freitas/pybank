@@ -27,6 +27,7 @@ from shared.exceptions import (
     BankSecurityError,
     BlockedAccountError,
     ClientNotFoundError,
+    ControllerCredentialsError,
     ControllerOperationError,
     ControllerRegisterError,
     DomainError,
@@ -582,9 +583,6 @@ class BankSystemController(BaseController[Bank, None]):
         "is_client": boolean_validator_dec(
             partial(verify.verify_interval, min_val=1, max_val=2)
         ),
-        "new_account": boolean_validator_dec(
-            partial(verify.verify_interval, min_val=1, max_val=2)
-        ),
         "acc_type": boolean_validator_dec(
             partial(verify.verify_interval, min_val=1, max_val=2)
         ),
@@ -596,7 +594,7 @@ class BankSystemController(BaseController[Bank, None]):
     }
 
     _bank_instance: Bank
-    _initial_config: config.ConfigMap
+    _menu_config: config.ConfigMap
     _identification_config: config.ConfigMap
     _new_acc_config: config.ConfigMap
     _auth_config: config.ConfigMap
@@ -629,7 +627,7 @@ class BankSystemController(BaseController[Bank, None]):
         self._bank_instance = bank_instance
 
         config_mappers = (
-            config.initial_config,
+            config.menu_config,
             config.identification_config,
             config.new_account_config,
             config.auth_config,
@@ -639,7 +637,7 @@ class BankSystemController(BaseController[Bank, None]):
         for cfg_map in config_mappers:
             _verify_config_map(cfg_map)
 
-        self._initial_config = config.initial_config
+        self._menu_config = config.menu_config
         self._identification_config = config.identification_config
         self._new_acc_config = config.new_account_config
         self._auth_config = config.auth_config
@@ -851,7 +849,7 @@ class BankSystemController(BaseController[Bank, None]):
 
         use_card_raw = get_single_input(
             "use_card",
-            self._transaction_config,
+            self._menu_config,
             self._controller_validator_cb,
         )
         use_card_int = _assert_input(use_card_raw, int)
@@ -871,6 +869,8 @@ class BankSystemController(BaseController[Bank, None]):
 
                 if with_card:
                     self._active_card = self._select_card()
+                else:
+                    self._active_card = None
 
                 self._active_auth_token = self._authenticate_client()
                 break
@@ -880,7 +880,37 @@ class BankSystemController(BaseController[Bank, None]):
             except AuthenticationError:
                 self._active_card = None
 
-    def _ensure_access(self) -> None: ...
+        if self._active_auth_token is None:
+            raise ControllerCredentialsError("Authentication process failed")
+
+    def _ensure_access(self) -> None:
+        if not self._active_auth_token:
+            raise RuntimeError("AuthToken is needed to get vault access")
+
+        attempts_left = self._bank_instance.MAX_LOGIN_ATTEMPTS
+
+        for attempt in range(attempts_left, 0, -1):
+            raw_password = get_single_input(
+                "password", self._auth_config, self._controller_validator_cb
+            )
+            password = _assert_input(raw_password, str)
+
+            try:
+                self._active_access_token = self._bank_instance.authorize_vault_access(
+                    self._active_auth_token, password=password
+                )
+                views.controller_output(mapper_key="access", status_key=True)
+                break
+            except AuthenticationError:
+                views.controller_output(mapper_key="access", status_key=False)
+                if attempt == 2:
+                    views.controller_output(mapper_key="access", status_key="last")
+            except BlockedAccountError:
+                views.controller_output(mapper_key="access", status_key="blocked")
+                raise ControllerCredentialsError("Access process failed")
+
+        if self._active_access_token is None:
+            raise ControllerCredentialsError("Access process failed")
 
     def _unfreeze_account(self) -> None:
         """
@@ -1038,23 +1068,15 @@ class BankSystemController(BaseController[Bank, None]):
             case _:
                 raise RuntimeError("Critical Security Error: Unmapped operation type.")
 
-    def _continue_prompt(self) -> bool:
-        continue_mapper = {1: True, 2: False}
-        raw_option = get_single_input(
-            "session", self._initial_config, self._controller_validator_cb
-        )
-        int_option = _assert_input(raw_option, int)
-        return continue_mapper[int_option]
-
     def _transactions_menu(self) -> None:
         try:
             transaction_option = get_single_input(
-                "transactions", self._initial_config, self._controller_validator_cb
+                "transactions", self._menu_config, self._controller_validator_cb
             )
             transaction = TransactionType(transaction_option)
             self._ensure_credentials(transaction)
             self._set_transaction_controller(transaction)
-        except UserAbortError:
+        except (UserAbortError, ControllerCredentialsError):
             return
 
     def _management_menu(self) -> None: ...
@@ -1074,7 +1096,7 @@ class BankSystemController(BaseController[Bank, None]):
             return {"result": is_valid_menu or is_admin_code}
 
         main_option = get_single_input(
-            "main_menu", self._initial_config, _main_menu_validator_cb
+            "main_menu", self._menu_config, _main_menu_validator_cb
         )
 
         if is_admin_code:
@@ -1087,7 +1109,7 @@ class BankSystemController(BaseController[Bank, None]):
         while True:
             try:
                 raw_operation = get_single_input(
-                    "operations", self._initial_config, self._controller_validator_cb
+                    "operations", self._menu_config, self._controller_validator_cb
                 )
                 operation = OperationMenuType(_assert_input(raw_operation, int))
             except UserAbortError:

@@ -102,13 +102,14 @@ class ControllerRegisterError(ControllerError):
     """
 
 
-class ControllerLoginError(ControllerError):
+class ControllerCredentialsError(ControllerError):
     """
-    Raised when the authentication handshake fails or is aborted.
+    Raised when the system fails to acquire or validate required operational credentials.
 
-    Prevents the transition to the authorized session state. This encompasses
-    invalid credentials, exhausted retry attempts, frozen account detection
-    during login, or user cancellation at the credential prompt.
+    Acts as a strict security guard clause, preventing the transition to an authorized
+    session state or the execution of protected operations. This encompasses invalid
+    passwords, exhausted retry attempts, frozen account detection during credential
+    gathering, or unexpected validation failures in the token generation pipeline.
     """
 
 
@@ -306,7 +307,7 @@ ACCOUNT_ERROR_MAP: ErrorMapType = {
 # Maps BankSystemController lifecycle errors to specific flow contexts
 CONTROLLER_ERROR_MAP: ErrorMapType = {
     ControllerRegisterError: ControllerErrorContext.REGISTER,
-    ControllerLoginError: ControllerErrorContext.LOGIN,
+    ControllerCredentialsError: ControllerErrorContext.LOGIN,
     ControllerOperationError: ControllerErrorContext.OPERATION,
 }
 

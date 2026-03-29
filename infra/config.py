@@ -23,7 +23,7 @@ class InnerConfig(TypedDict):
 
 ConfigMap = dict[str, InnerConfig]
 
-initial_config: ConfigMap = {
+menu_config: ConfigMap = {
     "main_menu": {
         "info": "Menu principal",
         "prompt": "1 - Operações\n2 - Abertura de conta\nSua opção: ",
@@ -51,6 +51,12 @@ initial_config: ConfigMap = {
     "is_client": {
         "info": "Abertura de Conta",
         "prompt": "1 - Já sou cliente\n2 - Ainda não sou cliente\nSua opção: ",
+        "value_type": int,
+        "error_msg": "Opção inválida. Escolha entre as opções 1 ou 2",
+    },
+    "use_card": {
+        "info": "Formas de acesso",
+        "prompt": "1 - Operações com cartão\n2 - Operações sem cartão\nSua opção: ",
         "value_type": int,
         "error_msg": "Opção inválida. Escolha entre as opções 1 ou 2",
     },
@@ -130,6 +136,12 @@ auth_config: ConfigMap = {
         "value_type": str,
         "error_msg": "Formato de conta inválido. A conta é um número inteiro positivo de 8 dígitos",
     },
+    "password": {
+        "info": "Transação - Senha",
+        "prompt": "Insira a senha: ",
+        "value_type": str,
+        "error_msg": "Formato de senha inválido. A senha é um número inteiro positivo de 6 dígitos",
+    },
     "card": {
         "info": "Autenticação - Cartões",
         "prompt": "Escolha seu cartão: ",
@@ -139,18 +151,6 @@ auth_config: ConfigMap = {
 }
 
 transaction_config: ConfigMap = {
-    "use_card": {
-        "info": "Formas de acesso",
-        "prompt": "1 - Operações com cartão\n2 - Operações sem cartão\nSua opção: ",
-        "value_type": int,
-        "error_msg": "Opção inválida. Escolha entre as opções 1 ou 2",
-    },
-    "password": {
-        "info": "Transação - Senha",
-        "prompt": "Insira a senha: ",
-        "value_type": str,
-        "error_msg": "Formato de senha inválido. A senha é um número inteiro positivo de 6 dígitos",
-    },
     "deposit": {
         "info": "Transação - Depósito",
         "prompt": "Valor a depositar: ",

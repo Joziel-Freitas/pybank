@@ -37,20 +37,18 @@ def bye() -> None:
 # Dictionary mapping internal status keys to user-friendly messages
 method_mappers = {
     "general": {
-        "exit": "Voltando ao menu anterior",
+        "exit": "Sessão encerrada. Voltando à tela inicial",
         "cancel": "Operação cancelada.",
     },
     "auth": {
         True: "Autenticado com sucesso",
         False: "Falha na autenticação. Insira os dados novamente",
-        "1": "Atenção: Última tentativa. Em caso de erro, dirija-se ao atendimento",
-        "0": "Processo interrompido até a aprovação do banco",
     },
     "access": {
         True: "Acesso Concedido",
         False: "Senha incorreta. Acesso Negado",
-        "1": "Atenção: Última tentativa. Se errar a senha, a conta será bloqueada",
-        "0": "Conta BLOQUEADA por segurança. Desbloqueie a conta para usá-la novamente",
+        "last": "Atenção: Última tentativa. Se errar a senha, a conta será bloqueada",
+        "blocked": "Conta BLOQUEADA por segurança. Desbloqueie a conta para usá-la novamente",
     },
     "transaction": {
         True: "Transação realizada com sucesso",
