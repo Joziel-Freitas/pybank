@@ -350,14 +350,14 @@ class TransactionController(BaseController[Account, None]):
         for attempt in range(3):
             try:
                 if self._get_acc_access():
-                    views.controller_output(mapper_key="access", status_key=True)
+                    views.controller_output(mapper_key="access", inner_key=True)
                     return True
 
-                views.controller_output(mapper_key="access", status_key=False)
+                views.controller_output(mapper_key="access", inner_key=False)
                 if attempt == 1:
-                    views.controller_output(mapper_key="access", status_key="1")
+                    views.controller_output(mapper_key="access", inner_key="1")
             except BlockedAccountError:
-                views.controller_output(mapper_key="access", status_key="0")
+                views.controller_output(mapper_key="access", inner_key="0")
                 return None
 
     def _get_transaction_type(self) -> TransactionType:
@@ -887,9 +887,14 @@ class BankSystemController(BaseController[Bank, None]):
         if not self._active_auth_token:
             raise RuntimeError("AuthToken is needed to get vault access")
 
-        attempts_left = self._bank_instance.MAX_LOGIN_ATTEMPTS
+        attempts_left = self._bank_instance.get_remaining_login_attempts(
+            self._active_auth_token
+        )
 
         for attempt in range(attempts_left, 0, -1):
+            if attempt == 1:
+                views.controller_output(mapper_key="access", inner_key="last")
+
             raw_password = get_single_input(
                 "password", self._auth_config, self._controller_validator_cb
             )
@@ -899,14 +904,12 @@ class BankSystemController(BaseController[Bank, None]):
                 self._active_access_token = self._bank_instance.authorize_vault_access(
                     self._active_auth_token, password=password
                 )
-                views.controller_output(mapper_key="access", status_key=True)
+                views.controller_output(mapper_key="access", inner_key=True)
                 break
             except AuthenticationError:
-                views.controller_output(mapper_key="access", status_key=False)
-                if attempt == 2:
-                    views.controller_output(mapper_key="access", status_key="last")
+                views.controller_output(mapper_key="access", inner_key=False)
             except BlockedAccountError:
-                views.controller_output(mapper_key="access", status_key="blocked")
+                views.controller_output(mapper_key="access", inner_key="blocked")
                 raise ControllerCredentialsError("Access process failed")
 
         if self._active_access_token is None:
@@ -1039,6 +1042,33 @@ class BankSystemController(BaseController[Bank, None]):
                 "The registration process was interrupted by the user"
             ) from e
 
+    def _update_password(self) -> None:
+        if not self._active_access_token:
+            raise RuntimeError("Access token required to update the password")
+
+        while True:
+            views.controller_output("update_password", "1")
+            raw_pwd_1 = get_single_input(
+                "password", self._auth_config, self._controller_validator_cb
+            )
+            pwd_1 = _assert_input(raw_pwd_1, str)
+
+            views.controller_output("update_password", "2")
+            raw_pwd_2 = get_single_input(
+                "password", self._auth_config, self._controller_validator_cb
+            )
+            pwd_2 = _assert_input(raw_pwd_2, str)
+
+            matched = pwd_1 == pwd_2
+
+            if matched:
+                self._bank_instance.update_password(self._active_access_token, pwd_1)
+                self._active_access_token = None
+                views.controller_output("update_password", True)
+                break
+
+            views.controller_output("update_password", False)
+
     def _set_transaction_controller(self, transaction_type) -> None:
         controller_obj = TransactionController(
             self._bank_instance,
@@ -1079,7 +1109,25 @@ class BankSystemController(BaseController[Bank, None]):
         except (UserAbortError, ControllerCredentialsError):
             return
 
-    def _management_menu(self) -> None: ...
+    def _management_menu(self) -> None:
+        try:
+            management_option = get_single_input(
+                "management", self._menu_config, self._controller_validator_cb
+            )
+            management = ManagementType(management_option)
+            self._ensure_credentials(management)
+
+            match management:
+                case ManagementType.PASSWORD:
+                    self._update_password()
+                case ManagementType.UNFREEZE:
+                    ...
+                case ManagementType.CLOSE:
+                    ...
+                case _:
+                    raise RuntimeError("Unmapped type for ManagementType")
+        except (UserAbortError, ControllerCredentialsError):
+            return
 
     def _main_menu(self) -> MainMenuType | None:
         is_admin_code = None

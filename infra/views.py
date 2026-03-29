@@ -67,6 +67,12 @@ method_mappers = {
         "account": "Falha ao registrar sua conta: Vamos tentar novamente",
         "password": "Falha ao registrar sua senha. Vamos tentar novamente",
     },
+    "update_password": {
+        "1": "Insira sua nova senha",
+        "2": "Insira novamente sua nova senha",
+        True: "Senha alterada com sucesso",
+        False: "As senhas não conferem. Tente novamente",
+    },
     "unfreeze": {
         True: "Conta desbloqueada com sucesso",
         False: "Falha no desbloqueio da conta",
@@ -81,7 +87,7 @@ method_mappers = {
 }
 
 
-def controller_output(mapper_key: str, status_key: str | bool | None) -> None:
+def controller_output(mapper_key: str, inner_key: str | bool | None) -> None:
     """
     Retrieves and displays a standardized status message based on the operation context.
 
@@ -93,7 +99,7 @@ def controller_output(mapper_key: str, status_key: str | bool | None) -> None:
         mapper_key (str): The category of the operation (e.g., 'auth', 'transaction').
         status_key (str | bool | None): The specific result state of the operation.
     """
-    msg = method_mappers[mapper_key][status_key]
+    msg = method_mappers[mapper_key][inner_key]
 
     print()
     print(msg)
