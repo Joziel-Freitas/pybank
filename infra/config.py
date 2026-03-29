@@ -137,7 +137,7 @@ auth_config: ConfigMap = {
         "error_msg": "Formato de conta inválido. A conta é um número inteiro positivo de 8 dígitos",
     },
     "password": {
-        "info": "Transação - Senha",
+        "info": "Autenticação - Senha",
         "prompt": "Insira a senha: ",
         "value_type": str,
         "error_msg": "Formato de senha inválido. A senha é um número inteiro positivo de 6 dígitos",

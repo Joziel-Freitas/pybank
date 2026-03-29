@@ -454,6 +454,28 @@ class Bank:
             cpf=client.cpf, branch_code=branch_code, account_num=account_num
         )
 
+    def get_remaining_login_attempts(self, auth_token: AuthToken) -> int:
+        """
+        Calculates the remaining vault access attempts for an authenticated client.
+
+        Acts as a safe query method for the presentation layer to synchronize its
+        UI state with the strict security records in the database, preventing
+        unexpected account freezes without proper user warnings.
+
+        Args:
+            auth_token (AuthToken): A valid, securely signed authentication token.
+
+        Returns:
+            int: The number of remaining attempts before the account is frozen.
+        """
+        self._validate_token(auth_token)
+        acc_credentials = self._get_account_credentials(
+            auth_token.branch_code, auth_token.account_num
+        )
+        failed_attempts = acc_credentials["failed_login_attempts"]
+
+        return self.MAX_LOGIN_ATTEMPTS - failed_attempts
+
     def authorize_vault_access(
         self, auth_token: AuthToken, password: str
     ) -> AccessToken:
@@ -646,6 +668,34 @@ class Bank:
         )
 
         return transactions
+
+    def update_password(self, access_token: AccessToken, new_password: str) -> None:
+        """
+        Updates the account's password and forces an immediate session invalidation.
+
+        This method operates under a Zero Trust model, requiring full vault access
+        to authorize the change. Due to the architecture of the AccessToken (which
+        embeds the current password hash in its signature), successfully executing
+        this method will immediately invalidate the active token, requiring the
+        client to re-authenticate with the new credentials for future operations.
+
+        Args:
+            access_token (AccessToken): A valid, securely signed vault token.
+            new_password (str): The new 6-digit plain-text password to be set.
+
+        Raises:
+            BankSecurityError: If the token is invalid or tampered with.
+            BankPasswordError: If the new password format is invalid (e.g., not 6 digits).
+            TypeError: If the new password is not a string.
+        """
+        self._validate_token(access_token)
+        Bank.validate_password(new_password)
+
+        hashed_pwd = self._generate_password_hash(new_password)
+
+        self._repository.update_password(
+            access_token.branch_code, access_token.account_num, hashed_pwd
+        )
 
     def unfreeze_account(
         self, auth_token: AuthToken, birth_date: date, new_password: str
