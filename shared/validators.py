@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date
 from typing import Any, Callable
 
 from infra import verify
@@ -94,7 +94,7 @@ def validate_cpf(cpf: str) -> str:
                 f"CPF is mathematically invalid. Calculated DVs: {calculated_dv}, Actual DVs: {actual_dv}."
             )
         return cpf
-    except verify.VERIFY_ERRORS as e:
+    except (TypeError, ValueError) as e:
         raise InvalidCpfError(f"Invalid CPF. Cause: {e}") from e
 
 
@@ -118,5 +118,5 @@ def validate_date_format(date_str: str) -> date:
             or represents an invalid calendar date (e.g., '32/01/2026').
     """
     verify.verify_instance(date_str, str)
-    date_obj = datetime.strptime(date_str, "%d/%m/%Y").date()
+    date_obj = date.strptime(date_str, "%d/%m/%Y")
     return date_obj

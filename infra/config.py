@@ -109,12 +109,6 @@ new_account_config: ConfigMap = {
         "value_type": Decimal,
         "error_msg": "Valor inválido. O saldo deve ser um número real não negativo",
     },
-    "password": {
-        "info": "Conta - Senha",
-        "prompt": "Informe um número de 6 dígitos para senha: ",
-        "value_type": str,
-        "error_msg": "Formato de senha inválido. A senha deve ser um número inteiro positivo de 6 dígitos",
-    },
 }
 
 auth_config: ConfigMap = {
