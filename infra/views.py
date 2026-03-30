@@ -36,9 +36,11 @@ def bye() -> None:
 
 # Dictionary mapping internal status keys to user-friendly messages
 method_mappers = {
-    "general": {
+    "menu": {
+        "security": "Sessão encerrada por questão de segurança. Voltando à tela inicial",
         "exit": "Sessão encerrada. Voltando à tela inicial",
-        "cancel": "Operação cancelada.",
+        "cancel": "Operação cancelada. Voltando ao menu anterior",
+        "credentials": "Erro na autenticação dos dados. Voltando ao menu anterior",
     },
     "auth": {
         True: "Autenticado com sucesso",
@@ -67,17 +69,19 @@ method_mappers = {
         "account": "Falha ao registrar sua conta: Vamos tentar novamente",
         "password": "Falha ao registrar sua senha. Vamos tentar novamente",
     },
-    "update_password": {
+    "prompt_password": {
         "1": "Insira sua nova senha",
         "2": "Insira novamente sua nova senha",
-        True: "Senha alterada com sucesso",
         False: "As senhas não conferem. Tente novamente",
     },
+    "update_password": {True: "Senha alterada com sucesso"},
     "unfreeze": {
         True: "Conta desbloqueada com sucesso",
-        False: "Falha no desbloqueio da conta",
+        "authentication": "Falha na autenticação. A data de nascimento informada não corresponde",
         "already_active": "Essa conta está ativa. Impossível desbloquear",
-        "password": "Essa senha já está cadastrada. A senha deve ser única",
+    },
+    "close_account": {
+        True: "Sua conta foi encerrada corretamente seus dados removidos do sistema",
     },
     "card": {
         True: "Cartão válido",
@@ -179,11 +183,9 @@ def show_close_account_status(balance: Decimal) -> None:
     subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
     if balance > 0:
         print(
-            f"ERRO: Você possui saldo de R${balance}. Realize o SAQUE total antes de encerrar."
+            f"ERRO: Você possui saldo de R${balance}. Realize o SAQUE do valor total antes de encerrar a conta."
         )
-    elif balance < 0:
+    if balance < 0:
         print(
-            f"ERRO: Você possui dívida de R${balance}. Realize o DEPÓSITO total antes de encerrar."
+            f"ERRO: Você possui dívida de R${balance}. Realize o DEPÓSITO do valor total antes de encerrar a conta."
         )
-    else:
-        print("SUCESSO: Conta encerrada e dados removidos do sistema.")
