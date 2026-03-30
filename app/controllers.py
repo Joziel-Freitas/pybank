@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
+from datetime import date
 from decimal import Decimal
 from functools import partial
-from typing import Any, Callable, ClassVar, Generic, NamedTuple, TypeVar, cast
+from typing import Any, ClassVar, Generic, NamedTuple, TypeVar, cast
 
 from domain.account import Account, CheckingAccount, SavingsAccount
 from domain.bank import Bank
@@ -18,18 +19,16 @@ from settings import ADMIN_EXIT_CODE
 from shared.credentials import AccessToken, AccountCard, AuthToken
 from shared.exceptions import (
     ACCOUNT_ERROR_MAP,
-    BANK_ERROR_MAP,
     PERSON_ERROR_MAP,
+    AccountAlreadyActiveError,
     AccountNotFoundError,
     AuthenticationError,
-    BankMethodError,
     BankPasswordError,
     BankSecurityError,
     BlockedAccountError,
     ClientNotFoundError,
     ControllerCredentialsError,
     ControllerOperationError,
-    ControllerRegisterError,
     DomainError,
     ErrorMapType,
     NotEmptyAccountError,
@@ -37,16 +36,15 @@ from shared.exceptions import (
     map_exceptions,
 )
 from shared.types import (
-    BankContext,
     MainMenuType,
     ManagementType,
     OperationMenuType,
     TransactionType,
 )
-from shared.validators import ValidatorCallback, boolean_validator_dec
+from shared.validators import ValidatorCallback, boolean_validator_dec, validate_cpf
 
 COMMON_VALIDATORS: dict[str, ValidatorCallback] = {
-    "cpf": boolean_validator_dec(Person.validate_cpf),
+    "cpf": boolean_validator_dec(validate_cpf),
     "account_num": boolean_validator_dec(Account.validate_account_number),
     "password": boolean_validator_dec(Bank.validate_password),
 }
@@ -671,23 +669,28 @@ class BankSystemController(BaseController[Bank, None]):
 
         return self._client
 
-    def _get_password(self) -> str:
-        """
-        Helper method to collect and enforce string type for the password input.
+    def _prompt_new_password(self) -> str:
+        while True:
+            views.controller_output("update_password", "1")
+            raw_pwd_1 = get_single_input(
+                "password", self._auth_config, self._controller_validator_cb
+            )
+            pwd_1 = _assert_input(raw_pwd_1, str)
 
-        Returns:
-            str: The password provided by the user.
-        Raises:
-            RuntimeError: If the input validator returns a non-string type.
-        """
-        password = get_single_input(
-            "password", config.new_account_config, self._controller_validator_cb
-        )
-        if isinstance(password, str):
-            return password
-        raise RuntimeError(f"password must be a string, got {type(password).__name__}")
+            views.controller_output("update_password", "2")
+            raw_pwd_2 = get_single_input(
+                "password", self._auth_config, self._controller_validator_cb
+            )
+            pwd_2 = _assert_input(raw_pwd_2, str)
 
-    def _get_client_cpf(self) -> str:
+            matched = pwd_1 == pwd_2
+
+            if matched:
+                return pwd_1
+
+            views.controller_output("update_password", False)
+
+    def _prompt_cpf(self) -> str:
         """
         Helper method to collect and enforce string type for the CPF input.
 
@@ -699,6 +702,12 @@ class BankSystemController(BaseController[Bank, None]):
         )
         client_cpf = _assert_input(client_cpf, str)
         return client_cpf
+
+    def _end_session(self) -> None:
+        self._client = None
+        self._active_card = None
+        self._active_auth_token = None
+        self._active_access_token = None
 
     def _create_client(self) -> Client:
         """
@@ -730,80 +739,20 @@ class BankSystemController(BaseController[Bank, None]):
         acc_type_map = {1: CheckingAccount, 2: SavingsAccount}
 
         acc_type = get_single_input(
-            "acc_type", config.new_account_config, self._controller_validator_cb
+            "acc_type", self._new_acc_config, self._controller_validator_cb
         )
         acc_type = _assert_input(acc_type, int)
 
-        create_account_config = config.new_account_config.copy()
+        create_account_config = self._new_acc_config
         create_account_config.pop("acc_type")
-        create_account_config.pop("password")
 
         controller_obj = CreationController(
             acc_type_map[acc_type], ACCOUNT_ERROR_MAP, create_account_config
         )
         return controller_obj.run_controller()
 
-    def _try_register_loop(
-        self,
-        get_client_cb: Callable[[], ClientDataT],
-        register_fn: Callable[[ClientDataT, Account, str], None],
-        output_key: str,
-    ) -> None:
-        """
-        Orchestrates a robust registration loop with error handling and field retry.
-
-        Collects necessary data using the provided callbacks and attempts to
-        register the entity in the Bank system. If a Domain Error occurs (e.g.,
-        Duplicated CPF, Invalid Password), it catches the specific error context
-        and re-prompts only for the problematic field, rather than restarting
-        the entire process.
-
-        Args:
-            get_client_cb: Callback function to retrieve client data (Person/Client).
-            register_fn: Callback function to execute the bank registration logic.
-            output_key: The key used for View feedback messages.
-
-        Raises:
-            RuntimeError: If initial data collection fails completely.
-        """
-        client = get_client_cb()
-        account = self._create_account()
-        password = self._get_password()
-
-        if not all([client, account, password]):
-            raise RuntimeError(
-                "Registration process failed. All fields must be provided"
-            )
-
-        while True:
-            try:
-                register_fn(client, account, password)
-                views.controller_output(output_key, True)
-                break
-            except BankMethodError as error:
-                error_context = map_exceptions(error, BANK_ERROR_MAP)
-
-            match error_context:
-                case BankContext.CLIENT:
-                    client = get_client_cb()
-                    views.controller_output(output_key, "client")
-                case BankContext.ACCOUNT:
-                    account = self._create_account()
-                    views.controller_output(output_key, "account")
-                case BankContext.PASSWORD:
-                    password = self._get_password()
-                    views.controller_output(output_key, "password")
-                case _:
-                    raise RuntimeError("Invalid object context")
-
-    def _end_session(self) -> None:
-        self._client = None
-        self._active_card = None
-        self._active_auth_token = None
-        self._active_access_token = None
-
     def _get_client(self) -> Client:
-        cpf = self._get_client_cpf()
+        cpf = self._prompt_cpf()
         return self._bank_instance.get_registered_client(cpf)
 
     def _authenticate_client(self) -> AuthToken:
@@ -915,168 +864,70 @@ class BankSystemController(BaseController[Bank, None]):
         if self._active_access_token is None:
             raise ControllerCredentialsError("Access process failed")
 
-    def _unfreeze_account(self) -> None:
-        """
-        Orchestrates the account reactivation workflow for locked accounts.
-
-        Pre-condition:
-            Assumes the account is currently FROZEN. The caller (_session) is
-            responsible for verifying this state before invoking this method.
-
-        Flow:
-        1. Identification: Uses the active session token.
-        2. Security Challenge (KBA): Prompts for Name and Birth Date validation.
-        3. Credential Reset: Prompts for a new password.
-        4. Execution: Attempts to unfreeze via Bank service.
-        5. Feedback: Handles success (unlocked) or failure (data mismatch).
-        """
-        name_and_birth = config_loop(
-            config.identification_config,
-            self._controller_validator_cb,
-            skip_fields=["cpf"],
-        )
-
-        name = _assert_input(name_and_birth["name"], str)
-        birth_date = _assert_input(name_and_birth["birth_date"], str)
-        new_password = self._get_password()
-
-        try:
-            success = self._bank_instance.unfreeze_account(
-                self._active_auth_token, name, birth_date, new_password
-            )
-
-            if success:
-                views.controller_output("unfreeze", True)
-            else:
-                views.controller_output("unfreeze", False)
-        except BankPasswordError:
-            views.controller_output("unfreeze", False)
-            views.controller_output("unfreeze", "password")
-
-    def _close_account(self) -> None:
-        """
-        Orchestrates the permanent account closure workflow.
-
-        Performs a secure teardown of the user's account, ensuring all liabilities
-        or assets are resolved before deletion.
-
-        Flow:
-        1. Re-authentication: Prompts for password to confirm identity.
-        2. Validation: Checks if the account balance is zero (Guard Clause).
-        3. Execution: Calls the Bank service to permanently remove account data.
-        4. Session Cleanup: Invalidates the current session token (`_auth_token`)
-           upon success, effectively logging the user out to prevent zombie sessions.
-
-        Raises:
-            ControllerOperationError: If the user aborts the operation during
-                                      password confirmation.
-        """
-        try:
-            password = self._get_password()
-            account = self._bank_instance.get_account(self._active_auth_token, password)
-            views.controller_output("access", True)
-        except AccountNotFoundError:
-            views.controller_output("access", False)
-            return
-        except UserAbortError:
-            raise ControllerOperationError("Operation canceled by user")
-
-        if account.balance != 0:
-            views.show_close_account_status(account.balance)
-            return
-
-        try:
-            self._bank_instance.close_account(self._active_auth_token, password)
-            views.show_close_account_status(account.balance)
-
-            self._active_auth_token = None
-        except NotEmptyAccountError:
-            views.show_close_account_status(account.balance)
-
-    def _register_orchestrator(self, client: RegisterOptions) -> None:
-        """
-        Routes the registration workflow based on the user's initial choice.
-
-        Acts as an adapter layer, executing the specific registration logic
-        (New Client vs. New Account).
-
-        Note:
-            This method does NOT persist the changes to disk. The persistence layer
-            is invoked by the caller (run_controller) upon successful execution.
-
-        Args:
-            client (RegisterOptions): Tuple containing the user's intent.
-
-        Raises:
-            ControllerRegisterError: If the user aborts the process.
-            RuntimeError: If the RegisterOptions state is invalid.
-        """
-        try:
-            if not client.registered:
-
-                def new_client_adapter(cli: Client, acc: Account, pwd: str) -> None:
-                    self._bank_instance.agg_new_client(
-                        new_client=cli, new_account=acc, password=pwd
-                    )
-
-                self._try_register_loop(
-                    self._create_client, new_client_adapter, "new_client"
-                )
-            elif client.registered and client.new_account:
-
-                def new_account_adapter(cli: str, acc: Account, pwd: str):
-                    self._bank_instance.agg_new_account(
-                        client_cpf=cli, new_account=acc, password=pwd
-                    )
-
-                self._try_register_loop(
-                    self._get_client_cpf, new_account_adapter, "new_account"
-                )
-            else:
-                raise RuntimeError(
-                    "Invalid RegisterOptions tuple state. "
-                    "A registered client cannot be registered again with a registered account."
-                )
-        except UserAbortError as e:
-            raise ControllerRegisterError(
-                "The registration process was interrupted by the user"
-            ) from e
-
     def _update_password(self) -> None:
         if not self._active_access_token:
             raise RuntimeError("Access token required to update the password")
 
-        while True:
-            views.controller_output("update_password", "1")
-            raw_pwd_1 = get_single_input(
-                "password", self._auth_config, self._controller_validator_cb
+        new_password = self._prompt_new_password()
+        try:
+            self._bank_instance.update_password(self._active_access_token, new_password)
+            self._active_access_token = None
+            views.controller_output("update_password", True)
+        except BankPasswordError as e:
+            raise RuntimeError("Critical error in I/O logic") from e
+
+    def _unfreeze_account(self) -> None:
+        if self._active_auth_token is None:
+            raise RuntimeError("AuthToken required to perform the operation")
+
+        raw_birth_date = get_single_input(
+            "birth_date", self._identification_config, self._controller_validator_cb
+        )
+        new_password = self._prompt_new_password()
+
+        birth_date_str = _assert_input(raw_birth_date, str)
+        birth_date = date.strptime(birth_date_str, "%d/%m/%Y")
+
+        try:
+            self._bank_instance.unfreeze_account(
+                self._active_auth_token, birth_date, new_password
             )
-            pwd_1 = _assert_input(raw_pwd_1, str)
+            views.controller_output("unfreeze", True)
+        except AuthenticationError:
+            views.controller_output("unfreeze", "authentication")
+            raise ControllerOperationError
+        except AccountAlreadyActiveError:
+            views.controller_output("unfreeze", "already_active")
+            raise ControllerOperationError
+        except BankPasswordError as e:
+            raise RuntimeError("Critical error in I/O logic") from e
 
-            views.controller_output("update_password", "2")
-            raw_pwd_2 = get_single_input(
-                "password", self._auth_config, self._controller_validator_cb
-            )
-            pwd_2 = _assert_input(raw_pwd_2, str)
+    def _close_account(self) -> None:
+        if self._active_access_token is None:
+            raise RuntimeError("AccessToken is required to close an account")
 
-            matched = pwd_1 == pwd_2
+        account = self._bank_instance.get_account(self._active_access_token)
 
-            if matched:
-                self._bank_instance.update_password(self._active_access_token, pwd_1)
-                self._active_access_token = None
-                views.controller_output("update_password", True)
-                break
+        if account.balance != 0:
+            views.show_close_account_status(account.balance)
+            raise ControllerOperationError
 
-            views.controller_output("update_password", False)
+        try:
+            self._bank_instance.close_account(self._active_access_token)
+            views.controller_output("close_account", True)
+            self._end_session()
+        except NotEmptyAccountError:
+            views.show_close_account_status(account.balance)
+            raise ControllerOperationError
 
-    def _set_transaction_controller(self, transaction_type) -> None:
+    def _set_transaction_controller(self, transaction_type) -> TransactionController:
         controller_obj = TransactionController(
             self._bank_instance,
             self._transaction_config,
             transaction_type,
             self._active_access_token,
         )
-        controller_obj.run_controller()
+        return controller_obj
 
     def _ensure_credentials(self, operation: TransactionType | ManagementType) -> None:
         match operation:
@@ -1098,6 +949,25 @@ class BankSystemController(BaseController[Bank, None]):
             case _:
                 raise RuntimeError("Critical Security Error: Unmapped operation type.")
 
+    def _set_client_argument(self) -> Client | str:
+        is_client_mapper = {1: True, 2: False}
+        client_or_cpf = None
+
+        user_input = get_single_input(
+            "is_client", self._menu_config, self._controller_validator_cb
+        )
+        int_user_input = _assert_input(user_input, int)
+        is_client = is_client_mapper[int_user_input]
+
+    def _onboarding_workflow(self) -> None:
+
+        if is_client:
+            client_or_cpf = self._prompt_cpf()
+
+        if not is_client:
+            controller_obj = self._set_creation_controller(Client)
+            client_or_cpf = controller_obj.run_controller()
+
     def _transactions_menu(self) -> None:
         try:
             transaction_option = get_single_input(
@@ -1105,8 +975,15 @@ class BankSystemController(BaseController[Bank, None]):
             )
             transaction = TransactionType(transaction_option)
             self._ensure_credentials(transaction)
-            self._set_transaction_controller(transaction)
-        except (UserAbortError, ControllerCredentialsError):
+            controller_obj = self._set_transaction_controller(transaction)
+            controller_obj.run_controller()
+        except UserAbortError:
+            views.controller_output("menu", "cancel")
+            return
+        except ControllerCredentialsError:
+            views.controller_output("menu", "credentials")
+            return
+        except ControllerOperationError:
             return
 
     def _management_menu(self) -> None:
@@ -1115,18 +992,25 @@ class BankSystemController(BaseController[Bank, None]):
                 "management", self._menu_config, self._controller_validator_cb
             )
             management = ManagementType(management_option)
+
             self._ensure_credentials(management)
 
             match management:
                 case ManagementType.PASSWORD:
                     self._update_password()
                 case ManagementType.UNFREEZE:
-                    ...
+                    self._unfreeze_account()
                 case ManagementType.CLOSE:
-                    ...
+                    self._close_account()
                 case _:
                     raise RuntimeError("Unmapped type for ManagementType")
-        except (UserAbortError, ControllerCredentialsError):
+        except UserAbortError:
+            views.controller_output("menu", "cancel")
+            return
+        except ControllerCredentialsError:
+            views.controller_output("menu", "credentials")
+            return
+        except ControllerOperationError:
             return
 
     def _main_menu(self) -> MainMenuType | None:
@@ -1160,17 +1044,22 @@ class BankSystemController(BaseController[Bank, None]):
                     "operations", self._menu_config, self._controller_validator_cb
                 )
                 operation = OperationMenuType(_assert_input(raw_operation, int))
-            except UserAbortError:
-                self._end_session()
-                break
 
-            match operation:
-                case OperationMenuType.TRANSACTIONS:
-                    self._transactions_menu()
-                case OperationMenuType.MANAGEMENT:
-                    self._management_menu()
-                case _:
-                    raise RuntimeError("Unmapped OperationMenuType")
+                match operation:
+                    case OperationMenuType.TRANSACTIONS:
+                        self._transactions_menu()
+                    case OperationMenuType.MANAGEMENT:
+                        self._management_menu()
+                    case _:
+                        raise RuntimeError("Unmapped OperationMenuType")
+            except UserAbortError:
+                views.controller_output("menu", "exit")
+                self._end_session()
+                return
+            except BankSecurityError:
+                views.controller_output("menu", "security")
+                self._end_session()
+                return
 
     def run_controller(self) -> None:
         while True:
