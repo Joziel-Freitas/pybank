@@ -20,6 +20,7 @@ from pymysql import connect, cursors, err
 from shared.exceptions import (
     DataNotFoundError,
     DuplicatedDataError,
+    RepositoryError,
 )
 
 from .verify import verify_instance
@@ -65,30 +66,198 @@ class MySQLRepository:
 
         cursor.execute(sql, (account_id, amount))
 
-    def save_client(self, client: Client) -> None:
+    def _insert_client_record(self, cursor: cursors.DictCursor, client: Client) -> int:
         """
-        Persists a new Client entity into the database.
+        Internal helper to persist a new Client entity within an active transaction.
 
         Args:
+            cursor (cursors.DictCursor): The active database cursor.
             client (Client): The domain Client instance to be saved.
 
-        Raises:
-            TypeError: If the provided object is not a valid Client instance.
-            DuplicatedDataError: If a client with the same CPF already exists
-                in the database.
-        """
-        verify_instance(client, Client)
+        Returns:
+            int: The auto-generated database ID of the newly inserted client.
 
+        Raises:
+            DuplicatedDataError: If a client with the same CPF already exists,
+                carrying the 'client' context payload.
+        """
         query = "INSERT INTO clients (cpf, name, birth_date) VALUES (%(cpf)s, %(name)s, %(birth_date)s)"
         data = client.to_dict()
 
+        try:
+            cursor.execute(query, data)
+            return cursor.lastrowid
+        except err.IntegrityError as e:
+            raise DuplicatedDataError("client") from e
+
+    def _insert_account_record(
+        self,
+        cursor: cursors.DictCursor,
+        account: Account,
+        client_id: int,
+        password_hash: str,
+    ) -> None:
+        """
+        Internal helper to persist a new Account and its opening deposit.
+
+        Args:
+            cursor (cursors.DictCursor): The active database cursor.
+            account (Account): The domain Account instance to be saved.
+            client_id (int): The primary key ID of the parent client.
+            password_hash (str): The hashed password for account access.
+
+        Raises:
+            DuplicatedDataError: If an account with the same branch code and account_num already exists,
+                carrying the 'account' context payload.
+        """
+        acc_dict = account.to_dict()
+
+        sql = (
+            "INSERT INTO accounts (branch_code, account_num, account_type, balance, is_active, used_credit, password_hash, client_id)"
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+        )
+
+        values = (
+            acc_dict["branch_code"],
+            acc_dict["account_num"],
+            acc_dict["account_type"],
+            acc_dict["balance"],
+            True,
+            acc_dict.get("used_credit", None),
+            password_hash,
+            client_id,
+        )
+        try:
+            cursor.execute(sql, values)
+            if acc_dict["balance"] > 0:
+                new_acc_id = cursor.lastrowid
+                self._insert_transaction_record(cursor, new_acc_id, acc_dict["balance"])
+        except err.IntegrityError as e:
+            raise DuplicatedDataError("account") from e
+
+    def _get_client_id(self, cursor: cursors.DictCursor, cpf: str) -> int:
+        """
+        Internal helper to retrieve a client's primary key ID by their CPF.
+
+        Args:
+            cursor (cursors.DictCursor): The active database cursor.
+            cpf (str): The 11-digit string representing the client's CPF.
+
+        Returns:
+            int: The primary key ID of the client.
+
+        Raises:
+            DataNotFoundError: If the CPF is not found in the database,
+                carrying the 'client' context payload.
+        """
+        sql = "SELECT id FROM clients WHERE cpf = %s"
+
+        cursor.execute(sql, (cpf,))
+        result = cursor.fetchone()
+
+        if result is None:
+            raise DataNotFoundError("client")
+
+        return result["id"]
+
+    def register_account_bundle(
+        self, account: Account, client_or_cpf: Client | str, password_hash: str
+    ) -> None:
+        """
+        Executes an ACID-compliant transaction to register an account and its client.
+
+        Acts as a Facade that unifies the creation of a new client (if provided as
+        a Domain object) or resolves an existing client (if provided as a CPF string),
+        ensuring that the Account is safely linked and committed indivisibly.
+
+        Args:
+            account (Account): The new domain Account entity to be saved.
+            client_or_cpf (Client | str): The owner Client object, or their CPF.
+            password_hash (str): The hashed password for account access.
+
+        Raises:
+            TypeError: If any of the arguments do not match the expected types.
+            DataNotFoundError: If a CPF string is provided but the client does not exist.
+            DuplicatedDataError: If a unique constraint (CPF or Account Num) is violated.
+            RepositoryError: If a generic database or connection error occurs.
+        """
+        verify_instance(account, Account)
+        verify_instance(client_or_cpf, (Client, str))
+        verify_instance(password_hash, str)
+
         with self._connection.cursor() as cursor:
             try:
-                cursor.execute(query, data)
+                if isinstance(client_or_cpf, Client):
+                    client_id = self._insert_client_record(cursor, client_or_cpf)
+                else:
+                    client_id = self._get_client_id(cursor, client_or_cpf)
+
+                self._insert_account_record(cursor, account, client_id, password_hash)
                 self._connection.commit()
-            except err.IntegrityError as e:
+            except DuplicatedDataError:
                 self._connection.rollback()
-                raise DuplicatedDataError from e
+                raise
+            except DataNotFoundError:
+                self._connection.rollback()
+                raise
+            except Exception as e:
+                self._connection.rollback()
+                raise RepositoryError(f"Object's register failed due to DB error: {e}")
+
+    def save_transaction(
+        self, branch_code: str, account_num: str, amount: Decimal
+    ) -> None:
+        """
+        Executes an atomic transaction to update the account balance and
+        record the financial transaction in history.
+
+        This method guarantees data consistency by performing both the balance
+        update and the transaction insertion within the same database transaction.
+        If either operation fails, a rollback is triggered.
+
+        Args:
+            branch_code (str): The 4-digit string representing the branch.
+            account_num (str): The unique 8-digit string representing the account.
+            amount (Decimal): The monetary amount (positive for deposits, negative for withdrawals).
+
+        Raises:
+            TypeError: If the arguments are of incorrect types.
+            DataNotFoundError: If the account does not exist in the database.
+            RepositoryError: If a database error occurs during the operation, triggering a rollback.
+        """
+        verify_instance(branch_code, str)
+        verify_instance(account_num, str)
+        verify_instance(amount, Decimal)
+
+        select_sql = (
+            "SELECT id FROM accounts WHERE branch_code = %s AND account_num = %s"
+        )
+
+        update_sql = "UPDATE accounts SET balance = balance + %s WHERE id = %s"
+
+        with self._connection.cursor() as cursor:
+            cursor.execute(
+                select_sql,
+                (
+                    branch_code,
+                    account_num,
+                ),
+            )
+            result = cursor.fetchone()
+
+            if not result:
+                raise DataNotFoundError("Account not found in the database")
+
+            account_id = result["id"]
+            try:
+                self._insert_transaction_record(cursor, account_id, amount)
+                cursor.execute(update_sql, (amount, account_id))
+                self._connection.commit()
+            except Exception as e:
+                self._connection.rollback()
+                raise RepositoryError(
+                    f"Failed to update account transactions due to DB error: {e}"
+                )
 
     def get_client(self, cpf: str) -> Client:
         """
@@ -136,125 +305,6 @@ class MySQLRepository:
         client_dict["account_cards"] = cards_list
         client_obj = Client.from_dict(client_dict)
         return client_obj
-
-    def save_account(
-        self, account: Account, client_cpf: str, password_hash: str
-    ) -> None:
-        """
-        Persists a new Account and its opening deposit (if applicable) into the database.
-
-        Executes an ACID-compliant transaction to ensure that the account and
-        its transaction history are saved indivisibly. Validates the existence
-        of the parent client before insertion.
-
-        Args:
-            account (Account): The domain Account instance to be saved.
-            client_cpf (str): The CPF of the client who owns the account.
-            password_hash (str): The hashed password for account access.
-
-        Raises:
-            TypeError: If any of the provided arguments have incorrect types.
-            RuntimeError: If the provided client_cpf is not registered in the system.
-            DuplicatedDataError: If an account with the same account_num already exists.
-        """
-        verify_instance(account, Account)
-        verify_instance(client_cpf, str)
-        verify_instance(password_hash, str)
-
-        select_query = "SELECT id FROM clients WHERE cpf = %s"
-
-        with self._connection.cursor() as cursor:
-            cursor.execute(select_query, (client_cpf,))
-            result = cursor.fetchone()
-
-            if not result:
-                raise RuntimeError(
-                    "Account cannot be saved without a registered client"
-                )
-
-            acc_dict = account.to_dict()
-
-            insert_query = (
-                "INSERT INTO accounts (branch_code, account_num, account_type, balance, is_active, used_credit, password_hash, client_id)"
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
-            )
-
-            values = (
-                acc_dict["branch_code"],
-                acc_dict["account_num"],
-                acc_dict["account_type"],
-                acc_dict["balance"],
-                True,
-                acc_dict.get("used_credit", None),
-                password_hash,
-                result["id"],
-            )
-            try:
-                cursor.execute(insert_query, values)
-                if acc_dict["balance"] > 0:
-                    new_acc_id = cursor.lastrowid
-                    self._insert_transaction_record(
-                        cursor, new_acc_id, acc_dict["balance"]
-                    )
-                self._connection.commit()
-            except err.IntegrityError as e:
-                self._connection.rollback()
-                raise DuplicatedDataError from e
-
-    def save_transaction(
-        self, branch_code: str, account_num: str, amount: Decimal
-    ) -> None:
-        """
-        Executes an atomic transaction to update the account balance and
-        record the financial transaction in history.
-
-        This method guarantees data consistency by performing both the balance
-        update and the transaction insertion within the same database transaction.
-        If either operation fails, a rollback is triggered.
-
-        Args:
-            branch_code (str): The 4-digit string representing the branch.
-            account_num (str): The unique 8-digit string representing the account.
-            amount (Decimal): The monetary amount (positive for deposits, negative for withdrawals).
-
-        Raises:
-            TypeError: If the arguments are of incorrect types.
-            DataNotFoundError: If the account does not exist in the database.
-            RuntimeError: If a database error occurs during the operation, triggering a rollback.
-        """
-        verify_instance(branch_code, str)
-        verify_instance(account_num, str)
-        verify_instance(amount, Decimal)
-
-        select_sql = (
-            "SELECT id FROM accounts WHERE branch_code = %s AND account_num = %s"
-        )
-
-        update_sql = "UPDATE accounts SET balance = balance + %s WHERE id = %s"
-
-        with self._connection.cursor() as cursor:
-            cursor.execute(
-                select_sql,
-                (
-                    branch_code,
-                    account_num,
-                ),
-            )
-            result = cursor.fetchone()
-
-            if not result:
-                raise DataNotFoundError("Account not found in the database")
-
-            account_id = result["id"]
-            try:
-                self._insert_transaction_record(cursor, account_id, amount)
-                cursor.execute(update_sql, (amount, account_id))
-                self._connection.commit()
-            except Exception as e:
-                self._connection.rollback()
-                raise RuntimeError(
-                    f"Failed to update account transactions due to DB error: {e}"
-                )
 
     def get_account_credentials(
         self, branch_code: str, account_num: str
@@ -377,6 +427,59 @@ class MySQLRepository:
             result = cursor.fetchall()
 
         return result
+
+    def client_exists(self, cpf: str) -> bool:
+        """
+        Performs a highly optimized existence check for a client by CPF.
+
+        Executes a lightweight database query (SELECT 1) to determine if a
+        client record exists without hydrating the full domain entity or
+        fetching related account cards.
+
+        Args:
+            cpf (str): The 11-digit string representing the client's CPF.
+
+        Returns:
+            bool: True if the client is registered, False otherwise.
+        """
+        verify_instance(cpf, str)
+
+        sql = "SELECT 1 FROM clients WHERE cpf = %s LIMIT 1"
+
+        with self._connection.cursor() as cursor:
+            cursor.execute(sql, (cpf,))
+            result = cursor.fetchone()
+
+        return bool(result)
+
+    def account_exists(self, branch_code: str, account_num: str) -> bool:
+        """
+        Performs a highly optimized existence check for an account.
+
+        Executes a lightweight query (SELECT 1) to verify if an account is
+        registered under the specified branch and account number, completely
+        avoiding object hydration and join operations.
+
+        Args:
+            branch_code (str): The 4-digit string representing the branch.
+            account_num (str): The unique 8-digit string representing the account.
+
+        Returns:
+            bool: True if the account exists, False otherwise.
+        """
+        verify_instance(branch_code, str)
+        verify_instance(account_num, str)
+        sql = (
+            "SELECT 1 FROM accounts "
+            "WHERE branch_code = %s AND account_num = %s "
+            "LIMIT 1"
+        )
+
+        with self._connection.cursor() as cursor:
+            cursor.execute(sql, (branch_code, account_num))
+            result = cursor.fetchone()
+
+        return bool(result)
 
     def register_failed_login(self, branch_code: str, account_num: str) -> None:
         """
@@ -514,7 +617,7 @@ class MySQLRepository:
 
         Raises:
             TypeError: If any of the provided arguments have incorrect types.
-            RuntimeError: If a database error occurs, triggering a transaction rollback.
+            RepositoryError: If a database error occurs, triggering a transaction rollback.
         """
         verify_instance(is_active, bool)
         str_parameters = (branch_code, account_num, new_password_hash)
@@ -536,7 +639,7 @@ class MySQLRepository:
                 self._connection.commit()
         except Exception as e:
             self._connection.rollback()
-            raise RuntimeError(
+            raise RepositoryError(
                 f"Failed to update account credentials due to DB error: {e}"
             )
 
@@ -552,7 +655,7 @@ class MySQLRepository:
             account (Account): The fully hydrated domain Account entity to be deleted.
 
         Raises:
-            RuntimeError: If a database error occurs during the deletion process,
+            RepositoryError: If a database error occurs during the deletion process,
                 triggering a full transaction rollback to prevent orphaned records.
         """
         branch_code = account.branch_code
@@ -574,4 +677,4 @@ class MySQLRepository:
                 self._connection.commit()
         except Exception as e:
             self._connection.rollback()
-            raise RuntimeError(f"Database error during account deletion: {e}")
+            raise RepositoryError(f"Database error during account deletion: {e}")
