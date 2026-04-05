@@ -42,6 +42,7 @@ from shared.exceptions import (
     DuplicatedDataError,
     NotEmptyAccountError,
 )
+from shared.types import BankContext
 
 from .account import Account
 from .person import Client
@@ -344,25 +345,49 @@ class Bank:
         if not credentials_dict["is_active"]:
             raise BlockedAccountError("Account is unavailable for transactions.")
 
-    def _insert_client(self, new_client: Client) -> None:
+    def check_client_exists(self, cpf: str) -> bool:
         """
-        Persists a new client into the database.
+        Verifies if a client is registered in the banking system.
 
-        Acts as an anti-corruption layer, catching database-specific integrity
-        errors and translating them into Domain exceptions.
+        This is a highly optimized, lightweight check that queries the repository
+        without hydrating the full Client domain entity. Ideal for pre-validation
+        during onboarding workflows.
 
         Args:
-            new_client (Client): The fully hydrated Client domain entity.
+            cpf (str): The 11-digit string representing the client's CPF.
+
+        Returns:
+            bool: True if the client exists, False otherwise.
 
         Raises:
-            DuplicatedClientError: If a client with the same CPF already exists.
+            TypeError: If the provided CPF is not a string.
         """
-        try:
-            self._repository.save_client(new_client)
-        except DuplicatedDataError as e:
-            raise DuplicatedClientError(
-                "Client already registered in the system"
-            ) from e
+        verify.verify_instance(cpf, str)
+
+        return self._repository.client_exists(cpf)
+
+    def check_account_exists(self, branch_code: str, account_num: str) -> bool:
+        """
+        Verifies if an account is registered in the banking system.
+
+        Provides a fast, lightweight existence check avoiding the overhead of
+        loading the Account object or its transaction history. Useful for
+        preventing duplicate creation attempts at the controller level.
+
+        Args:
+            branch_code (str): The 4-digit string representing the branch.
+            account_num (str): The unique 8-digit string representing the account.
+
+        Returns:
+            bool: True if the account exists, False otherwise.
+
+        Raises:
+            TypeError: If any of the provided arguments are not strings.
+        """
+        verify.verify_instance(branch_code, str)
+        verify.verify_instance(account_num, str)
+
+        return self._repository.account_exists(branch_code, account_num)
 
     def get_registered_client(self, cpf: str) -> Client:
         """
@@ -402,6 +427,8 @@ class Bank:
             TypeError: If any arguments do not match expected types.
             BankPasswordError: If the password format is invalid.
             DuplicatedAccountError: If the account number is already taken.
+            DuplicatedClientError: If a new client CPF is already registered.
+            ClientNotFoundError: If an existing client CPF is not found.
         """
         parameters = (new_account, client_or_cpf, password)
         types = (Account, (Client, str), str)
@@ -411,19 +438,26 @@ class Bank:
 
         Bank.validate_password(password)
 
-        if isinstance(client_or_cpf, Client):
-            client_cpf = client_or_cpf.cpf
-            self._insert_client(client_or_cpf)
-        elif isinstance(client_or_cpf, str):
-            client_cpf = client_or_cpf
-            self.get_registered_client(client_cpf)
-
         pwd_hash = self._generate_password_hash(password_str=password)
 
         try:
-            self._repository.save_account(new_account, client_cpf, pwd_hash)
+            self._repository.register_account_bundle(
+                new_account, client_or_cpf, pwd_hash
+            )
         except DuplicatedDataError as e:
-            raise DuplicatedAccountError("Account already registered") from e
+            error_context = BankContext(str(e))
+
+            match error_context:
+                case BankContext.CLIENT:
+                    raise DuplicatedClientError(
+                        "Client already registered in the system"
+                    ) from e
+                case BankContext.ACCOUNT:
+                    raise DuplicatedAccountError(
+                        "Account already registered in the system"
+                    ) from e
+        except DataNotFoundError:
+            raise ClientNotFoundError("Not client registered under this CPF")
 
     def authenticate(
         self, client: Client, branch_code: str, account_num: str
