@@ -31,7 +31,7 @@ from shared.credentials import AccessToken, AccountCard, AuthToken
 from shared.exceptions import (
     AccountAlreadyActiveError,
     AccountNotFoundError,
-    AuthenticationError,
+    BankAuthenticationError,
     BankPasswordError,
     BankSecurityError,
     BlockedAccountError,
@@ -40,6 +40,7 @@ from shared.exceptions import (
     DuplicatedAccountError,
     DuplicatedClientError,
     DuplicatedDataError,
+    HomeBranchRestrictionError,
     NotEmptyAccountError,
 )
 from shared.types import BankContext
@@ -176,7 +177,7 @@ class Bank:
         hashed_pwd_bytes = pwd_hash_str.encode("utf-8")
 
         if not bcrypt.checkpw(pdw_bytes, hashed_pwd_bytes):
-            raise AuthenticationError(
+            raise BankAuthenticationError(
                 "Given password doesn't match with registered password"
             )
 
@@ -482,7 +483,9 @@ class Bank:
         """
         temp_card = AccountCard(client.cpf, branch_code, account_num)
         if not client.has_account(temp_card):
-            raise AuthenticationError("Account card not found between client's cards")
+            raise BankAuthenticationError(
+                "Account card not found between client's cards"
+            )
 
         return self._generate_auth_token(
             cpf=client.cpf, branch_code=branch_code, account_num=account_num
@@ -557,7 +560,7 @@ class Bank:
             return self._generate_access_token(
                 auth_token=auth_token, password_hash=hashed_pwd
             )
-        except AuthenticationError as e:
+        except BankAuthenticationError as e:
             self._repository.register_failed_login(branch_code, account_num)
             if (failed_logins + 1) >= Bank.MAX_LOGIN_ATTEMPTS:
                 self._repository.update_account_status(branch_code, account_num, False)
@@ -769,7 +772,7 @@ class Bank:
         client = self.get_registered_client(auth_token.cpf)
 
         if client.birth_date != birth_date:
-            raise AuthenticationError(
+            raise BankAuthenticationError(
                 "The given birth date doesn't match with registered birth date"
             )
 
@@ -783,17 +786,29 @@ class Bank:
         """
         Permanently closes and deletes an account from the system.
 
-        This method enforces a strict business rule: accounts can only be closed
-        if their financial balance is exactly zero. It relies on the AccessToken
-        to guarantee full vault authorization.
+        This method enforces strict business and security rules:
+        1. Home Branch Rule: The operation must be executed at the exact
+           branch where the account is registered.
+        2. Zero Balance Rule: The account can only be closed if its financial
+           balance is exactly zero.
+        It relies on the AccessToken to guarantee full vault authorization.
 
         Args:
             access_token (AccessToken): A valid, securely signed vault token.
 
         Raises:
+            HomeBranchRestrictionError: If the account's branch does not match
+                the current terminal's branch.
             NotEmptyAccountError: If the account has a positive or negative balance.
             BankSecurityError: If the token is invalid or tampered with.
         """
+        self._validate_token(access_token)
+
+        if access_token.branch_code != self._branch_code:
+            raise HomeBranchRestrictionError(
+                "Account closure can only be performed at the home branch"
+            )
+
         account_obj = self.get_account(access_token)
 
         if account_obj.balance != 0:

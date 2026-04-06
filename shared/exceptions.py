@@ -162,7 +162,7 @@ class AccountNotFoundError(BankMethodError):
     """Raised when an account is not found in the Bank's central registry."""
 
 
-class AuthenticationError(BankMethodError):
+class BankAuthenticationError(BankMethodError):
     """Raised when authentication process fails"""
 
 
@@ -172,6 +172,10 @@ class NotEmptyAccountError(BankMethodError):
 
 class AccountAlreadyActiveError(BankMethodError):
     """Raised when trying to unfreeze an account that is fully operational."""
+
+
+class HomeBranchRestrictionError(BankMethodError):
+    """Raised when an operation is attempted outside the account's home branch."""
 
 
 # --- Entity Layer Exceptions (Person/Client) ---
