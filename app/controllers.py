@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from datetime import date
 from decimal import Decimal
 from functools import partial
-from typing import Any, ClassVar, Generic, NamedTuple, TypeVar, cast
+from typing import Any, ClassVar, Generic, TypeVar, cast
 
 from domain.account import Account, CheckingAccount, SavingsAccount
 from domain.bank import Bank
@@ -22,7 +22,7 @@ from shared.exceptions import (
     PERSON_ERROR_MAP,
     AccountAlreadyActiveError,
     AccountNotFoundError,
-    AuthenticationError,
+    BankAuthenticationError,
     BankPasswordError,
     BankSecurityError,
     BlockedAccountError,
@@ -30,7 +30,10 @@ from shared.exceptions import (
     ControllerCredentialsError,
     ControllerOperationError,
     DomainError,
+    DuplicatedAccountError,
+    DuplicatedClientError,
     ErrorMapType,
+    HomeBranchRestrictionError,
     NotEmptyAccountError,
     UserAbortError,
     map_exceptions,
@@ -43,23 +46,12 @@ from shared.types import (
 )
 from shared.validators import ValidatorCallback, boolean_validator_dec, validate_cpf
 
-COMMON_VALIDATORS: dict[str, ValidatorCallback] = {
-    "cpf": boolean_validator_dec(validate_cpf),
-    "account_num": boolean_validator_dec(Account.validate_account_number),
-    "password": boolean_validator_dec(Bank.validate_password),
-}
-
 CreatableT = TypeVar("CreatableT", bound=Person | Account)
 ClientDataT = TypeVar("ClientDataT", bound=Client | str)
 T = TypeVar("T", bound=Bank | Person | Account)
 R = TypeVar("R")
 
 UserInputT = TypeVar("UserInputT", bound=InputType)
-
-
-class RegisterOptions(NamedTuple):
-    registered: bool
-    new_account: bool | None
 
 
 def _verify_config_map(obj_config: config.ConfigMap) -> None:
@@ -152,27 +144,30 @@ class CreationController(BaseController[CreatableT, CreatableT]):
     the ObjectFactory to instantiate the class.
     """
 
-    _validation_mapper = COMMON_VALIDATORS.copy() | {
+    _validation_mapper = {
         "name": boolean_validator_dec(Person.validate_name),
         "birth_date": boolean_validator_dec(Person.validate_birth_date),
         "balance": boolean_validator_dec(Account.validate_account_initial_balance),
+        "account_num": boolean_validator_dec(Account.validate_account_number),
     }
 
     _obj_config: config.ConfigMap
     _obj_error_map: ErrorMapType
+    _pre_filled_data: dict[str, Any] | None
 
     def __init__(
         self,
         model_class: type[CreatableT],
         obj_error_map: ErrorMapType,
         obj_config: config.ConfigMap,
+        pre_filled_data: dict[str, Any] | None = None,
     ):
         super().__init__(model_class)
 
         _verify_config_map(obj_config)
         self._obj_config = obj_config
-
         self._obj_error_map = obj_error_map
+        self._pre_filled_data = pre_filled_data
 
     def __repr__(self) -> str:
         class_name = type(self).__name__
@@ -202,6 +197,9 @@ class CreationController(BaseController[CreatableT, CreatableT]):
         object_attr = io_utils.config_loop(self._obj_config, controller_validator_cb)
         object_attr = cast(dict[str, Any], object_attr)
 
+        if self._pre_filled_data:
+            object_attr.update(self._pre_filled_data)
+
         while True:
             try:
                 return self._model_class(**object_attr)
@@ -226,7 +224,7 @@ class TransactionController(BaseController[Account, None]):
     3. Operation Loop: Orchestrates financial operations until logout or exit.
     """
 
-    _validation_mapper = COMMON_VALIDATORS.copy() | {
+    _validation_mapper = {
         "withdraw": boolean_validator_dec(
             partial(verify.verify_interval, min_val=Decimal("0.5"), max_val=None)
         ),
@@ -568,7 +566,9 @@ class TransactionController(BaseController[Account, None]):
 
 class BankSystemController(BaseController[Bank, None]):
 
-    _validation_mapper = COMMON_VALIDATORS.copy() | {
+    _validation_mapper = {
+        "cpf": boolean_validator_dec(validate_cpf),
+        "password": boolean_validator_dec(Bank.validate_password),
         "operations": boolean_validator_dec(
             partial(verify.verify_interval, min_val=1, max_val=2)
         ),
@@ -578,13 +578,9 @@ class BankSystemController(BaseController[Bank, None]):
         "management": boolean_validator_dec(
             partial(verify.verify_interval, min_val=1, max_val=3)
         ),
-        "is_client": boolean_validator_dec(
-            partial(verify.verify_interval, min_val=1, max_val=2)
-        ),
         "acc_type": boolean_validator_dec(
             partial(verify.verify_interval, min_val=1, max_val=2)
         ),
-        "name": boolean_validator_dec(Person.validate_name),
         "birth_date": boolean_validator_dec(Person.validate_birth_date),
         "use_card": boolean_validator_dec(
             partial(verify.verify_interval, min_val=1, max_val=2)
@@ -709,48 +705,6 @@ class BankSystemController(BaseController[Bank, None]):
         self._active_auth_token = None
         self._active_access_token = None
 
-    def _create_client(self) -> Client:
-        """
-        Delegates the Person/Client creation workflow to the CreationController.
-
-        Injects the Client class and the specific error mapping for Person
-        validation (e.g., Name, Birth Date, CPF).
-
-        Returns:
-            Client: A fully initialized Client instance.
-        """
-        controller_obj = CreationController(
-            Client, PERSON_ERROR_MAP, config.identification_config
-        )
-        return controller_obj.run_controller()
-
-    def _create_account(self) -> Account:
-        """
-        Delegates the Account creation workflow to the CreationController.
-
-        Handles the preliminary step of asking the user for the Account Type
-        (Checking vs. Savings) to inject the correct class type into the
-        CreationController. Cleans up the config map to remove fields already
-        collected (like acc_type).
-
-        Returns:
-            Account: A fully initialized Account instance.
-        """
-        acc_type_map = {1: CheckingAccount, 2: SavingsAccount}
-
-        acc_type = get_single_input(
-            "acc_type", self._new_acc_config, self._controller_validator_cb
-        )
-        acc_type = _assert_input(acc_type, int)
-
-        create_account_config = self._new_acc_config
-        create_account_config.pop("acc_type")
-
-        controller_obj = CreationController(
-            acc_type_map[acc_type], ACCOUNT_ERROR_MAP, create_account_config
-        )
-        return controller_obj.run_controller()
-
     def _get_client(self) -> Client:
         cpf = self._prompt_cpf()
         return self._bank_instance.get_registered_client(cpf)
@@ -826,7 +780,7 @@ class BankSystemController(BaseController[Bank, None]):
             except ClientNotFoundError:
                 self._client = None
                 continue
-            except AuthenticationError:
+            except BankAuthenticationError:
                 self._active_card = None
 
         if self._active_auth_token is None:
@@ -855,7 +809,7 @@ class BankSystemController(BaseController[Bank, None]):
                 )
                 views.controller_output(mapper_key="access", inner_key=True)
                 break
-            except AuthenticationError:
+            except BankAuthenticationError:
                 views.controller_output(mapper_key="access", inner_key=False)
             except BlockedAccountError:
                 views.controller_output(mapper_key="access", inner_key="blocked")
@@ -893,7 +847,7 @@ class BankSystemController(BaseController[Bank, None]):
                 self._active_auth_token, birth_date, new_password
             )
             views.controller_output("unfreeze", True)
-        except AuthenticationError:
+        except BankAuthenticationError:
             views.controller_output("unfreeze", "authentication")
             raise ControllerOperationError
         except AccountAlreadyActiveError:
@@ -905,6 +859,13 @@ class BankSystemController(BaseController[Bank, None]):
     def _close_account(self) -> None:
         if self._active_access_token is None:
             raise RuntimeError("AccessToken is required to close an account")
+
+        if (
+            self._active_access_token.branch_code
+            != self._bank_instance.bank_branch_code
+        ):
+            views.controller_output("close_account", False)
+            raise ControllerOperationError
 
         account = self._bank_instance.get_account(self._active_access_token)
 
@@ -918,6 +879,9 @@ class BankSystemController(BaseController[Bank, None]):
             self._end_session()
         except NotEmptyAccountError:
             views.show_close_account_status(account.balance)
+            raise ControllerOperationError
+        except HomeBranchRestrictionError:
+            views.controller_output("close_account", False)
             raise ControllerOperationError
 
     def _set_transaction_controller(self, transaction_type) -> TransactionController:
@@ -949,24 +913,69 @@ class BankSystemController(BaseController[Bank, None]):
             case _:
                 raise RuntimeError("Critical Security Error: Unmapped operation type.")
 
-    def _set_client_argument(self) -> Client | str:
-        is_client_mapper = {1: True, 2: False}
-        client_or_cpf = None
+    def _set_create_client(self, cpf: str) -> CreationController:
+        new_client_config = self._identification_config.copy()
+        new_client_config.pop("cpf")
+        filled_data = {"cpf": cpf}
 
-        user_input = get_single_input(
-            "is_client", self._menu_config, self._controller_validator_cb
+        controller_obj = CreationController(
+            Client, PERSON_ERROR_MAP, new_client_config, filled_data
         )
-        int_user_input = _assert_input(user_input, int)
-        is_client = is_client_mapper[int_user_input]
+
+        return controller_obj
+
+    def _set_create_account(self) -> CreationController:
+        acc_type_mapper = {1: CheckingAccount, 2: SavingsAccount}
+        new_acc_config = self._new_acc_config.copy()
+
+        user_in = get_single_input(
+            "acc_type", self._new_acc_config, self._controller_validator_cb
+        )
+        int_user_in = _assert_input(user_in, int)
+        model_class = acc_type_mapper[int_user_in]
+        new_acc_config.pop("acc_type")
+
+        filled_data = {"branch_code": self._bank_instance.bank_branch_code}
+
+        controller_obj = CreationController(
+            model_class, ACCOUNT_ERROR_MAP, new_acc_config, filled_data
+        )
+
+        return controller_obj
 
     def _onboarding_workflow(self) -> None:
+        try:
+            cpf = self._prompt_cpf()
+            client_or_cpf = None
 
-        if is_client:
-            client_or_cpf = self._prompt_cpf()
+            is_client = self._bank_instance.check_client_exists(cpf)
 
-        if not is_client:
-            controller_obj = self._set_creation_controller(Client)
-            client_or_cpf = controller_obj.run_controller()
+            if not is_client:
+                views.controller_output("client", "new")
+                controller_obj = self._set_create_client(cpf)
+                client_or_cpf = controller_obj.run_controller()
+            else:
+                client_or_cpf = cpf
+                views.controller_output("client", "not_new")
+
+            controller_obj = self._set_create_account()
+            account = controller_obj.run_controller()
+            password = self._prompt_new_password()
+            self._bank_instance.register_account(account, client_or_cpf, password)
+            views.controller_output("new_account", True)
+        except UserAbortError:
+            views.controller_output("menu", "cancel")
+            return
+        except BankPasswordError:
+            views.controller_output("new_account", "password")
+        except DuplicatedAccountError:
+            views.controller_output("new_account", "duplicated")
+        except DuplicatedClientError:
+            views.controller_output("new_account", False)
+            return
+        except ClientNotFoundError:
+            views.controller_output("new_account", False)
+            return
 
     def _transactions_menu(self) -> None:
         try:
@@ -1053,12 +1062,12 @@ class BankSystemController(BaseController[Bank, None]):
                     case _:
                         raise RuntimeError("Unmapped OperationMenuType")
             except UserAbortError:
-                views.controller_output("menu", "exit")
                 self._end_session()
+                views.controller_output("menu", "exit")
                 return
             except BankSecurityError:
-                views.controller_output("menu", "security")
                 self._end_session()
+                views.controller_output("menu", "security")
                 return
 
     def run_controller(self) -> None:
@@ -1072,6 +1081,6 @@ class BankSystemController(BaseController[Bank, None]):
                 case MainMenuType.OPERATIONS:
                     self._operation_hub()
                 case MainMenuType.ONBOARDING:
-                    ...
+                    self._onboarding_workflow()
                 case _:
                     raise RuntimeError("Critical error in main menu logic")
