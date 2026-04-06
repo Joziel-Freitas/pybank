@@ -48,12 +48,6 @@ menu_config: ConfigMap = {
         "value_type": int,
         "error_msg": "Opção inválida. Escolha entre as opções disponíveis no menu",
     },
-    "is_client": {
-        "info": "Abertura de Conta",
-        "prompt": "1 - Já sou cliente\n2 - Ainda não sou cliente\nSua opção: ",
-        "value_type": int,
-        "error_msg": "Opção inválida. Escolha entre as opções 1 ou 2",
-    },
     "use_card": {
         "info": "Formas de acesso",
         "prompt": "1 - Operações com cartão\n2 - Operações sem cartão\nSua opção: ",
@@ -90,12 +84,6 @@ new_account_config: ConfigMap = {
         "prompt": "1 - Conta Corrente\n2 - Conta Poupança\nSua opção: ",
         "value_type": int,
         "error_msg": "Opção inválida para tipo de conta. Escolha entre 1 ou 2",
-    },
-    "branch_code": {
-        "info": "Conta - Agência",
-        "prompt": "Informe o número da agência: ",
-        "value_type": str,
-        "error_msg": "Número de agência inválido. O número da agência deve ser um inteiro positivo de 4 dígitos",
     },
     "account_num": {
         "info": "Conta - Número da conta",

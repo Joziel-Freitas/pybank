@@ -57,21 +57,19 @@ method_mappers = {
         False: "Valor insuficiente em conta. Para sacar esse valor, autorize o uso do limite especial",
         None: "O valor excede o montante em conta. Transação não autorizada",
     },
-    "new_client": {
-        True: "Cadastro realizado com sucesso",
-        "client": "Falha ao registrar seu cadastro pessoal. Vamos tentar novamente",
-        "account": "Falha ao registrar sua conta. Vamos tentar novamente",
-        "password": "Falha ao registrar sua senha. Vamos tentar novamente",
+    "client": {
+        "new": "Bem vindo ao PyBank. Faça o seu cadastro",
+        "not_new": "Bem vindo de volta ao PyBank",
     },
     "new_account": {
         True: "Conta registrada com sucesso",
-        "client": "CPF inválido. Vamos tentar novamente",
-        "account": "Falha ao registrar sua conta: Vamos tentar novamente",
-        "password": "Falha ao registrar sua senha. Vamos tentar novamente",
+        "duplicated": "Essa conta já se encontra registrada no sistema. Crie uma nova conta",
+        "password": "Falha ao registrar sua senha. Tente novamente",
+        False: "Erro ao registrar sua conta. Tente novamente",
     },
     "prompt_password": {
-        "1": "Insira sua nova senha",
-        "2": "Insira novamente sua nova senha",
+        "1": "Insira sua senha",
+        "2": "Insira novamente sua senha",
         False: "As senhas não conferem. Tente novamente",
     },
     "update_password": {True: "Senha alterada com sucesso"},
@@ -81,7 +79,8 @@ method_mappers = {
         "already_active": "Essa conta está ativa. Impossível desbloquear",
     },
     "close_account": {
-        True: "Sua conta foi encerrada corretamente seus dados removidos do sistema",
+        True: "Sua conta foi encerrada corretamente e seus dados removidos do sistema",
+        False: "Operação negada. O encerramento de conta deve ser realizado presencialmente na sua agência de origem",
     },
     "card": {
         True: "Cartão válido",
