@@ -41,6 +41,8 @@ class Account(ABC):
         _balance (Decimal): The current account balance.
     """
 
+    MIN_ATM_TRANSACTION: ClassVar[Decimal] = Decimal(2.00)
+
     # Type hints for the instance's variables
     _branch_code: str
     _account_num: str
@@ -207,17 +209,17 @@ class Account(ABC):
         """
         Validates the deposit value.
 
-        The deposit must be a Decimal greater than or equal to 0.5.
+        The deposit must be a Decimal greater than or equal to the MIN_ATM_TRANSACTION (R$ 2.00).
 
         Args:
             val (Decimal): The deposit amount.
 
         Raises:
-            InvalidDepositError: If the value is not a Decimal or is less than 0.5.
+            InvalidDepositError: If the value is not a Decimal or is less than the minimum ATM transaction allowed.
         """
         try:
             verify.verify_instance(val, Decimal)
-            verify.verify_interval(val, min_val=Decimal("0.5"))
+            verify.verify_interval(val, min_val=Decimal(Account.MIN_ATM_TRANSACTION))
         except verify.VERIFY_ERRORS as e:
             raise InvalidDepositError(f"Invalid deposit value. Cause: {e}") from e
 
@@ -226,19 +228,22 @@ class Account(ABC):
         """
         Validates a withdrawal value against availability rules.
 
-        The withdrawal value must be a Decimal greater than or equal to 0.5 and
-        must not exceed the `available_val`.
+        The withdrawal value must be a Decimal greater than or equal to the MIN_ATM_TRANSACTION (R$ 2.00)
+        and must not exceed the `available_val`.
 
         Args:
             val (Decimal): The amount requested for withdrawal.
             available_val (Decimal): The total funds available for withdrawal (e.g., balance + limit).
 
         Raises:
-            InvalidWithdrawError: If the value is not a Decimal, less than 0.5, or exceeds available funds.
+            InvalidWithdrawError: If the value is not a Decimal, is less than the minimum ATM transaction,
+                                  or exceeds available funds.
         """
         try:
             verify.verify_instance(val, Decimal)
-            verify.verify_interval(val, min_val=Decimal("0.5"), max_val=available_val)
+            verify.verify_interval(
+                val, min_val=Decimal(Account.MIN_ATM_TRANSACTION), max_val=available_val
+            )
         except verify.VERIFY_ERRORS as e:
             raise InvalidWithdrawError(f"Invalid withdraw value: Cause: {e}") from e
 

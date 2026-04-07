@@ -21,7 +21,6 @@ from shared.exceptions import (
     ACCOUNT_ERROR_MAP,
     PERSON_ERROR_MAP,
     AccountAlreadyActiveError,
-    AccountNotFoundError,
     BankAuthenticationError,
     BankPasswordError,
     BankSecurityError,
@@ -226,27 +225,32 @@ class TransactionController(BaseController[Account, None]):
 
     _validation_mapper = {
         "withdraw": boolean_validator_dec(
-            partial(verify.verify_interval, min_val=Decimal("0.5"), max_val=None)
+            partial(
+                verify.verify_interval,
+                min_val=Decimal(Account.MIN_ATM_TRANSACTION),
+                max_val=None,
+            )
         ),
         "deposit": boolean_validator_dec(
-            partial(verify.verify_interval, min_val=Decimal("0.5"), max_val=None)
-        ),
-        "operations": boolean_validator_dec(
-            partial(verify.verify_interval, min_val=1, max_val=3)
+            partial(
+                verify.verify_interval,
+                min_val=Decimal(Account.MIN_ATM_TRANSACTION),
+                max_val=None,
+            )
         ),
         "limit": boolean_validator_dec(
             partial(verify.verify_interval, min_val=1, max_val=2)
         ),
-        "options": boolean_validator_dec(
-            partial(verify.verify_interval, min_val=1, max_val=2)
+        "statement": boolean_validator_dec(
+            partial(verify.verify_interval, min_val=1, max_val=3)
         ),
     }
 
     _bank_instance: Bank
     _transaction_config: config.ConfigMap
+    _auth_config: config.ConfigMap
     _transaction_type: TransactionType
     _access_token: AccessToken | None
-    _model_account: Account | None
 
     def __init__(
         self,
@@ -269,136 +273,41 @@ class TransactionController(BaseController[Account, None]):
         )
         self._transaction_type = transaction_type
         self._access_token = access_token
-        self._model_account = None
 
     def __repr__(self) -> str:
         class_name = type(self).__name__
-        has_account = self._model_account is not None
+        access_status = "Authorized" if self._access_token else "Not authorized"
+        account_accessed = (
+            self._access_token.account_num if self._access_token else None
+        )
 
         return (
             f"{class_name}("
-            f"bank={self._bank_instance._bank_name!r},"
-            f"user_cpf={self._access_token.cpf!r}, "
-            f"account_accessed={has_account})"
+            f"bank={self._bank_instance.bank_name!r},"
+            f"access_status={access_status!r})"
+            f"account_accessed={account_accessed!r},"
         )
 
     @property
-    def _active_account(self) -> Account:
-        """
-        Returns the active account instance.
+    def _active_access_token(self) -> AccessToken:
+        if self._access_token is None:
+            raise RuntimeError("Getter called without an AccessToken")
 
-        Raises:
-            RuntimeError: If called before account access is granted.
-        """
-        if self._model_account is None:
-            raise RuntimeError("Account access failed. Execute _get_access() method")
-        return self._model_account
+        return self._access_token
 
-    def _get_acc_access(self) -> bool:
-        """
-        Attempts to authorize access to the Account using the provided password.
+    def _get_transaction_amount(self) -> Decimal:
+        if self._transaction_type == TransactionType.STATEMENT:
+            raise RuntimeError("Method doesn't handles statement operation")
 
-        Uses the pre-existing AuthToken to request the Account object from the Bank.
-        This method is the gatekeeper that transforms a 'Session' (Token) into
-        'Access' (Model Object).
-
-        Returns:
-            bool: True if the password is correct and access is granted.
-                  False if the password is incorrect (allows retries).
-
-        Raises:
-            BlockedAccountError: Propagated immediately if the account is frozen.
-                                 The controller does NOT catch this here, allowing
-                                 the loop to handle the lockout state.
-            RuntimeError: If a security mismatch (e.g., Token Signature) occurs.
-        """
-        key = "password"
-        user_in = get_single_input(
-            key, self._transaction_config, self._controller_validator_cb
-        )
-        user_in = _assert_input(user_in, str)
-        try:
-            self._model_account = self._bank_instance.authorize_vault_access(
-                self._access_token, user_in
-            )
-            return True
-        except AccountNotFoundError:
-            return False
-        except BankSecurityError as error:
-            raise RuntimeError(
-                "CRITICAL SECURITY FAILURE: Session integrity compromised."
-            ) from error
-
-    def _access_loop(self) -> bool | None:
-        """
-        Manages the authentication retry logic (Max 3 attempts).
-
-        Handles the transition between 'Unauthorized' and 'Authorized' states.
-        It specifically interprets the 'BlockedAccountError' to terminate the
-        controller flow gracefully if the account gets frozen during the process.
-
-        Returns:
-            bool | None:
-                - True: Access granted (Account object is ready).
-                - False: User manually aborted or exhausted retries (Logic dependent).
-                - None: Account is frozen/blocked. The controller must exit.
-        """
-        for attempt in range(3):
-            try:
-                if self._get_acc_access():
-                    views.controller_output(mapper_key="access", inner_key=True)
-                    return True
-
-                views.controller_output(mapper_key="access", inner_key=False)
-                if attempt == 1:
-                    views.controller_output(mapper_key="access", inner_key="1")
-            except BlockedAccountError:
-                views.controller_output(mapper_key="access", inner_key="0")
-                return None
-
-    def _get_transaction_type(self) -> TransactionType:
-        """
-        Prompts the user to select an operation (1=Withdraw, 2=Deposit, 3=Statement).
-
-        Returns:
-            TransactionType: The enum corresponding to the user choice.
-        """
-        key = "operations"
-        int_transaction = get_single_input(
-            key, self._transaction_config, self._controller_validator_cb
-        )
-        transaction = TransactionType(int_transaction)
-
-        return transaction
-
-    def _get_operation_value(self, operation_option: TransactionType) -> Decimal:
-        """
-        Prompts the user for the numeric value of the transaction.
-
-        Dynamically selects the configuration ('withdraw' or 'deposit') based on
-        the operation type and delegates input collection to the I/O utility.
-
-        Args:
-            operation_option (TransactionType): The operation being performed.
-
-        Returns:
-            Decimal: The validated monetary value to be deposited or withdrawn.
-
-        Raises:
-            UserAbortError: If the user enters the exit command during input.
-        """
-        operations_configs: config.ConfigMap = {
-            k: self._transaction_config[k] for k in ("withdraw", "deposit")
-        }
-
-        operation_mapper = {
+        transaction_mapper = {
             TransactionType.WITHDRAW: "withdraw",
             TransactionType.DEPOSIT: "deposit",
         }
 
-        operation_key = operation_mapper[operation_option]
+        transaction_key = transaction_mapper[self._transaction_type]
+
         value_raw = get_single_input(
-            operation_key, operations_configs, self._controller_validator_cb
+            transaction_key, self._transaction_config, self._controller_validator_cb
         )
         value = _assert_input(value_raw, Decimal)
 
@@ -470,7 +379,7 @@ class TransactionController(BaseController[Account, None]):
         3. Executes the withdrawal and shows success feedback if authorized.
         4. Displays a cancellation message if the user aborts the process.
         """
-        value = self._get_operation_value(TransactionType.WITHDRAW)
+        value = self._get_transaction_amount(TransactionType.WITHDRAW)
         if self._authorize_withdraw(value):
             self._active_account.withdraw(value)
             views.controller_output("transaction", True)
@@ -478,93 +387,36 @@ class TransactionController(BaseController[Account, None]):
 
         views.controller_output("general", "cancel")
 
-    def _handle_deposit(self) -> None:
-        """
-        Orchestrates the deposit workflow.
-
-        Prompts the user for the deposit amount, updates the account balance,
-        and triggers the success feedback view.
-        """
-        value = self._get_operation_value(TransactionType.DEPOSIT)
-        self._active_account.deposit(value)
-        views.controller_output("transaction", True)
-
-    def _operation_flow(self) -> None:
-        """
-        Acts as the central dispatcher for banking operations.
-
-        Identifies the requested transaction type and delegates the execution
-        to the specific handler method (`_handle_statement`, `_handle_withdraw`,
-        or `_handle_deposit`).
-
-        Raises:
-            UserAbortError: If the user cancels the operation selection or input.
-            RuntimeError: If an unknown transaction type is encountered.
-        """
-        operation_type: TransactionType = self._get_transaction_type()
-
-        match operation_type:
-            case TransactionType.STATEMENT:
-                self._handle_statement()
-            case TransactionType.WITHDRAW:
-                self._handle_withdraw()
-            case TransactionType.DEPOSIT:
-                self._handle_deposit()
-            case _:
-                raise RuntimeError("Unexpected controller error")
-
-    def _select_operation(self) -> bool | None:
-        """
-        Prompts the user to determine the next step: Continue or Exit.
-
-        Returns:
-            bool: True if the user chooses to perform another operation (Option 1).
-            None: If the user chooses to return to the main menu (Option 2).
-                  This signals the termination of the transaction loop.
-        """
-        menu_mapper = {1: True, 2: None}
-
-        key = "options"
-        user_in = get_single_input(
-            key, self._transaction_config, self._controller_validator_cb
-        )
-        user_in = _assert_input(user_in, int)
-        return menu_mapper[user_in]
+    def _deposit_workflow(self) -> None:
+        views.controller_output("transaction", "min_value")
+        amount = self._get_transaction_amount()
+        self._bank_instance.execute_deposit(amount)
 
     def run_controller(self) -> None:
-        """
-        Main execution loop for the transaction session.
-
-        Manages the cycle of access validation and financial operations.
-        If an operation is aborted (UserAbortError), the loop terminates immediately,
-        returning control to the main application menu.
-
-        Flow:
-        1. Validate Access (Password check via _access_loop).
-        2. Execute Operation (Deposit, Withdraw, or Statement).
-        3. Determine next step (Continue, Logout, or Exit System).
-        """
-        accessed = False
-
-        while True:
-            try:
-                if accessed is False:
-                    accessed = self._access_loop()
-                elif accessed is None:
-                    views.controller_output("general", "exit")
-                    break
-                elif accessed is True:
-                    self._operation_flow()
-                    accessed = self._select_operation()
-                    if accessed is None:
-                        views.controller_output("general", "exit")
-                        break
-            except UserAbortError:
-                views.controller_output("general", "exit")
-                break
+        match self._transaction_type:
+            case TransactionType.DEPOSIT:
+                ...
+            case TransactionType.WITHDRAW:
+                ...
+            case TransactionType.STATEMENT:
+                ...
+            case _:
+                raise RuntimeError("Unmapped TransactionType")
 
 
 class BankSystemController(BaseController[Bank, None]):
+    """
+    The Main Application Controller (Maestro) for the PyBank terminal.
+
+    Operates strictly as an orchestrator in the Presentation Layer. It runs in a
+    continuous 'Kiosk Mode' loop, capturing user intent, delegating input collection
+    to generic UI utilities, and passing validated data to the Domain Layer (Bank).
+
+    It manages the state of the current session (Client, Hardware Cards, and Auth Tokens)
+    and enforces strict routing rules, ensuring no sensitive operation is reached
+    without passing through the proper authentication ('Lobby') and authorization
+    ('Vault') checkpoints.
+    """
 
     _validation_mapper = {
         "cpf": boolean_validator_dec(validate_cpf),
@@ -600,20 +452,13 @@ class BankSystemController(BaseController[Bank, None]):
 
     def __init__(self, bank_instance: Bank):
         """
-        Initializes the BankSystemController.
+        Initializes the controller with the injected Bank domain aggregate.
 
-        Sets up the connection to the Bank 'Model', validates the Persistence
-        Repository using Duck Typing, loads system configurations, and initializes
-        session state (Token/Card) as empty.
+        Validates and loads all UI configuration maps required for the terminal prompts,
+        and sets the initial session state to fully disconnected.
 
         Args:
-            bank_instance (Bank): The main banking system instance (Model).
-            repository (Any): A Class or Object responsible for data persistence.
-                              Must implement 'save(bank)' and 'load(data)'.
-
-        Raises:
-            TypeError: If the bank_instance is not a Bank or if the repository
-                       does not fulfill the required interface contract.
+            bank_instance (Bank): The core domain aggregate root.
         """
         super().__init__(Bank)
 
@@ -646,26 +491,46 @@ class BankSystemController(BaseController[Bank, None]):
         self._active_card = None
 
     def __repr__(self) -> str:
+        """
+        Returns a diagnostic string representation of the controller's current state.
+        Useful for debugging session leaks or hardware state issues.
+        """
         class_name = type(self).__name__
 
-        token_status = "Logged In" if self._active_auth_token else "Logged Out"
+        auth_status = (
+            "Authenticated" if self._active_auth_token else "Not authenticated"
+        )
+        access_status = "Authorized" if self._active_access_token else "Not authorized"
         card_status = "Card Inserted" if self._active_card else "No Card"
 
         return (
             f"{class_name}("
             f"connected_to={self._bank_instance.bank_name!r}"
-            f"session_status={token_status!r}"
+            f"authentication_status={auth_status!r}"
+            f"access_status={access_status!r}"
             f"hardware_status={card_status!r})"
         )
 
     @property
     def _active_client(self):
+        """
+        Safely retrieves the hydrated Client entity for the active session.
+
+        Raises:
+            RuntimeError: If accessed before the client is properly authenticated.
+        """
         if self._client is None:
             raise RuntimeError("Getter called without an Client instance")
 
         return self._client
 
     def _prompt_new_password(self) -> str:
+        """
+        Handles the double-input loop for creating or updating a secure password.
+
+        Returns:
+            str: The validated, matching 6-digit password string.
+        """
         while True:
             views.controller_output("update_password", "1")
             raw_pwd_1 = get_single_input(
@@ -699,35 +564,20 @@ class BankSystemController(BaseController[Bank, None]):
         client_cpf = _assert_input(client_cpf, str)
         return client_cpf
 
-    def _end_session(self) -> None:
-        self._client = None
-        self._active_card = None
-        self._active_auth_token = None
-        self._active_access_token = None
-
     def _get_client(self) -> Client:
+        """
+        Prompts for a CPF and retrieves the corresponding registered Client entity.
+        """
         cpf = self._prompt_cpf()
         return self._bank_instance.get_registered_client(cpf)
 
-    def _authenticate_client(self) -> AuthToken:
-
-        if not self._active_card:
-            user_inputs = config_loop(
-                self._auth_config,
-                self._controller_validator_cb,
-                skip_fields=["card", "cpf"],
-            )
-            branch_code = _assert_input(user_inputs["branch_code"], str)
-            account_num = _assert_input(user_inputs["account_num"], str)
-        else:
-            branch_code = self._active_card.branch_code
-            account_num = self._active_card.account_num
-
-        return self._bank_instance.authenticate(
-            self._active_client, branch_code, account_num
-        )
-
     def _select_card(self) -> AccountCard:
+        """
+        Displays available hardware cards for the active client and prompts for selection.
+
+        Returns:
+            AccountCard: The selected card object.
+        """
         client_cards = self._active_client.cards
         views.show_cards(client_cards)
 
@@ -760,7 +610,51 @@ class BankSystemController(BaseController[Bank, None]):
 
         return use_card
 
+    def _end_session(self) -> None:
+        """
+        Purges all sensitive data and tokens from memory, resetting the terminal
+        to an unauthenticated state. Acts as a strict security teardown.
+        """
+        self._client = None
+        self._active_card = None
+        self._active_auth_token = None
+        self._active_access_token = None
+
+    def _authenticate_client(self) -> AuthToken:
+        """
+        Generates the initial Lobby AuthToken via hardware card or manual input.
+
+        Returns:
+            AuthToken: A stateless token proving account ownership.
+        """
+        if not self._active_card:
+            user_inputs = config_loop(
+                self._auth_config,
+                self._controller_validator_cb,
+                skip_fields=["card", "cpf"],
+            )
+            branch_code = _assert_input(user_inputs["branch_code"], str)
+            account_num = _assert_input(user_inputs["account_num"], str)
+        else:
+            branch_code = self._active_card.branch_code
+            account_num = self._active_card.account_num
+
+        return self._bank_instance.authenticate(
+            self._active_client, branch_code, account_num
+        )
+
     def _ensure_authentication(self) -> None:
+        """
+        The 'Lobby Door'. Ensures the session holds a valid AuthToken.
+
+        Handles the initial greeting workflow, asking for CPF, resolving the client,
+        and prompting for credentials (card or manual). Gracefully handles 'Not Found'
+        errors to prevent terminal crashes.
+
+        Raises:
+            ControllerCredentialsError: If the user fails to provide valid credentials
+                after repeated attempts.
+        """
         while True:
             try:
                 if not self._client:
@@ -787,6 +681,18 @@ class BankSystemController(BaseController[Bank, None]):
             raise ControllerCredentialsError("Authentication process failed")
 
     def _ensure_access(self) -> None:
+        """
+        The 'Vault Door'. Upgrades an AuthToken to a highly secure AccessToken.
+
+        Requires a password challenge. Synchronizes with the Domain to check for
+        account freezes and remaining login attempts, providing real-time warnings
+        to the user via the View.
+
+        Raises:
+            RuntimeError: If called without a prior AuthToken.
+            ControllerCredentialsError: If password validation fails entirely or
+                the account gets blocked during the process.
+        """
         if not self._active_auth_token:
             raise RuntimeError("AuthToken is needed to get vault access")
 
@@ -818,7 +724,44 @@ class BankSystemController(BaseController[Bank, None]):
         if self._active_access_token is None:
             raise ControllerCredentialsError("Access process failed")
 
+    def _ensure_credentials(self, operation: TransactionType | ManagementType) -> None:
+        """
+        Security Routing Checkpoint.
+
+        Evaluates the requested operation and enforces the principle of least privilege,
+        triggering either 'Lobby' authentication or 'Vault' authorization depending
+        on the sensitivity of the transaction.
+
+        Args:
+            operation (TransactionType | ManagementType): The intended user action.
+
+        Raises:
+            RuntimeError: If an unknown operation bypasses the security map.
+        """
+        match operation:
+            case TransactionType.DEPOSIT:
+                pass
+            case ManagementType.UNFREEZE:
+                if not self._active_auth_token:
+                    self._ensure_authentication()
+            case (
+                TransactionType.WITHDRAW
+                | TransactionType.STATEMENT
+                | ManagementType.PASSWORD
+                | ManagementType.CLOSE
+            ):
+                if not self._active_auth_token:
+                    self._ensure_authentication()
+                if not self._active_access_token:
+                    self._ensure_access()
+            case _:
+                raise RuntimeError("Critical Security Error: Unmapped operation type.")
+
     def _update_password(self) -> None:
+        """
+        Orchestrates the secure password update workflow.
+        Automatically revokes the current AccessToken upon success, forcing re-authentication.
+        """
         if not self._active_access_token:
             raise RuntimeError("Access token required to update the password")
 
@@ -831,6 +774,10 @@ class BankSystemController(BaseController[Bank, None]):
             raise RuntimeError("Critical error in I/O logic") from e
 
     def _unfreeze_account(self) -> None:
+        """
+        Orchestrates the account recovery workflow.
+        Verifies identity via birth date and resets the password, restoring account access.
+        """
         if self._active_auth_token is None:
             raise RuntimeError("AuthToken required to perform the operation")
 
@@ -857,6 +804,12 @@ class BankSystemController(BaseController[Bank, None]):
             raise RuntimeError("Critical error in I/O logic") from e
 
     def _close_account(self) -> None:
+        """
+        Orchestrates the permanent account closure workflow.
+
+        Enforces 'Defense in Depth' by validating the Home Branch Rule and Zero
+        Balance Rule at the presentation layer before delegating to the Domain.
+        """
         if self._active_access_token is None:
             raise RuntimeError("AccessToken is required to close an account")
 
@@ -885,6 +838,7 @@ class BankSystemController(BaseController[Bank, None]):
             raise ControllerOperationError
 
     def _set_transaction_controller(self, transaction_type) -> TransactionController:
+        """Instantiates and prepares the TransactionController."""
         controller_obj = TransactionController(
             self._bank_instance,
             self._transaction_config,
@@ -893,27 +847,11 @@ class BankSystemController(BaseController[Bank, None]):
         )
         return controller_obj
 
-    def _ensure_credentials(self, operation: TransactionType | ManagementType) -> None:
-        match operation:
-            case TransactionType.DEPOSIT:
-                pass
-            case ManagementType.UNFREEZE:
-                if not self._active_auth_token:
-                    self._ensure_authentication()
-            case (
-                TransactionType.WITHDRAW
-                | TransactionType.STATEMENT
-                | ManagementType.PASSWORD
-                | ManagementType.CLOSE
-            ):
-                if not self._active_auth_token:
-                    self._ensure_authentication()
-                if not self._active_access_token:
-                    self._ensure_access()
-            case _:
-                raise RuntimeError("Critical Security Error: Unmapped operation type.")
-
     def _set_create_client(self, cpf: str) -> CreationController:
+        """
+        Instantiates a CreationController for a new Client entity.
+        Injects the pre-validated CPF to streamline the UX.
+        """
         new_client_config = self._identification_config.copy()
         new_client_config.pop("cpf")
         filled_data = {"cpf": cpf}
@@ -925,6 +863,10 @@ class BankSystemController(BaseController[Bank, None]):
         return controller_obj
 
     def _set_create_account(self) -> CreationController:
+        """
+        Instantiates a dynamically typed CreationController for Accounts.
+        Silently injects the terminal's Home Branch Code to enforce domain rules.
+        """
         acc_type_mapper = {1: CheckingAccount, 2: SavingsAccount}
         new_acc_config = self._new_acc_config.copy()
 
@@ -944,6 +886,17 @@ class BankSystemController(BaseController[Bank, None]):
         return controller_obj
 
     def _onboarding_workflow(self) -> None:
+        """
+        The Maestro of the Account Creation process.
+
+        Orchestrates a robust, ACID-ready workflow to register clients and accounts.
+        It evaluates client existence, delegates entity instantiation to internal
+        factories, and securely hashes the initial password.
+
+        Catches Domain-level race conditions (e.g., duplicated unique constraints
+        during parallel kiosk usage) and gracefully returns to the main menu without
+        crashing.
+        """
         try:
             cpf = self._prompt_cpf()
             client_or_cpf = None
@@ -978,6 +931,7 @@ class BankSystemController(BaseController[Bank, None]):
             return
 
     def _transactions_menu(self) -> None:
+        """Displays and routes the Transactions sub-menu options."""
         try:
             transaction_option = get_single_input(
                 "transactions", self._menu_config, self._controller_validator_cb
@@ -996,6 +950,7 @@ class BankSystemController(BaseController[Bank, None]):
             return
 
     def _management_menu(self) -> None:
+        """Displays and routes the Account Management sub-menu options."""
         try:
             management_option = get_single_input(
                 "management", self._menu_config, self._controller_validator_cb
@@ -1022,31 +977,12 @@ class BankSystemController(BaseController[Bank, None]):
         except ControllerOperationError:
             return
 
-    def _main_menu(self) -> MainMenuType | None:
-        is_admin_code = None
-
-        def _main_menu_validator_cb(
-            field: str, user_input: InputType
-        ) -> CallbackReturn:
-            nonlocal is_admin_code
-
-            int_user_input = _assert_input(user_input, int)
-            is_valid_menu = int_user_input in (1, 2)
-            is_admin_code = user_input == ADMIN_EXIT_CODE
-
-            return {"result": is_valid_menu or is_admin_code}
-
-        main_option = get_single_input(
-            "main_menu", self._menu_config, _main_menu_validator_cb
-        )
-
-        if is_admin_code:
-            views.bye()
-            return None
-
-        return MainMenuType(main_option)
-
     def _operation_hub(self) -> None:
+        """
+        The secure hub for all logged-in operations.
+        Catches high-level security breaches (like tampered tokens) and user aborts,
+        ensuring the session is immediately purged before returning to the main menu.
+        """
         while True:
             try:
                 raw_operation = get_single_input(
@@ -1070,7 +1006,43 @@ class BankSystemController(BaseController[Bank, None]):
                 views.controller_output("menu", "security")
                 return
 
+    def _main_menu(self) -> MainMenuType | None:
+        """
+        Displays the root entry point of the ATM.
+        Includes a hidden verification for the ADMIN_EXIT_CODE to safely shut down
+        the terminal application.
+        """
+        is_admin_code = None
+
+        def _main_menu_validator_cb(
+            field: str, user_input: InputType
+        ) -> CallbackReturn:
+            nonlocal is_admin_code
+
+            int_user_input = _assert_input(user_input, int)
+            is_valid_menu = int_user_input in (1, 2)
+            is_admin_code = user_input == ADMIN_EXIT_CODE
+
+            return {"result": is_valid_menu or is_admin_code}
+
+        main_option = get_single_input(
+            "main_menu", self._menu_config, _main_menu_validator_cb
+        )
+
+        if is_admin_code:
+            views.bye()
+            return None
+
+        return MainMenuType(main_option)
+
     def run_controller(self) -> None:
+        """
+        The Kiosk Loop.
+
+        The absolute entry point of the presentation layer. It maintains an infinite
+        loop, ensuring the terminal always returns to the Welcome Screen regardless
+        of successful operations, user cancellations, or handled exceptions.
+        """
         while True:
             menu = self._main_menu()
 

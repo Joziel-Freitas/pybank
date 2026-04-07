@@ -137,13 +137,13 @@ transaction_config: ConfigMap = {
         "info": "Transação - Depósito",
         "prompt": "Valor a depositar: ",
         "value_type": Decimal,
-        "error_msg": "Valor inválido para depósito. Informe um valor maior que 0.5",
+        "error_msg": "Valor inválido para depósito. Tente novamente",
     },
     "withdraw": {
         "info": "Transação - Saque",
         "prompt": "Valor a sacar: ",
         "value_type": Decimal,
-        "error_msg": "Valor inválido para saque. Informe um valor maior que 0.5",
+        "error_msg": "Valor inválido para saque. Tente novamente",
     },
     "limit": {
         "info": "Transação - Cheque Especial",

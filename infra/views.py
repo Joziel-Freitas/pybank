@@ -11,6 +11,7 @@ import subprocess
 from decimal import Decimal
 from time import sleep
 
+from domain.account import Account
 from domain.person import AccountCard
 
 
@@ -53,6 +54,7 @@ method_mappers = {
         "blocked": "Conta BLOQUEADA por segurança. Desbloqueie a conta para usá-la novamente",
     },
     "transaction": {
+        "min_value": f"Valor mínimo para transação: {Account.MIN_ATM_TRANSACTION}",
         True: "Transação realizada com sucesso",
         False: "Valor insuficiente em conta. Para sacar esse valor, autorize o uso do limite especial",
         None: "O valor excede o montante em conta. Transação não autorizada",

@@ -110,9 +110,7 @@ class Bank:
         which is optimized for debugging lifecycle and state issues.
         """
         class_name = type(self).__name__
-        return (
-            f"{class_name}(name={self._bank_name!r}, branch_code={self._branch_code}),"
-        )
+        return f"{class_name}(name={self._bank_name!r}, branch_code={self._branch_code!r}),"
 
     @property
     def bank_name(self) -> str:
@@ -598,7 +596,6 @@ class Bank:
         branch_code: str,
         account_num: str,
         amount: Decimal,
-        account: Account | None = None,
     ) -> None:
         """
         Executes a secure, public-facing deposit operation directly to the repository.
@@ -608,19 +605,15 @@ class Bank:
         third parties. It strictly ensures the target account exists and is active
         before executing the transaction.
 
-        It delegates mathematical validation to the Account domain entity.
-        If an active Account instance is provided (e.g., from an open session),
-        its in-memory balance is updated alongside the database to ensure state consistency.
+        It delegates mathematical validation to the Account domain entity before
+        persisting the transaction via the injected Repository.
 
         Args:
             branch_code (str): The branch code of the target account.
             account_num (str): The target account number.
             amount (Decimal): The positive amount to be deposited.
-            account (Account | None, optional): An active account instance to be
-                synchronized in memory. Defaults to None.
 
         Raises:
-            TypeError: If the provided account is not an Account instance.
             InvalidDepositError: If the deposit amount violates business rules.
             BlockedAccountError: If the target account is currently frozen.
             AccountNotFoundError: If the provided branch or account number does not exist.
@@ -629,11 +622,6 @@ class Bank:
 
         acc_credentials = self._get_account_credentials(branch_code, account_num)
         self._ensure_account_is_active(acc_credentials)
-
-        if account is not None:
-            verify.verify_instance(account, Account)
-            account.deposit(amount)
-
         self._repository.save_transaction(branch_code, account_num, amount)
 
     def execute_withdraw(
