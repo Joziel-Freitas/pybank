@@ -224,7 +224,7 @@ class Account(ABC):
             raise InvalidDepositError(f"Invalid deposit value. Cause: {e}") from e
 
     @staticmethod
-    def validate_account_withdraw(val: Decimal, available_val: Decimal) -> None:
+    def _validate_account_withdraw(val: Decimal, available_val: Decimal) -> None:
         """
         Validates a withdrawal value against availability rules.
 
@@ -366,7 +366,7 @@ class SavingsAccount(Account):
         Raises:
             InvalidWithdrawError: If the withdrawal amount is invalid or exceeds the current balance.
         """
-        Account.validate_account_withdraw(val=value, available_val=self._balance)
+        Account._validate_account_withdraw(val=value, available_val=self._balance)
         self._balance -= value
 
 
@@ -485,7 +485,7 @@ class CheckingAccount(Account):
             InvalidWithdrawError: If the withdrawal amount is invalid or exceeds the total available funds.
         """
         available = CheckingAccount.CREDIT_LIMIT + self._balance
-        Account.validate_account_withdraw(val=value, available_val=available)
+        Account._validate_account_withdraw(val=value, available_val=available)
         self._balance -= value
 
         # Update used credit if we enter or remain in overdraft

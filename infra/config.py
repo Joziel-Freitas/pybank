@@ -100,12 +100,6 @@ new_account_config: ConfigMap = {
 }
 
 auth_config: ConfigMap = {
-    "cpf": {
-        "info": "Autenticação - CPF",
-        "prompt": "Informe o CPF (somente números): ",
-        "value_type": str,
-        "error_msg": "CPF inválido. O CPF deve conter somente números e ter 11 dígitos",
-    },
     "branch_code": {
         "info": "Autenticação - Agência ",
         "prompt": "Insira o número da agência: ",

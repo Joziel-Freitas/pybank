@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from datetime import date
 from decimal import Decimal
 from functools import partial
-from typing import Any, ClassVar, Generic, TypeVar, cast
+from typing import Any, Callable, ClassVar, Generic, TypeVar, cast
 
 from domain.account import Account, CheckingAccount, SavingsAccount
 from domain.bank import Bank
@@ -21,6 +21,7 @@ from shared.exceptions import (
     ACCOUNT_ERROR_MAP,
     PERSON_ERROR_MAP,
     AccountAlreadyActiveError,
+    AccountNotFoundError,
     BankAuthenticationError,
     BankPasswordError,
     BankSecurityError,
@@ -33,6 +34,7 @@ from shared.exceptions import (
     DuplicatedClientError,
     ErrorMapType,
     HomeBranchRestrictionError,
+    InvalidDepositError,
     NotEmptyAccountError,
     UserAbortError,
     map_exceptions,
@@ -90,16 +92,23 @@ class BaseController(ABC, Generic[T, R]):
 
     Establishes the contract for Input/Output orchestration. Subclasses must implement
     the 'run_controller' method to define the specific flow (creation or transaction).
+    It also centralizes the construction of the input validation callback used across
+    all controllers.
 
     Attributes:
         _model_class (Type[T]):
             The domain class (Person, Account, Bank) managed by this controller.
         _validation_mapper (ClassVar[dict]):
             Static dictionary mapping field names to validation functions.
+            Must be defined by each concrete subclass.
+        _controller_validator_cb (Callable[[str, InputType], CallbackReturn]):
+            A dynamically bound callback function, pre-loaded with the subclass's
+            validation mapper, ready to be passed to IO utility functions.
     """
 
     _model_class: type[T]
     _validation_mapper: ClassVar[dict[str, ValidatorCallback]]
+    _controller_validator_cb: Callable[[str, InputType], CallbackReturn]
 
     def __init__(self, model_class: type[T]):
         """
@@ -118,6 +127,10 @@ class BaseController(ABC, Generic[T, R]):
             )
 
         self._model_class = model_class
+
+        self._controller_validator_cb = partial(
+            validate_entry, validation_mapper=self._validation_mapper
+        )
 
     def __repr__(self) -> str:
         class_name = type(self).__name__
@@ -140,7 +153,7 @@ class CreationController(BaseController[CreatableT, CreatableT]):
 
     It handles the UI loop to collect data for Person or Account creation,
     manages validation errors by re-prompting specific fields, and calls
-    the ObjectFactory to instantiate the class.
+    the Model constructor to instantiate the class.
     """
 
     _validation_mapper = {
@@ -161,6 +174,17 @@ class CreationController(BaseController[CreatableT, CreatableT]):
         obj_config: config.ConfigMap,
         pre_filled_data: dict[str, Any] | None = None,
     ):
+        """
+        Initializes the controller for entity creation.
+
+        Args:
+            model_class (type[CreatableT]): The domain class to be instantiated.
+            obj_error_map (ErrorMapType): Mapping of Domain exceptions to config keys.
+            obj_config (config.ConfigMap): UI prompts and validation types for the entity.
+            pre_filled_data (dict[str, Any] | None, optional):
+                A dictionary of pre-validated data (e.g., CPF) to be injected directly
+                into the creation payload, bypassing the user input prompt. Defaults to None.
+        """
         super().__init__(model_class)
 
         _verify_config_map(obj_config)
@@ -189,11 +213,10 @@ class CreationController(BaseController[CreatableT, CreatableT]):
         Returns:
             CreatableT: A fully initialized instance of Person or Account.
         """
-        controller_validator_cb = partial(
-            validate_entry, validation_mapper=self._validation_mapper
-        )
 
-        object_attr = io_utils.config_loop(self._obj_config, controller_validator_cb)
+        object_attr = io_utils.config_loop(
+            self._obj_config, self._controller_validator_cb
+        )
         object_attr = cast(dict[str, Any], object_attr)
 
         if self._pre_filled_data:
@@ -205,7 +228,7 @@ class CreationController(BaseController[CreatableT, CreatableT]):
             except DomainError as error:
                 config_key = map_exceptions(error, self._obj_error_map)
                 new_value = get_single_input(
-                    config_key, self._obj_config, controller_validator_cb
+                    config_key, self._obj_config, self._controller_validator_cb
                 )
                 object_attr[config_key] = new_value
 
@@ -224,17 +247,13 @@ class TransactionController(BaseController[Account, None]):
     """
 
     _validation_mapper = {
+        "branch_code": boolean_validator_dec(Account.validate_branch_code),
+        "account_num": boolean_validator_dec(Account.validate_account_number),
+        "deposit": boolean_validator_dec(Account.validate_account_deposit),
         "withdraw": boolean_validator_dec(
             partial(
                 verify.verify_interval,
-                min_val=Decimal(Account.MIN_ATM_TRANSACTION),
-                max_val=None,
-            )
-        ),
-        "deposit": boolean_validator_dec(
-            partial(
-                verify.verify_interval,
-                min_val=Decimal(Account.MIN_ATM_TRANSACTION),
+                min_val=Account.MIN_ATM_TRANSACTION,
                 max_val=None,
             )
         ),
@@ -247,14 +266,15 @@ class TransactionController(BaseController[Account, None]):
     }
 
     _bank_instance: Bank
-    _transaction_config: config.ConfigMap
     _auth_config: config.ConfigMap
+    _transaction_config: config.ConfigMap
     _transaction_type: TransactionType
     _access_token: AccessToken | None
 
     def __init__(
         self,
         bank_instance: Bank,
+        auth_config: config.ConfigMap,
         transaction_config: config.ConfigMap,
         transaction_type: TransactionType,
         access_token: AccessToken | None = None,
@@ -265,13 +285,16 @@ class TransactionController(BaseController[Account, None]):
         verify.verify_instance(bank_instance, Bank)
         self._bank_instance = bank_instance
 
+        _verify_config_map(auth_config)
+        self._auth_config = auth_config
+
         _verify_config_map(transaction_config)
         self._transaction_config = transaction_config
 
-        self._controller_validator_cb = partial(
-            validate_entry, validation_mapper=self._validation_mapper
-        )
+        verify.verify_instance(transaction_type, TransactionType)
         self._transaction_type = transaction_type
+
+        verify.verify_instance(access_token, AccessToken)
         self._access_token = access_token
 
     def __repr__(self) -> str:
@@ -295,14 +318,16 @@ class TransactionController(BaseController[Account, None]):
 
         return self._access_token
 
-    def _get_transaction_amount(self) -> Decimal:
-        if self._transaction_type == TransactionType.STATEMENT:
-            raise RuntimeError("Method doesn't handles statement operation")
-
+    def _get_transaction_value(self) -> Decimal:
         transaction_mapper = {
             TransactionType.WITHDRAW: "withdraw",
             TransactionType.DEPOSIT: "deposit",
         }
+
+        if self._transaction_type not in transaction_mapper.keys():
+            raise RuntimeError(
+                f"Method doesn't handles {self._transaction_type} operation"
+            )
 
         transaction_key = transaction_mapper[self._transaction_type]
 
@@ -310,7 +335,6 @@ class TransactionController(BaseController[Account, None]):
             transaction_key, self._transaction_config, self._controller_validator_cb
         )
         value = _assert_input(value_raw, Decimal)
-
         return value
 
     def _authorize_withdraw(self, value: Decimal) -> bool:
@@ -379,7 +403,7 @@ class TransactionController(BaseController[Account, None]):
         3. Executes the withdrawal and shows success feedback if authorized.
         4. Displays a cancellation message if the user aborts the process.
         """
-        value = self._get_transaction_amount(TransactionType.WITHDRAW)
+        value = self._get_transaction_value(TransactionType.WITHDRAW)
         if self._authorize_withdraw(value):
             self._active_account.withdraw(value)
             views.controller_output("transaction", True)
@@ -387,10 +411,30 @@ class TransactionController(BaseController[Account, None]):
 
         views.controller_output("general", "cancel")
 
-    def _deposit_workflow(self) -> None:
+    def _handle_deposit(self) -> None:
+        branch_code_raw = get_single_input(
+            "branch_code", self._auth_config, self._controller_validator_cb
+        )
+        account_num_raw = get_single_input(
+            "account_num", self._auth_config, self._controller_validator_cb
+        )
+        branch_code = _assert_input(branch_code_raw, str)
+        account_num = _assert_input(account_num_raw, str)
+
         views.controller_output("transaction", "min_value")
-        amount = self._get_transaction_amount()
-        self._bank_instance.execute_deposit(amount)
+        amount = self._get_transaction_value()
+
+        try:
+            self._bank_instance.execute_deposit(branch_code, account_num, amount)
+            views.controller_output("transaction", True)
+        except InvalidDepositError:
+            raise ControllerOperationError
+        except AccountNotFoundError:
+            views.controller_output("transaction", "not_found")
+            raise ControllerOperationError
+        except BlockedAccountError:
+            views.controller_output("transaction", "blocked")
+            raise ControllerOperationError
 
     def run_controller(self) -> None:
         match self._transaction_type:
@@ -481,10 +525,6 @@ class BankSystemController(BaseController[Bank, None]):
         self._new_acc_config = config.new_account_config
         self._auth_config = config.auth_config
         self._transaction_config = config.transaction_config
-
-        self._controller_validator_cb = partial(
-            validate_entry, validation_mapper=self._validation_mapper
-        )
         self._client = None
         self._active_auth_token = None
         self._active_access_token = None
@@ -629,9 +669,7 @@ class BankSystemController(BaseController[Bank, None]):
         """
         if not self._active_card:
             user_inputs = config_loop(
-                self._auth_config,
-                self._controller_validator_cb,
-                skip_fields=["card", "cpf"],
+                self._auth_config, self._controller_validator_cb, skip_fields=["card"]
             )
             branch_code = _assert_input(user_inputs["branch_code"], str)
             account_num = _assert_input(user_inputs["account_num"], str)
@@ -841,6 +879,7 @@ class BankSystemController(BaseController[Bank, None]):
         """Instantiates and prepares the TransactionController."""
         controller_obj = TransactionController(
             self._bank_instance,
+            self._auth_config,
             self._transaction_config,
             transaction_type,
             self._active_access_token,

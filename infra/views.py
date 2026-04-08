@@ -58,6 +58,8 @@ method_mappers = {
         True: "Transação realizada com sucesso",
         False: "Valor insuficiente em conta. Para sacar esse valor, autorize o uso do limite especial",
         None: "O valor excede o montante em conta. Transação não autorizada",
+        "blocked": "Transação não permitida para esta conta no momento. Entre em contato com o titular",
+        "not_found": "Conta não encontrada ou inexistente",
     },
     "client": {
         "new": "Bem vindo ao PyBank. Faça o seu cadastro",
