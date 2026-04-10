@@ -41,7 +41,6 @@ method_mappers = {
         "security": "Sessão encerrada por questão de segurança. Voltando à tela inicial",
         "exit": "Sessão encerrada. Voltando à tela inicial",
         "cancel": "Operação cancelada. Voltando ao menu anterior",
-        "credentials": "Erro na autenticação dos dados. Voltando ao menu anterior",
     },
     "auth": {
         True: "Autenticado com sucesso",
@@ -58,8 +57,9 @@ method_mappers = {
         True: "Transação realizada com sucesso",
         False: "Valor insuficiente em conta. Para sacar esse valor, autorize o uso do limite especial",
         None: "O valor excede o montante em conta. Transação não autorizada",
-        "blocked": "Transação não permitida para esta conta no momento. Entre em contato com o titular",
-        "not_found": "Conta não encontrada ou inexistente",
+        "deposit_blocked": "Transação não permitida para esta conta no momento. Entre em contato com o titular",
+        "withdraw_blocked": "Sua conta foi BLOQUEADA por segurança. Desbloqueie a conta pra usá-la novamente",
+        "not_found": "Conta inexistente no sistema do PyBank",
     },
     "client": {
         "new": "Bem vindo ao PyBank. Faça o seu cadastro",

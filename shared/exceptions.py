@@ -15,11 +15,7 @@ distinguishing between:
 
 # Imports context enums for method-level error mapping
 from shared.types import (
-    AccountContext,
-    BankContext,
-    ControllerErrorContext,
     ErrorContext,
-    PersonContext,
 )
 
 
@@ -273,11 +269,16 @@ type ErrorMapType = (
 BANK_ERROR_MAP: ErrorMapType = {
     BankAttributeError: {BankNameError: "name"},
     BankMethodError: {
-        BankPasswordError: BankContext.PASSWORD,
-        DuplicatedClientError: BankContext.CLIENT,
-        ClientNotFoundError: BankContext.CLIENT,
-        DuplicatedAccountError: BankContext.ACCOUNT,
-        AccountNotFoundError: BankContext.ACCOUNT,
+        BankPasswordError: "password",
+        BankAuthenticationError: "auth_error",
+        DuplicatedClientError: "already_client",
+        ClientNotFoundError: "not_client",
+        DuplicatedAccountError: "duplicated_account",
+        AccountNotFoundError: "not_account",
+        BlockedAccountError: "blocked",
+        AccountAlreadyActiveError: "active_account",
+        NotEmptyAccountError: "not_zero",
+        HomeBranchRestrictionError: "bank_branch",
     },
 }
 
@@ -289,9 +290,9 @@ PERSON_ERROR_MAP: ErrorMapType = {
         InvalidCpfError: "cpf",
     },
     PersonMethodError: {
-        PersonInvalidAccountError: PersonContext.ACCOUNT,
-        PersonRegisteredAccountError: PersonContext.ACCOUNT,
-        PersonAccountNotFoundError: PersonContext.ACCOUNT,
+        PersonInvalidAccountError: "account",
+        PersonRegisteredAccountError: "account",
+        PersonAccountNotFoundError: "account",
     },
 }
 
@@ -303,16 +304,16 @@ ACCOUNT_ERROR_MAP: ErrorMapType = {
         InvalidBalanceError: "balance",
     },
     AccountMethodError: {
-        InvalidDepositError: AccountContext.VALUE,
-        InvalidWithdrawError: AccountContext.VALUE,
+        InvalidDepositError: "deposit",
+        InvalidWithdrawError: "withdraw",
     },
 }
 
 # Maps BankSystemController lifecycle errors to specific flow contexts
 CONTROLLER_ERROR_MAP: ErrorMapType = {
-    ControllerRegisterError: ControllerErrorContext.REGISTER,
-    ControllerCredentialsError: ControllerErrorContext.LOGIN,
-    ControllerOperationError: ControllerErrorContext.OPERATION,
+    ControllerRegisterError: "register",
+    ControllerCredentialsError: "credentials",
+    ControllerOperationError: "operation",
 }
 
 

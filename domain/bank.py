@@ -45,7 +45,7 @@ from shared.exceptions import (
 )
 from shared.types import BankContext
 
-from .account import Account
+from .account import Account, WithdrawalInfo
 from .person import Client
 
 
@@ -567,7 +567,7 @@ class Bank:
                 ) from e
             raise e
 
-    def get_account(self, access_token: AccessToken) -> Account:
+    def _get_account(self, access_token: AccessToken) -> Account:
         """
         The Vault Door. Grants access to an active, fully hydrated Account entity.
 
@@ -624,40 +624,62 @@ class Bank:
         self._ensure_account_is_active(acc_credentials)
         self._repository.save_transaction(branch_code, account_num, amount)
 
-    def execute_withdraw(
-        self, access_token: AccessToken, account: Account, amount: Decimal
-    ) -> None:
+    def check_withdrawal_info(
+        self, access_token: AccessToken, amount: Decimal
+    ) -> WithdrawalInfo:
+        """
+        Evaluates a withdrawal request against the specific account's domain rules.
+
+        Acts as a secure gateway to the Account entity. It ensures the request originates
+        from a highly authenticated session (Vault level) before delegating the mathematical
+        evaluation to the underlying account instance.
+
+        This method is purely analytical and side-effect free; it does not alter the balance.
+
+        Args:
+            access_token (AccessToken): The cryptographic token proving vault access authorization.
+            amount (Decimal): The requested withdrawal amount.
+
+        Returns:
+            WithdrawalInfo: A domain DTO detailing the authorization status and limit usage.
+
+        Raises:
+            TypeError: If the amount is not a valid Decimal instance.
+            BankAuthenticationError: If the access token is invalid, expired, or tampered with.
+            AccountNotFoundError: If the account linked to the token cannot be found.
+            BlockedAccountError: If the account is currently frozen.
+        """
+        self._validate_token(access_token)
+        verify.verify_instance(amount, Decimal)
+
+        account_obj = self._get_account(access_token)
+        return account_obj.check_withdrawal(amount)
+
+    def execute_withdraw(self, access_token: AccessToken, amount: Decimal) -> None:
         """
         Executes a secure withdrawal operation and persists it to the database.
 
-        This method operates under a 'Zero Trust' security model. It strictly
-        verifies that the provided AccessToken matches the identifiers of the
-        active Account object in memory, preventing cross-account manipulation
-        or session hijacking.
+        This method operates under a 'Zero Trust' security model. Acting as the
+        Aggregate Root, the Bank resolves the target Account strictly from the
+        provided AccessToken, ensuring no external layer can inject a tampered
+        Account entity.
 
         Args:
             access_token (AccessToken): A valid, securely signed vault token.
-            account (Account): The active, fully hydrated Account domain entity.
             amount (Decimal): The positive monetary amount to be withdrawn.
 
         Raises:
             TypeError: If the arguments are not of the expected types.
-            BankSecurityError: If the token is invalid, tampered with, or if its
-                credentials do not exactly match the provided Account's identifiers.
-            InvalidWithdrawError: If the withdrawal amount violates business rules.
+            BankSecurityError: If the token is invalid, tampered with, or expired.
+            InvalidWithdrawError: If the withdrawal amount violates business rules
+                (e.g., negative amount, exceeds balance + credit).
+            RepositoryError: If the transaction fails to be saved in the database.
         """
         self._validate_token(access_token)
-        verify.verify_instance(account, Account)
         verify.verify_instance(amount, Decimal)
 
-        if (access_token.branch_code, access_token.account_num) != (
-            account.branch_code,
-            account.account_num,
-        ):
-            raise BankSecurityError(
-                "Security breach: Token credentials do not match the provided Account."
-            )
-        account.withdraw(amount)
+        account_obj = self._get_account(access_token)
+        account_obj.withdraw(amount)
         self._repository.save_transaction(
             access_token.branch_code, access_token.account_num, -amount
         )
@@ -797,7 +819,7 @@ class Bank:
                 "Account closure can only be performed at the home branch"
             )
 
-        account_obj = self.get_account(access_token)
+        account_obj = self._get_account(access_token)
 
         if account_obj.balance != 0:
             raise NotEmptyAccountError("Account has a non-zero balance")

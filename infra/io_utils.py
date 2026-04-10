@@ -273,3 +273,58 @@ def get_single_input(
     field_config = {field_key: config_map[field_key]}
     user_inputs = config_loop(field_config, callback_fn)
     return user_inputs[field_key]
+
+
+def get_selected_inputs(
+    target_fields: tuple[str, ...],
+    config_map: ConfigMap,
+    callback_fn: Callable[[str, InputType], CallbackReturn],
+) -> dict[str, InputType]:
+    """
+    Retrieves and validates a specific subset of input fields based on a configuration map.
+
+    This function acts as a dynamic wrapper around 'config_loop'. It safely extracts
+    only the requested fields into a sub-configuration, keeping the domain controllers
+    clean and free from dictionary manipulation logic.
+
+    Args:
+        target_fields (tuple[str, ...]):
+            A tuple containing the exact keys of the fields to be prompted.
+        config_map (ConfigMap):
+            The full configuration dictionary containing the fields' settings.
+        callback_fn (Callable[[str, InputType], CallbackReturn]):
+            The contextual validation callback function to process the user inputs.
+
+    Returns:
+        dict[str, InputType]:
+            A dictionary containing only the requested fields mapped to their
+            validated input values.
+
+    Raises:
+        TypeError:
+            If 'target_fields', 'config_map', or 'callback_fn' receive invalid types.
+        KeyError:
+            If any key inside 'target_fields' is not present in the 'config_map'.
+        UserAbortError:
+            Propagated from 'config_loop' if the user cancels the operation.
+    """
+
+    if not isinstance(target_fields, tuple):
+        raise TypeError(
+            f"target_fields must be a tuple, got {type(target_fields).__name__}"
+        )
+
+    if not isinstance(config_map, dict):
+        raise TypeError(f"config_map must be a dict, got {type(config_map).__name__}")
+
+    if not set(target_fields).issubset(config_map):
+        raise KeyError("One or more target field(s) not found in config_map")
+
+    if not callable(callback_fn):
+        raise TypeError(
+            f"callback_fn expects a callable, got {type(callback_fn).__name__}"
+        )
+
+    sub_config = {k: config_map[k] for k in target_fields}
+    user_in_dict = config_loop(sub_config, callback_fn)
+    return user_in_dict

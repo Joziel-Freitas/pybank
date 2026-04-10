@@ -4,25 +4,21 @@ from decimal import Decimal
 from functools import partial
 from typing import Any, Callable, ClassVar, Generic, TypeVar, cast
 
-from domain.account import Account, CheckingAccount, SavingsAccount
+from domain.account import Account, CheckingAccount, SavingsAccount, WithdrawalInfo
 from domain.bank import Bank
 from domain.person import Client, Person
 from infra import config, io_utils, verify, views
-from infra.io_utils import (
-    CallbackReturn,
-    InputType,
-    config_loop,
-    get_single_input,
-    validate_entry,
-)
+from infra.io_utils import CallbackReturn, InputType
 from settings import ADMIN_EXIT_CODE
 from shared.credentials import AccessToken, AccountCard, AuthToken
 from shared.exceptions import (
     ACCOUNT_ERROR_MAP,
     PERSON_ERROR_MAP,
     AccountAlreadyActiveError,
+    AccountMethodError,
     AccountNotFoundError,
     BankAuthenticationError,
+    BankMethodError,
     BankPasswordError,
     BankSecurityError,
     BlockedAccountError,
@@ -35,6 +31,7 @@ from shared.exceptions import (
     ErrorMapType,
     HomeBranchRestrictionError,
     InvalidDepositError,
+    InvalidWithdrawError,
     NotEmptyAccountError,
     UserAbortError,
     map_exceptions,
@@ -129,7 +126,7 @@ class BaseController(ABC, Generic[T, R]):
         self._model_class = model_class
 
         self._controller_validator_cb = partial(
-            validate_entry, validation_mapper=self._validation_mapper
+            io_utils.validate_entry, validation_mapper=self._validation_mapper
         )
 
     def __repr__(self) -> str:
@@ -227,7 +224,7 @@ class CreationController(BaseController[CreatableT, CreatableT]):
                 return self._model_class(**object_attr)
             except DomainError as error:
                 config_key = map_exceptions(error, self._obj_error_map)
-                new_value = get_single_input(
+                new_value = io_utils.get_single_input(
                     config_key, self._obj_config, self._controller_validator_cb
                 )
                 object_attr[config_key] = new_value
@@ -292,9 +289,17 @@ class TransactionController(BaseController[Account, None]):
         self._transaction_config = transaction_config
 
         verify.verify_instance(transaction_type, TransactionType)
+
+        if transaction_type != TransactionType.DEPOSIT and access_token is None:
+            raise RuntimeError(
+                "AccessToken is required to perform the requested operation"
+            )
+
         self._transaction_type = transaction_type
 
-        verify.verify_instance(access_token, AccessToken)
+        if access_token is not None:
+            verify.verify_instance(access_token, AccessToken)
+
         self._access_token = access_token
 
     def __repr__(self) -> str:
@@ -324,35 +329,20 @@ class TransactionController(BaseController[Account, None]):
             TransactionType.DEPOSIT: "deposit",
         }
 
-        if self._transaction_type not in transaction_mapper.keys():
+        if self._transaction_type not in transaction_mapper:
             raise RuntimeError(
-                f"Method doesn't handles {self._transaction_type} operation"
+                f"Method doesn't handle {self._transaction_type} operation"
             )
 
         transaction_key = transaction_mapper[self._transaction_type]
-
-        value_raw = get_single_input(
+        views.controller_output("transaction", "min_value")
+        value_raw = io_utils.get_single_input(
             transaction_key, self._transaction_config, self._controller_validator_cb
         )
         value = _assert_input(value_raw, Decimal)
         return value
 
-    def _authorize_withdraw(self, value: Decimal) -> bool:
-        """
-        Verifies if the withdrawal is authorized by the Account rules.
-
-        If the account uses a limit (overdraft), prompts the user for confirmation.
-
-        Args:
-            value (Decimal): The amount to be withdrawn.
-
-        Returns:
-            bool: True if authorized (and confirmed by user if limit needed), False otherwise.
-
-        Raises:
-            RuntimeError: If the validation state returns an invalid combination.
-        """
-        info = self._active_account.check_withdrawal(value)
+    def _confirm_withdraw(self, info: WithdrawalInfo) -> bool:
 
         if not info.authorized:
             views.controller_output("transaction", None)
@@ -361,67 +351,48 @@ class TransactionController(BaseController[Account, None]):
         if info.uses_limit is False:
             return True
 
-        if info.uses_limit is True:
-            views.controller_output("transaction", False)
-            limit_option = get_single_input(
-                "limit", self._transaction_config, self._controller_validator_cb
-            )
-            limit_option = _assert_input(limit_option, int)
+        views.controller_output("transaction", False)
+        use_limit_mapper = {1: True, 2: False}
+        limit_option_raw = io_utils.get_single_input(
+            "limit", self._transaction_config, self._controller_validator_cb
+        )
+        limit_option = _assert_input(limit_option_raw, int)
+        use_limit = use_limit_mapper[limit_option]
 
-            limit_mapper = {1: True, 2: False}
-            use_limit = limit_mapper[limit_option]
-            return use_limit
-        raise RuntimeError(f"Invalid withdraw state: {info}")
+        if not use_limit:
+            raise UserAbortError
 
-    def _handle_statement(self) -> None:
-        """
-        Retrieves account data and orchestrates the statement display.
-
-        It checks the specific type of the active account. If it is a CheckingAccount,
-        it gathers additional overdraft limit information (total and remaining)
-        to provide a complete financial overview in the view.
-        """
-        statement = self._active_account.get_statement
-        balance = self._active_account.balance
-        overdraft_info = None
-
-        if isinstance(self._active_account, CheckingAccount):
-            overdraft_info = {
-                "total_limit": self._active_account.CREDIT_LIMIT,
-                "remaining": self._active_account.remaining_credit,
-            }
-        views.show_statement(statement, balance, overdraft_info)
+        return True
 
     def _handle_withdraw(self) -> None:
-        """
-        Orchestrates the withdrawal workflow.
+        amount = self._get_transaction_value()
 
-        Flow:
-        1. Prompts for the withdrawal amount.
-        2. Validates authorization via `_authorize_withdraw` (checks balance and
-           prompts user confirmation if overdraft is needed).
-        3. Executes the withdrawal and shows success feedback if authorized.
-        4. Displays a cancellation message if the user aborts the process.
-        """
-        value = self._get_transaction_value(TransactionType.WITHDRAW)
-        if self._authorize_withdraw(value):
-            self._active_account.withdraw(value)
+        try:
+            info = self._bank_instance.check_withdrawal_info(
+                self._active_access_token, amount
+            )
+            verify.verify_instance(info, WithdrawalInfo)
+            proceed = self._confirm_withdraw(info)
+
+            if not proceed:
+                raise ControllerOperationError
+
+            self._bank_instance.execute_withdraw(self._active_access_token, amount)
             views.controller_output("transaction", True)
-            return
+        except InvalidWithdrawError:
+            raise ControllerOperationError
+        except BlockedAccountError:
+            views.controller_output("access", "withdraw_blocked")
+            raise ControllerCredentialsError
 
-        views.controller_output("general", "cancel")
-
-    def _handle_deposit(self) -> None:
-        branch_code_raw = get_single_input(
-            "branch_code", self._auth_config, self._controller_validator_cb
+    def _handle_public_deposit(self) -> None:
+        user_in_dict = io_utils.get_selected_inputs(
+            ("branch_code", "account_num"),
+            self._auth_config,
+            self._controller_validator_cb,
         )
-        account_num_raw = get_single_input(
-            "account_num", self._auth_config, self._controller_validator_cb
-        )
-        branch_code = _assert_input(branch_code_raw, str)
-        account_num = _assert_input(account_num_raw, str)
-
-        views.controller_output("transaction", "min_value")
+        branch_code = _assert_input(user_in_dict["branch_code"], str)
+        account_num = _assert_input(user_in_dict["account_num"], str)
         amount = self._get_transaction_value()
 
         try:
@@ -439,9 +410,9 @@ class TransactionController(BaseController[Account, None]):
     def run_controller(self) -> None:
         match self._transaction_type:
             case TransactionType.DEPOSIT:
-                ...
+                self._handle_public_deposit()
             case TransactionType.WITHDRAW:
-                ...
+                self._handle_withdraw()
             case TransactionType.STATEMENT:
                 ...
             case _:
@@ -564,6 +535,10 @@ class BankSystemController(BaseController[Bank, None]):
 
         return self._client
 
+    def _handle_exception_views(
+        self, method_key: str, domain_error: BankMethodError | AccountMethodError
+    ) -> None: ...
+
     def _prompt_new_password(self) -> str:
         """
         Handles the double-input loop for creating or updating a secure password.
@@ -573,13 +548,13 @@ class BankSystemController(BaseController[Bank, None]):
         """
         while True:
             views.controller_output("update_password", "1")
-            raw_pwd_1 = get_single_input(
+            raw_pwd_1 = io_utils.get_single_input(
                 "password", self._auth_config, self._controller_validator_cb
             )
             pwd_1 = _assert_input(raw_pwd_1, str)
 
             views.controller_output("update_password", "2")
-            raw_pwd_2 = get_single_input(
+            raw_pwd_2 = io_utils.get_single_input(
                 "password", self._auth_config, self._controller_validator_cb
             )
             pwd_2 = _assert_input(raw_pwd_2, str)
@@ -598,7 +573,7 @@ class BankSystemController(BaseController[Bank, None]):
         Returns:
             str: The CPF provided by the user.
         """
-        client_cpf = get_single_input(
+        client_cpf = io_utils.get_single_input(
             "cpf", config.identification_config, self._controller_validator_cb
         )
         client_cpf = _assert_input(client_cpf, str)
@@ -625,7 +600,9 @@ class BankSystemController(BaseController[Bank, None]):
             user_in = _assert_input(user_in_raw, int)
             return {"result": 0 <= user_in < len(client_cards)}
 
-        card_idx_raw = get_single_input("card", self._auth_config, local_validator_cb)
+        card_idx_raw = io_utils.get_single_input(
+            "card", self._auth_config, local_validator_cb
+        )
         card_idx = _assert_input(card_idx_raw, int)
 
         return client_cards[card_idx]
@@ -640,7 +617,7 @@ class BankSystemController(BaseController[Bank, None]):
         """
         use_card_mapper = {1: True, 2: False}
 
-        use_card_raw = get_single_input(
+        use_card_raw = io_utils.get_single_input(
             "use_card",
             self._menu_config,
             self._controller_validator_cb,
@@ -668,7 +645,7 @@ class BankSystemController(BaseController[Bank, None]):
             AuthToken: A stateless token proving account ownership.
         """
         if not self._active_card:
-            user_inputs = config_loop(
+            user_inputs = io_utils.config_loop(
                 self._auth_config, self._controller_validator_cb, skip_fields=["card"]
             )
             branch_code = _assert_input(user_inputs["branch_code"], str)
@@ -742,7 +719,7 @@ class BankSystemController(BaseController[Bank, None]):
             if attempt == 1:
                 views.controller_output(mapper_key="access", inner_key="last")
 
-            raw_password = get_single_input(
+            raw_password = io_utils.get_single_input(
                 "password", self._auth_config, self._controller_validator_cb
             )
             password = _assert_input(raw_password, str)
@@ -819,7 +796,7 @@ class BankSystemController(BaseController[Bank, None]):
         if self._active_auth_token is None:
             raise RuntimeError("AuthToken required to perform the operation")
 
-        raw_birth_date = get_single_input(
+        raw_birth_date = io_utils.get_single_input(
             "birth_date", self._identification_config, self._controller_validator_cb
         )
         new_password = self._prompt_new_password()
@@ -858,7 +835,7 @@ class BankSystemController(BaseController[Bank, None]):
             views.controller_output("close_account", False)
             raise ControllerOperationError
 
-        account = self._bank_instance.get_account(self._active_access_token)
+        account = self._bank_instance._get_account(self._active_access_token)
 
         if account.balance != 0:
             views.show_close_account_status(account.balance)
@@ -909,7 +886,7 @@ class BankSystemController(BaseController[Bank, None]):
         acc_type_mapper = {1: CheckingAccount, 2: SavingsAccount}
         new_acc_config = self._new_acc_config.copy()
 
-        user_in = get_single_input(
+        user_in = io_utils.get_single_input(
             "acc_type", self._new_acc_config, self._controller_validator_cb
         )
         int_user_in = _assert_input(user_in, int)
@@ -972,7 +949,7 @@ class BankSystemController(BaseController[Bank, None]):
     def _transactions_menu(self) -> None:
         """Displays and routes the Transactions sub-menu options."""
         try:
-            transaction_option = get_single_input(
+            transaction_option = io_utils.get_single_input(
                 "transactions", self._menu_config, self._controller_validator_cb
             )
             transaction = TransactionType(transaction_option)
@@ -982,16 +959,13 @@ class BankSystemController(BaseController[Bank, None]):
         except UserAbortError:
             views.controller_output("menu", "cancel")
             return
-        except ControllerCredentialsError:
-            views.controller_output("menu", "credentials")
-            return
         except ControllerOperationError:
             return
 
     def _management_menu(self) -> None:
         """Displays and routes the Account Management sub-menu options."""
         try:
-            management_option = get_single_input(
+            management_option = io_utils.get_single_input(
                 "management", self._menu_config, self._controller_validator_cb
             )
             management = ManagementType(management_option)
@@ -1010,9 +984,6 @@ class BankSystemController(BaseController[Bank, None]):
         except UserAbortError:
             views.controller_output("menu", "cancel")
             return
-        except ControllerCredentialsError:
-            views.controller_output("menu", "credentials")
-            return
         except ControllerOperationError:
             return
 
@@ -1024,7 +995,7 @@ class BankSystemController(BaseController[Bank, None]):
         """
         while True:
             try:
-                raw_operation = get_single_input(
+                raw_operation = io_utils.get_single_input(
                     "operations", self._menu_config, self._controller_validator_cb
                 )
                 operation = OperationMenuType(_assert_input(raw_operation, int))
@@ -1040,7 +1011,7 @@ class BankSystemController(BaseController[Bank, None]):
                 self._end_session()
                 views.controller_output("menu", "exit")
                 return
-            except BankSecurityError:
+            except (BankSecurityError, ControllerCredentialsError):
                 self._end_session()
                 views.controller_output("menu", "security")
                 return
@@ -1064,7 +1035,7 @@ class BankSystemController(BaseController[Bank, None]):
 
             return {"result": is_valid_menu or is_admin_code}
 
-        main_option = get_single_input(
+        main_option = io_utils.get_single_input(
             "main_menu", self._menu_config, _main_menu_validator_cb
         )
 

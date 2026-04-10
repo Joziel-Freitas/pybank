@@ -21,7 +21,7 @@ class InnerConfig(TypedDict):
     error_msg: str
 
 
-ConfigMap = dict[str, InnerConfig]
+type ConfigMap = dict[str, InnerConfig]
 
 menu_config: ConfigMap = {
     "main_menu": {

@@ -9,8 +9,9 @@ attribute validation, and core banking mathematical operations (deposit and with
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, ClassVar, NamedTuple, cast
+from typing import Any, ClassVar, cast
 
 from infra import verify
 from shared.exceptions import (
@@ -22,7 +23,25 @@ from shared.exceptions import (
 )
 
 
-class WithdrawalInfo(NamedTuple):
+@dataclass(frozen=True)
+class WithdrawalInfo:
+    """
+    Domain Data Transfer Object (DTO) representing the evaluation of a withdrawal request.
+
+    Encapsulates the business logic evaluation without triggering any state changes.
+    It informs the Interface layer whether the operation is mathematically possible
+    and if it requires explicit user consent (e.g., dipping into an overdraft limit).
+
+    Attributes:
+        authorized (bool):
+            True if the account has sufficient total funds (balance + credit)
+            to cover the requested amount.
+        uses_limit (bool | None):
+            - False: The requested amount is fully covered by the standard balance.
+            - True: The requested amount exceeds the balance and requires credit limit usage.
+            - None: The withdrawal is not authorized (insufficient total funds).
+    """
+
     authorized: bool
     uses_limit: bool | None
 
@@ -453,16 +472,20 @@ class CheckingAccount(Account):
 
     def check_withdrawal(self, value: Decimal) -> WithdrawalInfo:
         """
-        Withdraws an amount using credit if needed.
+        Evaluates if a requested withdrawal amount is mathematically permissible.
 
-        The total available funds are calculated as `balance + CREDIT_LIMIT`.
-        `_used_credit` is updated if the balance becomes negative.
+        This method checks the requested amount against the account's total available
+        funds (current balance plus remaining overdraft credit). It is a side-effect
+        free query; it does not alter the account's balance or credit state.
 
         Args:
-            value (Decimal): The amount to withdraw.
+            value (Decimal): The proposed amount to withdraw.
 
-        Raises:
-            InvalidWithdrawError: If the withdrawal amount is invalid or exceeds the total available funds.
+        Returns:
+            WithdrawalInfo: A DTO detailing the evaluation:
+                - authorized: True if the amount is within total available funds.
+                - uses_limit: True if the withdrawal requires dipping into the overdraft limit,
+                  False if the standard balance covers it, or None if unauthorized.
         """
         total_funds = self.balance + self.remaining_credit
 
