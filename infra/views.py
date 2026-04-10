@@ -37,14 +37,14 @@ def bye() -> None:
 
 # Dictionary mapping internal status keys to user-friendly messages
 method_mappers = {
-    "menu": {
+    "menus": {
         "security": "Sessão encerrada por questão de segurança. Voltando à tela inicial",
         "exit": "Sessão encerrada. Voltando à tela inicial",
         "cancel": "Operação cancelada. Voltando ao menu anterior",
     },
     "auth": {
         True: "Autenticado com sucesso",
-        False: "Falha na autenticação. Insira os dados novamente",
+        "auth_error": "Falha na autenticação. Insira os dados novamente",
     },
     "access": {
         True: "Acesso Concedido",

@@ -3,7 +3,7 @@ from typing import Any, Callable
 
 from infra import verify
 
-from .exceptions import DomainError, InvalidCpfError
+from .exceptions import DomainError
 
 type ValidatorCallback = Callable[[Any], bool]
 
@@ -59,6 +59,9 @@ def validate_cpf(cpf: str) -> str:
     """
     Performs the full mathematical verification of the CPF (11 digits, sequence, DVs).
 
+    This is a pure infrastructure validator. It focuses strictly on data integrity
+    and checksum rules, leaving domain-specific error wrapping to the caller.
+
     Args:
         cpf (str): The 11-digit CPF string.
 
@@ -66,36 +69,33 @@ def validate_cpf(cpf: str) -> str:
         str: The validated CPF string.
 
     Raises:
-        InvalidCpfError: If the CPF fails any of the following:
-                            - Not a string or not 11 digits long.
-                            - All repeated digits (e.g., '11111111111').
-                            - Fails the mathematical checksum validation.
+        TypeError: If the input is not a string.
+        ValueError: If the CPF has an invalid length, consists of all repeated
+            digits, or fails the mathematical checksum validation.
     """
-    try:
-        verify.verify_instance(cpf, str)
-        verify.verify_digits(cpf, 11)
 
-        # Check for all repeated digits (e.g., "11111111111")
-        if cpf == cpf[0] * 11:
-            raise ValueError("CPF cannot have all digits equal.")
+    verify.verify_instance(cpf, str)
+    verify.verify_digits(cpf, 11)
 
-        # Calculate the First Verifier Digit (DV1)
-        dv1 = _calculate_verifier_digit(cpf[:9], 10)
+    # Check for all repeated digits (e.g., "11111111111")
+    if cpf == cpf[0] * 11:
+        raise ValueError("CPF cannot have all digits equal.")
 
-        # Calculate the Second Verifier Digit (DV2)
-        dv2 = _calculate_verifier_digit(cpf[:10], 11)
+    # Calculate the First Verifier Digit (DV1)
+    dv1 = _calculate_verifier_digit(cpf[:9], 10)
 
-        # Check if the calculated digits match the actual last two digits
-        calculated_dv = f"{dv1}{dv2}"
-        actual_dv = cpf[9:]
+    # Calculate the Second Verifier Digit (DV2)
+    dv2 = _calculate_verifier_digit(cpf[:10], 11)
 
-        if calculated_dv != actual_dv:
-            raise ValueError(
-                f"CPF is mathematically invalid. Calculated DVs: {calculated_dv}, Actual DVs: {actual_dv}."
-            )
-        return cpf
-    except (TypeError, ValueError) as e:
-        raise InvalidCpfError(f"Invalid CPF. Cause: {e}") from e
+    # Check if the calculated digits match the actual last two digits
+    calculated_dv = f"{dv1}{dv2}"
+    actual_dv = cpf[9:]
+
+    if calculated_dv != actual_dv:
+        raise ValueError(
+            f"CPF is mathematically invalid. Calculated DVs: {calculated_dv}, Actual DVs: {actual_dv}."
+        )
+    return cpf
 
 
 def validate_date_format(date_str: str) -> date:

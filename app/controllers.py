@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from datetime import date
 from decimal import Decimal
 from functools import partial
 from typing import Any, Callable, ClassVar, Generic, TypeVar, cast
@@ -10,15 +9,14 @@ from domain.person import Client, Person
 from infra import config, io_utils, verify, views
 from infra.io_utils import CallbackReturn, InputType
 from settings import ADMIN_EXIT_CODE
+from shared import validators
 from shared.credentials import AccessToken, AccountCard, AuthToken
 from shared.exceptions import (
     ACCOUNT_ERROR_MAP,
     PERSON_ERROR_MAP,
     AccountAlreadyActiveError,
-    AccountMethodError,
     AccountNotFoundError,
     BankAuthenticationError,
-    BankMethodError,
     BankPasswordError,
     BankSecurityError,
     BlockedAccountError,
@@ -30,6 +28,7 @@ from shared.exceptions import (
     DuplicatedClientError,
     ErrorMapType,
     HomeBranchRestrictionError,
+    InvalidBirthDateError,
     InvalidDepositError,
     InvalidWithdrawError,
     NotEmptyAccountError,
@@ -42,7 +41,7 @@ from shared.types import (
     OperationMenuType,
     TransactionType,
 )
-from shared.validators import ValidatorCallback, boolean_validator_dec, validate_cpf
+from shared.validators import ValidatorCallback
 
 CreatableT = TypeVar("CreatableT", bound=Person | Account)
 ClientDataT = TypeVar("ClientDataT", bound=Client | str)
@@ -154,10 +153,14 @@ class CreationController(BaseController[CreatableT, CreatableT]):
     """
 
     _validation_mapper = {
-        "name": boolean_validator_dec(Person.validate_name),
-        "birth_date": boolean_validator_dec(Person.validate_birth_date),
-        "balance": boolean_validator_dec(Account.validate_account_initial_balance),
-        "account_num": boolean_validator_dec(Account.validate_account_number),
+        "name": validators.boolean_validator_dec(Person.validate_name),
+        "birth_date": validators.boolean_validator_dec(Person.validate_birth_date),
+        "balance": validators.boolean_validator_dec(
+            Account.validate_account_initial_balance
+        ),
+        "account_num": validators.boolean_validator_dec(
+            Account.validate_account_number
+        ),
     }
 
     _obj_config: config.ConfigMap
@@ -244,20 +247,22 @@ class TransactionController(BaseController[Account, None]):
     """
 
     _validation_mapper = {
-        "branch_code": boolean_validator_dec(Account.validate_branch_code),
-        "account_num": boolean_validator_dec(Account.validate_account_number),
-        "deposit": boolean_validator_dec(Account.validate_account_deposit),
-        "withdraw": boolean_validator_dec(
+        "branch_code": validators.boolean_validator_dec(Account.validate_branch_code),
+        "account_num": validators.boolean_validator_dec(
+            Account.validate_account_number
+        ),
+        "deposit": validators.boolean_validator_dec(Account.validate_account_deposit),
+        "withdraw": validators.boolean_validator_dec(
             partial(
                 verify.verify_interval,
                 min_val=Account.MIN_ATM_TRANSACTION,
                 max_val=None,
             )
         ),
-        "limit": boolean_validator_dec(
+        "limit": validators.boolean_validator_dec(
             partial(verify.verify_interval, min_val=1, max_val=2)
         ),
-        "statement": boolean_validator_dec(
+        "statement": validators.boolean_validator_dec(
             partial(verify.verify_interval, min_val=1, max_val=3)
         ),
     }
@@ -434,22 +439,22 @@ class BankSystemController(BaseController[Bank, None]):
     """
 
     _validation_mapper = {
-        "cpf": boolean_validator_dec(validate_cpf),
-        "password": boolean_validator_dec(Bank.validate_password),
-        "operations": boolean_validator_dec(
+        "cpf": validators.boolean_validator_dec(validators.validate_cpf),
+        "password": validators.boolean_validator_dec(Bank.validate_password),
+        "operations": validators.boolean_validator_dec(
             partial(verify.verify_interval, min_val=1, max_val=2)
         ),
-        "transactions": boolean_validator_dec(
+        "transactions": validators.boolean_validator_dec(
             partial(verify.verify_interval, min_val=1, max_val=3)
         ),
-        "management": boolean_validator_dec(
+        "management": validators.boolean_validator_dec(
             partial(verify.verify_interval, min_val=1, max_val=3)
         ),
-        "acc_type": boolean_validator_dec(
+        "acc_type": validators.boolean_validator_dec(
             partial(verify.verify_interval, min_val=1, max_val=2)
         ),
-        "birth_date": boolean_validator_dec(Person.validate_birth_date),
-        "use_card": boolean_validator_dec(
+        "birth_date": validators.boolean_validator_dec(Person.validate_birth_date),
+        "use_card": validators.boolean_validator_dec(
             partial(verify.verify_interval, min_val=1, max_val=2)
         ),
     }
@@ -534,10 +539,6 @@ class BankSystemController(BaseController[Bank, None]):
             raise RuntimeError("Getter called without an Client instance")
 
         return self._client
-
-    def _handle_exception_views(
-        self, method_key: str, domain_error: BankMethodError | AccountMethodError
-    ) -> None: ...
 
     def _prompt_new_password(self) -> str:
         """
@@ -802,9 +803,9 @@ class BankSystemController(BaseController[Bank, None]):
         new_password = self._prompt_new_password()
 
         birth_date_str = _assert_input(raw_birth_date, str)
-        birth_date = date.strptime(birth_date_str, "%d/%m/%Y")
 
         try:
+            birth_date = validators.validate_date_format(birth_date_str)
             self._bank_instance.unfreeze_account(
                 self._active_auth_token, birth_date, new_password
             )
@@ -815,7 +816,7 @@ class BankSystemController(BaseController[Bank, None]):
         except AccountAlreadyActiveError:
             views.controller_output("unfreeze", "already_active")
             raise ControllerOperationError
-        except BankPasswordError as e:
+        except (BankPasswordError, InvalidBirthDateError) as e:
             raise RuntimeError("Critical error in I/O logic") from e
 
     def _close_account(self) -> None:

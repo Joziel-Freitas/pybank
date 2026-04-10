@@ -15,11 +15,11 @@ from dataclasses import asdict
 from datetime import date
 from typing import ClassVar, cast
 
-from infra import verify
 from shared import validators
 from shared.credentials import AccountCard
 from shared.exceptions import (
     InvalidBirthDateError,
+    InvalidCpfError,
     InvalidNameError,
     PersonCardNotFoundError,
     PersonDuplicatedCardError,
@@ -200,7 +200,7 @@ class Person(ABC):
                 )
 
             return date_obj
-        except verify.VERIFY_ERRORS as e:
+        except (ValueError, TypeError) as e:
             raise InvalidBirthDateError(
                 f"Value {birth_date} is invalid for date of birth. Cause: {e}"
             ) from e
@@ -224,13 +224,26 @@ class Person(ABC):
     @staticmethod
     def validate_cpf(cpf: str) -> str:
         """
-        Validates the CPF by delegating the complex mathematical verification
-        to the shared validator module.
+        Validates the CPF by delegating mathematical verification to infrastructure.
 
-        This maintains the Person class as the single entry point (Facade)
-        for all personal attribute validations used by the Controllers.
+        Acts as a Domain Facade. It catches low-level technical errors (ValueError,
+        TypeError) from the shared validator and translates them into a formal
+        'InvalidCpfError', providing the necessary context for the Domain layer.
+
+        Args:
+            cpf (str): The CPF string to validate.
+
+        Returns:
+            str: The validated CPF string.
+
+        Raises:
+            InvalidCpfError: If the CPF is technically invalid or poorly formatted,
+                encapsulating the original cause.
         """
-        return validators.validate_cpf(cpf)
+        try:
+            return validators.validate_cpf(cpf)
+        except (ValueError, TypeError) as e:
+            raise InvalidCpfError(f"Person CPF is invalid: {e}")
 
     def to_dict(self) -> dict:
         """
