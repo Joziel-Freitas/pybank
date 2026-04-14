@@ -36,6 +36,14 @@ def bye() -> None:
 
 
 # Dictionary mapping internal status keys to user-friendly messages
+
+TRANSACTION_MESSAGES: dict[str, dict[str, str]] = {
+    "general": {
+        'success': "Transação realizada com sucesso",
+        'min_value': f"Valor mínimo para transação: {Account.MIN_ATM_TRANSACTION}"
+    }
+
+}
 method_mappers = {
     "menus": {
         "security": "Sessão encerrada por questão de segurança. Voltando à tela inicial",
@@ -54,7 +62,7 @@ method_mappers = {
     },
     "transaction": {
         "min_value": f"Valor mínimo para transação: {Account.MIN_ATM_TRANSACTION}",
-        True: "Transação realizada com sucesso",
+        True:
         False: "Valor insuficiente em conta. Para sacar esse valor, autorize o uso do limite especial",
         None: "O valor excede o montante em conta. Transação não autorizada",
         "deposit_blocked": "Transação não permitida para esta conta no momento. Entre em contato com o titular",
@@ -94,7 +102,7 @@ method_mappers = {
 }
 
 
-def controller_output(mapper_key: str, inner_key: str | bool | None) -> None:
+def controller_output(message: str) -> None:
     """
     Retrieves and displays a standardized status message based on the operation context.
 
@@ -106,13 +114,10 @@ def controller_output(mapper_key: str, inner_key: str | bool | None) -> None:
         mapper_key (str): The category of the operation (e.g., 'auth', 'transaction').
         status_key (str | bool | None): The specific result state of the operation.
     """
-    msg = method_mappers[mapper_key][inner_key]
 
     print()
-    print(msg)
-    for i in range(3):
-        print(".", end=" ")
-        sleep(0.85)
+    print(message)
+    sleep(3)
     print()
 
 

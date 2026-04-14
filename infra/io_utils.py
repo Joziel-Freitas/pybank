@@ -9,10 +9,26 @@ based on configuration maps. It is agnostic to domain rules.
 from decimal import Decimal, InvalidOperation
 from typing import Callable, NotRequired, Type, TypedDict
 
+import verify
 from shared.exceptions import UserAbortError
 from shared.validators import ValidatorCallback
 
-from .config import ConfigMap, InnerConfig
+
+class InnerConfig(TypedDict):
+    """
+    Typed dictionary that defines the structure of a configuration entry.
+
+    Attributes:
+        info (str): Short description or label for the configuration option.
+        prompt (str): Text shown to the user when input is required.
+        value_type (type): Expected Python type for the input value (e.g., int, str, float).
+        error_msg (str): Error message displayed when the input does not match the expected type or format.
+    """
+
+    info: str
+    prompt: str
+    value_type: type
+    error_msg: str
 
 
 class CallbackReturn(TypedDict):
@@ -32,8 +48,52 @@ class CallbackReturn(TypedDict):
 
 
 type InputType = str | int | float | Decimal
+type ConfigMap = dict[str, InnerConfig]
 
 EXIT_CMD = "S"
+
+IO_KEYS = {"info", "prompt", "value_type", "error_msg"}
+
+
+def verify_config_map(obj_config: ConfigMap) -> None:
+    """
+    Verifies if the configuration map follows the expected nested dictionary structure.
+
+    Ensures that the provided map is a dictionary where each key is a string,
+    and its value is an inner dictionary. It validates that within the inner
+    dictionary, the 'value_type' key holds a type object, while all other keys
+    hold string values.
+
+    Args:
+        obj_config (config.ConfigMap):
+            The configuration map to be verified.
+
+    Raises:
+        TypeError:
+            If the structure does not match the expected InnerConfig schema.
+    """
+    try:
+        verify.verify_instance(obj_config, dict)
+
+        for key, inner_dict in obj_config.items():
+            verify.verify_instance(key, str)
+            verify.verify_instance(inner_dict, dict)
+
+            if inner_dict.keys() != IO_KEYS:
+                raise TypeError
+
+            for k, v in inner_dict.items():
+                verify.verify_instance(k, str)
+
+                if k == "value_type":
+                    verify.verify_instance(v, type)
+                    continue
+
+                verify.verify_instance(v, str)
+    except TypeError as e:
+        raise TypeError(
+            "obj_config must follow the InnerConfig schema strictly."
+        ) from e
 
 
 def validate_entry(

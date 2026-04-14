@@ -49,14 +49,14 @@ class BankSecurityError(SecurityError):
     """
 
 
-# --- Domain Layer Exceptions (The Royalty) ---
+# --- Domain Layer Exceptions ---
 
 
 class DomainError(Exception):
     """Base exception for all domain-specific business rule violations."""
 
 
-# --- Application Layer Exceptions (The Orchestra) ---
+# --- Application Layer Exceptions ---
 
 
 class ControllerError(Exception):
@@ -89,51 +89,43 @@ class BankError(DomainError):
     """Base exception for errors related to the Bank service layer."""
 
 
-class BankAttributeError(BankError):
-    """Base exception for validation errors on Bank attributes."""
-
-
-class BankMethodError(BankError):
-    """Base exception for errors during Bank business operations."""
-
-
-class BankNameError(BankAttributeError):
+class BankNameError(BankError):
     """Raised when the Bank's name is invalid."""
 
 
-class DuplicatedClientError(BankMethodError):
+class DuplicatedClientError(BankError):
     """Raised when a Client is already registered in Bank."""
 
 
-class DuplicatedAccountError(BankMethodError):
+class DuplicatedAccountError(BankError):
     """Raised when an Account is already registered in the Bank."""
 
 
-class BankPasswordError(BankMethodError):
+class BankPasswordError(BankError):
     """Raised when a Bank password validation fails."""
 
 
-class ClientNotFoundError(BankMethodError):
+class ClientNotFoundError(BankError):
     """Raised when a client is not found in the Bank's registry."""
 
 
-class AccountNotFoundError(BankMethodError):
+class AccountNotFoundError(BankError):
     """Raised when an account is not found in the Bank's registry."""
 
 
-class BankAuthenticationError(BankMethodError):
+class BankAuthenticationError(BankError):
     """Raised when the authentication process fails."""
 
 
-class NotEmptyAccountError(BankMethodError):
+class NotEmptyAccountError(BankError):
     """Raised when closing an account with a non-zero balance."""
 
 
-class AccountAlreadyActiveError(BankMethodError):
+class AccountAlreadyActiveError(BankError):
     """Raised when trying to unfreeze an operational account."""
 
 
-class HomeBranchRestrictionError(BankMethodError):
+class HomeBranchRestrictionError(BankError):
     """Raised when an operation is restricted to the account's home branch."""
 
 
@@ -144,31 +136,23 @@ class PersonError(DomainError):
     """Base exception for errors related to the Person/Client entity."""
 
 
-class PersonAttributeError(PersonError):
-    """Validation errors on Person core attributes (Name, CPF, Birth Date)."""
-
-
-class InvalidNameError(PersonAttributeError):
+class InvalidNameError(PersonError):
     """Raised when a name violates formatting or length rules."""
 
 
-class InvalidBirthDateError(PersonAttributeError):
+class InvalidBirthDateError(PersonError):
     """Raised when a birth date is in the future or age is out of range."""
 
 
-class InvalidCpfError(PersonAttributeError):
+class InvalidCpfError(PersonError):
     """Raised when a CPF fails mathematical or length validation."""
 
 
-class PersonMethodError(PersonError):
-    """Errors during Client-specific operations."""
-
-
-class PersonDuplicatedCardError(PersonMethodError):
+class PersonDuplicatedCardError(PersonError):
     """Raised when adding a card already associated with the client."""
 
 
-class PersonCardNotFoundError(PersonMethodError):
+class PersonCardNotFoundError(PersonError):
     """Raised when accessing a card not found in the client's collection."""
 
 
@@ -183,109 +167,81 @@ class BlockedAccountError(AccountError):
     """Raised when an operation is attempted on a frozen/blocked account."""
 
 
-class AccountAttributeError(AccountError):
-    """Validation errors on Account attributes (Branch, Number, Balance)."""
-
-
-class AccountMethodError(AccountError):
-    """Errors during financial operations (Deposit, Withdraw)."""
-
-
-class InvalidBranchError(AccountAttributeError):
+class InvalidBranchError(AccountError):
     """Raised for an invalid branch code format."""
 
 
-class InvalidAccountError(AccountAttributeError):
+class InvalidAccountError(AccountError):
     """Raised for an invalid account number format."""
 
 
-class InvalidBalanceError(AccountAttributeError):
+class InvalidBalanceError(AccountError):
     """Raised for invalid initial balances."""
 
 
-class InvalidWithdrawError(AccountMethodError):
+class InvalidWithdrawError(AccountError):
     """Raised when a withdrawal violates business rules (e.g., funds, negative value)."""
 
 
-class InvalidDepositError(AccountMethodError):
+class InvalidDepositError(AccountError):
     """Raised when a deposit value is non-positive."""
 
 
 # --- Error Metadata Mappers ---
 
-type ErrorMapType = dict[type[DomainError], dict[type[DomainError], str] | str]
+type ErrorMapType = dict[type[DomainError], str]
 
-BANK_ERROR_MAP: ErrorMapType = {
-    BankAttributeError: {BankNameError: "name"},
-    BankMethodError: {
-        BankPasswordError: "password",
-        BankAuthenticationError: "auth",
-        DuplicatedClientError: "already_client",
-        ClientNotFoundError: "not_client",
-        DuplicatedAccountError: "duplicated_account",
-        AccountNotFoundError: "not_account",
-        BlockedAccountError: "acc_blocked",
-        AccountAlreadyActiveError: "active_account",
-        NotEmptyAccountError: "non_zero_value",
-        HomeBranchRestrictionError: "other_branch",
-    },
-}
-
-PERSON_ERROR_MAP: ErrorMapType = {
-    PersonAttributeError: {
-        InvalidNameError: "name",
-        InvalidBirthDateError: "birth_date",
-        InvalidCpfError: "cpf",
-    },
-    PersonMethodError: {
-        PersonDuplicatedCardError: "duplicated_card",
-        PersonCardNotFoundError: "not_found",
-    },
-}
-
-ACCOUNT_ERROR_MAP: ErrorMapType = {
-    AccountAttributeError: {
-        InvalidBranchError: "branch_code",
-        InvalidAccountError: "account_num",
-        InvalidBalanceError: "balance",
-    },
-    AccountMethodError: {
-        InvalidDepositError: "value",
-        InvalidWithdrawError: "value",
-    },
+DOMAIN_ERROR_MAP: ErrorMapType = {
+    BankNameError: "name",
+    BankPasswordError: "password",
+    BankAuthenticationError: "auth",
+    DuplicatedClientError: "already_client",
+    ClientNotFoundError: "not_client",
+    DuplicatedAccountError: "acc_duplicated",
+    AccountNotFoundError: "acc_not_found",
+    BlockedAccountError: "acc_blocked",
+    AccountAlreadyActiveError: "acc_active",
+    NotEmptyAccountError: "non_zero_value",
+    HomeBranchRestrictionError: "other_branch",
+    InvalidNameError: "name",
+    InvalidBirthDateError: "birth_date",
+    InvalidCpfError: "cpf",
+    PersonDuplicatedCardError: "duplicated_card",
+    PersonCardNotFoundError: "card_not_found",
+    InvalidBranchError: "branch_code",
+    InvalidAccountError: "account_num",
+    InvalidBalanceError: "balance",
+    InvalidDepositError: "value",
+    InvalidWithdrawError: "value",
 }
 
 
-def map_exceptions(exception_instance: DomainError, error_map: ErrorMapType) -> str:
+def map_exceptions(error: DomainError) -> str:
     """
-    Translates a DomainError into a UI-friendly configuration key.
+    Maps a DomainError to a standardized context code.
 
-    This utility allows Controllers to identify the specific cause of a
-    failure without knowing the inner details of the exception. The returned
-    string is used to look up the appropriate message in the View layer.
+    Provides a flat, O(1) lookup to identify the specific reason for a domain
+    failure without requiring direct type evaluation of the exception.
 
     Args:
-        exception_instance (DomainError): The caught domain exception.
-        error_map (ErrorMapType): The mapping dictionary for the specific domain.
+        error (DomainError): The caught domain exception instance.
 
     Returns:
-        str: A configuration key matching the system's View/Config keys.
+        str: A standardized string identifier representing the error's context.
 
     Raises:
-        TypeError: If the exception type is not present in the provided map.
+        TypeError: If the provided argument is not a subclass of DomainError.
+        NotImplementedError: If the exception type is valid but missing from
+            the DOMAIN_ERROR_MAP dictionary.
     """
-    config_key = type(exception_instance)
+    if not isinstance(error, DomainError):
+        raise TypeError(f"Function expects DomainError, got {type(error).__name__}")
 
-    # Check for direct flat mapping
-    mapped_value = error_map.get(config_key)
-    if isinstance(mapped_value, str):
-        return mapped_value
+    error_context = DOMAIN_ERROR_MAP.get(type(error))
 
-    # Check for nested hierarchical mapping
-    for error in error_map.values():
-        if isinstance(error, dict) and config_key in error:
-            return error[config_key]
+    if error_context is None:
+        raise NotImplementedError(
+            f"Exception {type(error).__name__} is missing from DOMAIN_ERROR_MAP"
+        )
 
-    raise TypeError(
-        f"Critical: Exception type {config_key.__name__} not found in mapper."
-    )
+    return error_context

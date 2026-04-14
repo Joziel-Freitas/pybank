@@ -9,11 +9,9 @@ from domain.person import Client, Person
 from infra import config, io_utils, verify, views
 from infra.io_utils import CallbackReturn, InputType
 from settings import ADMIN_EXIT_CODE
-from shared import validators
+from shared import exceptions, validators
 from shared.credentials import AccessToken, AccountCard, AuthToken
 from shared.exceptions import (
-    ACCOUNT_ERROR_MAP,
-    PERSON_ERROR_MAP,
     AccountAlreadyActiveError,
     AccountNotFoundError,
     BankAuthenticationError,
@@ -26,14 +24,12 @@ from shared.exceptions import (
     DomainError,
     DuplicatedAccountError,
     DuplicatedClientError,
-    ErrorMapType,
     HomeBranchRestrictionError,
     InvalidBirthDateError,
     InvalidDepositError,
     InvalidWithdrawError,
     NotEmptyAccountError,
     UserAbortError,
-    map_exceptions,
 )
 from shared.types import (
     MainMenuType,
@@ -55,13 +51,18 @@ def _verify_config_map(obj_config: config.ConfigMap) -> None:
     """
     Verifies if the configuration map follows the expected nested dictionary structure.
 
+    Ensures that the provided map is a dictionary where each key is a string,
+    and its value is an inner dictionary. It validates that within the inner
+    dictionary, the 'value_type' key holds a type object, while all other keys
+    hold string values.
+
     Args:
         obj_config (config.ConfigMap):
-            The configuration map to be verified. Must be a dict of dicts.
+            The configuration map to be verified.
 
     Raises:
         TypeError:
-            If the structure does not match Dict[str, Dict[...]].
+            If the structure does not match the expected InnerConfig schema.
     """
     try:
         verify.verify_instance(obj_config, dict)
@@ -69,8 +70,48 @@ def _verify_config_map(obj_config: config.ConfigMap) -> None:
         for key, inner_dict in obj_config.items():
             verify.verify_instance(key, str)
             verify.verify_instance(inner_dict, dict)
+
+            for k, v in inner_dict.items():
+                verify.verify_instance(k, str)
+
+                if k == "value_type":
+                    verify.verify_instance(v, type)
+                    continue
+
+                verify.verify_instance(v, str)
     except TypeError as e:
-        raise TypeError("Unsupported configuration format") from e
+        raise TypeError(
+            "obj_config must follow the InnerConfig schema strictly."
+        ) from e
+
+
+def _verify_message_map(message_map: dict[str, dict[str, str]]) -> None:
+    """
+    Verifies if the UI message catalog follows the expected nested dictionary structure.
+
+    Performs a deep validation to ensure that the outer map keys are strings,
+    the inner values are dictionaries, and all inner keys and values are strictly
+    strings representing context keys and UI feedback messages.
+
+    Args:
+        message_map (dict[str, dict[str, str]]):
+            The UI message catalog to be verified.
+
+    Raises:
+        TypeError:
+            If the structure violates the expected nested dictionary format at any depth.
+    """
+    try:
+        verify.verify_instance(message_map, dict)
+        for key, inner_dict in message_map.items():
+            verify.verify_instance(key, str)
+            verify.verify_instance(inner_dict, dict)
+
+            for k, v in inner_dict.items():
+                verify.verify_instance(k, str)
+                verify.verify_instance(v, str)
+    except TypeError:
+        raise TypeError("message_map must be of type dict[str, dict[str, str]]")
 
 
 def _assert_input(user_in: InputType, expected_type: type[UserInputT]) -> UserInputT:
@@ -80,6 +121,15 @@ def _assert_input(user_in: InputType, expected_type: type[UserInputT]) -> UserIn
     raise TypeError(
         f"Critical error in I/O logic. Expected type {expected_type}, got {type(user_in).__name__}"
     )
+
+
+class UIExceptionHandlerMixin:
+    _ui_message_map: dict[str, dict[str, str]]
+
+    def _handle_exception_ui(self, method_key: str, error: DomainError) -> None:
+        error_context = exceptions.map_exceptions(error)
+        error_msg = self._ui_message_map[method_key][error_context]
+        views.controller_output(error_msg)
 
 
 class BaseController(ABC, Generic[T, R]):
@@ -164,13 +214,11 @@ class CreationController(BaseController[CreatableT, CreatableT]):
     }
 
     _obj_config: config.ConfigMap
-    _obj_error_map: ErrorMapType
     _pre_filled_data: dict[str, Any] | None
 
     def __init__(
         self,
         model_class: type[CreatableT],
-        obj_error_map: ErrorMapType,
         obj_config: config.ConfigMap,
         pre_filled_data: dict[str, Any] | None = None,
     ):
@@ -179,7 +227,6 @@ class CreationController(BaseController[CreatableT, CreatableT]):
 
         Args:
             model_class (type[CreatableT]): The domain class to be instantiated.
-            obj_error_map (ErrorMapType): Mapping of Domain exceptions to config keys.
             obj_config (config.ConfigMap): UI prompts and validation types for the entity.
             pre_filled_data (dict[str, Any] | None, optional):
                 A dictionary of pre-validated data (e.g., CPF) to be injected directly
@@ -189,7 +236,6 @@ class CreationController(BaseController[CreatableT, CreatableT]):
 
         _verify_config_map(obj_config)
         self._obj_config = obj_config
-        self._obj_error_map = obj_error_map
         self._pre_filled_data = pre_filled_data
 
     def __repr__(self) -> str:
@@ -226,14 +272,14 @@ class CreationController(BaseController[CreatableT, CreatableT]):
             try:
                 return self._model_class(**object_attr)
             except DomainError as error:
-                config_key = map_exceptions(error, self._obj_error_map)
+                config_key = exceptions.map_exceptions(error)
                 new_value = io_utils.get_single_input(
                     config_key, self._obj_config, self._controller_validator_cb
                 )
                 object_attr[config_key] = new_value
 
 
-class TransactionController(BaseController[Account, None]):
+class TransactionController(BaseController[Account, None], UIExceptionHandlerMixin):
     """
     Controller responsible for executing banking transactions (Deposit, Withdraw, Statement).
 
@@ -272,6 +318,7 @@ class TransactionController(BaseController[Account, None]):
     _transaction_config: config.ConfigMap
     _transaction_type: TransactionType
     _access_token: AccessToken | None
+    _ui_message_map: dict[str, dict[str, str]]
 
     def __init__(
         self,
@@ -873,9 +920,7 @@ class BankSystemController(BaseController[Bank, None]):
         new_client_config.pop("cpf")
         filled_data = {"cpf": cpf}
 
-        controller_obj = CreationController(
-            Client, PERSON_ERROR_MAP, new_client_config, filled_data
-        )
+        controller_obj = CreationController(Client, new_client_config, filled_data)
 
         return controller_obj
 
@@ -896,9 +941,7 @@ class BankSystemController(BaseController[Bank, None]):
 
         filled_data = {"branch_code": self._bank_instance.bank_branch_code}
 
-        controller_obj = CreationController(
-            model_class, ACCOUNT_ERROR_MAP, new_acc_config, filled_data
-        )
+        controller_obj = CreationController(model_class, new_acc_config, filled_data)
 
         return controller_obj
 

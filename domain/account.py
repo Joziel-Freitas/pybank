@@ -9,7 +9,6 @@ attribute validation, and core banking mathematical operations (deposit and with
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, ClassVar, cast
 
@@ -20,30 +19,8 @@ from shared.exceptions import (
     InvalidBranchError,
     InvalidDepositError,
     InvalidWithdrawError,
+    OverdraftRequiredError,
 )
-
-
-@dataclass(frozen=True)
-class WithdrawalInfo:
-    """
-    Domain Data Transfer Object (DTO) representing the evaluation of a withdrawal request.
-
-    Encapsulates the business logic evaluation without triggering any state changes.
-    It informs the Interface layer whether the operation is mathematically possible
-    and if it requires explicit user consent (e.g., dipping into an overdraft limit).
-
-    Attributes:
-        authorized (bool):
-            True if the account has sufficient total funds (balance + credit)
-            to cover the requested amount.
-        uses_limit (bool | None):
-            - False: The requested amount is fully covered by the standard balance.
-            - True: The requested amount exceeds the balance and requires credit limit usage.
-            - None: The withdrawal is not authorized (insufficient total funds).
-    """
-
-    authorized: bool
-    uses_limit: bool | None
 
 
 class Account(ABC):
@@ -142,15 +119,17 @@ class Account(ABC):
         return self._balance
 
     @abstractmethod
-    def withdraw(self, value: Decimal) -> None:
+    def withdraw(self, amount: Decimal, use_overdraft: bool = False) -> None:
         """
         Abstract method for withdrawing an amount from the account.
 
-        Concrete implementations must handle specific withdrawal logic,
-        such as checking available limits or minimum balances.
+        Concrete implementations handle specific withdrawal logic, such as
+        checking available limits or minimum balances.
 
         Args:
-            value (Decimal): The amount to withdraw.
+            amount (Decimal): The amount to withdraw.
+            use_overdraft (bool, optional): Explicit authorization to dip into
+                credit limits, if applicable to the account type. Defaults to False.
         """
         raise NotImplementedError()
 
@@ -343,27 +322,6 @@ class Account(ABC):
         Account.validate_account_deposit(value)
         self._balance += value
 
-    def check_withdrawal(self, value: Decimal) -> WithdrawalInfo:
-        """
-        Standard validation: checks only against the balance.
-
-        This serves as the default behavior for any account type that does not
-        have a credit limit (like SavingsAccount).
-
-        Args:
-            value (Decimal): The amount requested.
-
-        Returns:
-            WithdrawalInfo:
-                - authorized: True if balance >= value.
-                - uses_limit: Always False (if authorized) or None (if unauthorized).
-        """
-        is_auth = value <= self.balance
-
-        uses_limit = False if is_auth else None
-
-        return WithdrawalInfo(authorized=is_auth, uses_limit=uses_limit)
-
 
 class SavingsAccount(Account):
     """
@@ -373,20 +331,26 @@ class SavingsAccount(Account):
     It does not support overdraft or credit limits.
     """
 
-    def withdraw(self, value: Decimal) -> None:
+    def withdraw(self, amount: Decimal, use_overdraft: bool = False) -> None:
         """
         Withdraws a given amount from the account balance.
 
-        For a SavingsAccount, `available_val` is simply the current positive balance.
+        For a SavingsAccount, the available value is strictly the current positive balance.
+        Overdraft limits are not supported.
 
         Args:
-            value (Decimal): The amount to withdraw.
+            amount (Decimal): The amount to withdraw.
+            use_overdraft (bool, optional): Must remain False for Savings Accounts.
 
         Raises:
+            RuntimeError: If explicit overdraft usage is requested (use_overdraft=True).
             InvalidWithdrawError: If the withdrawal amount is invalid or exceeds the current balance.
         """
-        Account._validate_account_withdraw(val=value, available_val=self._balance)
-        self._balance -= value
+        if use_overdraft is True:
+            raise RuntimeError("Savings Accounts do not possess an overdraft limit.")
+
+        Account._validate_account_withdraw(val=amount, available_val=self._balance)
+        self._balance -= amount
 
 
 class CheckingAccount(Account):
@@ -470,46 +434,32 @@ class CheckingAccount(Account):
         # If balance is still negative, update used credit. Otherwise, reset to 0.
         self._used_credit = abs(self._balance) if self._balance < 0 else Decimal("0.00")
 
-    def check_withdrawal(self, value: Decimal) -> WithdrawalInfo:
+    def withdraw(self, amount: Decimal, use_overdraft: bool = False) -> None:
         """
-        Evaluates if a requested withdrawal amount is mathematically permissible.
-
-        This method checks the requested amount against the account's total available
-        funds (current balance plus remaining overdraft credit). It is a side-effect
-        free query; it does not alter the account's balance or credit state.
-
-        Args:
-            value (Decimal): The proposed amount to withdraw.
-
-        Returns:
-            WithdrawalInfo: A DTO detailing the evaluation:
-                - authorized: True if the amount is within total available funds.
-                - uses_limit: True if the withdrawal requires dipping into the overdraft limit,
-                  False if the standard balance covers it, or None if unauthorized.
-        """
-        total_funds = self.balance + self.remaining_credit
-
-        is_auth = value <= total_funds
-        uses_limit = None if not is_auth else value > self.balance
-
-        return WithdrawalInfo(uses_limit=uses_limit, authorized=is_auth)
-
-    def withdraw(self, value: Decimal) -> None:
-        """
-        Withdraws an amount using credit if needed and records the transaction.
+        Withdraws an amount, utilizing the overdraft credit limit if authorized and necessary.
 
         The total available funds are calculated as `balance + CREDIT_LIMIT`.
-        `_used_credit` is updated if the balance becomes negative.
+        If the withdrawal drives the balance below zero, `_used_credit` is updated.
 
         Args:
-            value (Decimal): The amount to withdraw.
+            amount (Decimal): The amount to withdraw.
+            use_overdraft (bool, optional): Explicit authorization to dip into the
+                credit limit if the requested amount exceeds the standard balance. Defaults to False.
 
         Raises:
-            InvalidWithdrawError: If the withdrawal amount is invalid or exceeds the total available funds.
+            OverdraftRequiredError: If the requested amount exceeds the current balance
+                but `use_overdraft` was not explicitly set to True.
+            InvalidWithdrawError: If the withdrawal amount is invalid or exceeds the total
+                available funds (balance + credit limit).
         """
+        if amount > self.balance and not use_overdraft:
+            raise OverdraftRequiredError(
+                "The requested amount exceeds the standard balance. Explicit overdraft consent required."
+            )
+
         available = CheckingAccount.CREDIT_LIMIT + self._balance
-        Account._validate_account_withdraw(val=value, available_val=available)
-        self._balance -= value
+        Account._validate_account_withdraw(val=amount, available_val=available)
+        self._balance -= amount
 
         # Update used credit if we enter or remain in overdraft
         if self._balance < 0:

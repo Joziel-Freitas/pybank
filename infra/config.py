@@ -1,27 +1,8 @@
 """Initial configurations for bank, client, account, login, and transactions."""
 
 from decimal import Decimal
-from typing import TypedDict
 
-
-class InnerConfig(TypedDict):
-    """
-    Typed dictionary that defines the structure of a configuration entry.
-
-    Attributes:
-        info (str): Short description or label for the configuration option.
-        prompt (str): Text shown to the user when input is required.
-        value_type (type): Expected Python type for the input value (e.g., int, str, float).
-        error_msg (str): Error message displayed when the input does not match the expected type or format.
-    """
-
-    info: str
-    prompt: str
-    value_type: type
-    error_msg: str
-
-
-type ConfigMap = dict[str, InnerConfig]
+from io_utils import ConfigMap
 
 menu_config: ConfigMap = {
     "main_menu": {
