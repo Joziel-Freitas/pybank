@@ -1,4 +1,3 @@
-from datetime import date
 from typing import Any, Callable
 
 from infra import verify
@@ -96,27 +95,3 @@ def validate_cpf(cpf: str) -> str:
             f"CPF is mathematically invalid. Calculated DVs: {calculated_dv}, Actual DVs: {actual_dv}."
         )
     return cpf
-
-
-def validate_date_format(date_str: str) -> date:
-    """
-    Validates and converts a date string into a native Python date object.
-
-    Ensures that the provided input is a string and strictly follows the
-    standard format ('dd/mm/yyyy'). This is a generic infrastructure
-    validator, independent of any domain-specific business rules (like age limits).
-
-    Args:
-        date_str (str): The date string to be validated and converted.
-
-    Returns:
-        date: The parsed native Python date object.
-
-    Raises:
-        TypeError: If the provided input is not a string (via verify_instance).
-        ValueError: If the string does not match the 'dd/mm/yyyy' format
-            or represents an invalid calendar date (e.g., '32/01/2026').
-    """
-    verify.verify_instance(date_str, str)
-    date_obj = date.strptime(date_str, "%d/%m/%Y")
-    return date_obj

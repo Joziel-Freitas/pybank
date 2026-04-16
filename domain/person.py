@@ -15,6 +15,7 @@ from dataclasses import asdict
 from datetime import date
 from typing import ClassVar, cast
 
+from infra import verify
 from shared import validators
 from shared.credentials import AccountCard
 from shared.exceptions import (
@@ -123,7 +124,6 @@ class Person(ABC):
         Validates the provided name string using Regular Expressions.
 
         Rules:
-        - Must be a string.
         - Must have at least three characters.
         - Must contain only alphabetic characters (including accents).
         - Cannot contain numbers or special symbols.
@@ -137,10 +137,10 @@ class Person(ABC):
             str: The validated name.
 
         Raises:
-            InvalidNameError: If any validation rule is violated.
+            TypeError: If the provided name is not a string (indicates a system type bug).
+            InvalidNameError: If any structural validation rule is violated.
         """
-        if not isinstance(name, str):
-            raise InvalidNameError(f"Value {name} must be a string")
+        verify.verify_instance(name, str)
 
         if len(name) < 3:
             raise InvalidNameError(f"Value '{name}' must have at least three letters")
@@ -160,10 +160,9 @@ class Person(ABC):
         """
         Validates a given birth date against domain business rules.
 
-        This method acts as a flexible facade, accepting both formatted strings
-        (from user input) and native date objects (from the database adapter).
-        It enforces the following strict rules:
-        1. If it's a string, it must be convertible from the 'dd/mm/yyyy' format.
+        This method accepts both formatted strings (from user input) and native
+        date objects (from the database adapter). It enforces the following rules:
+        1. If it's a string, it must be exactly convertible from the 'dd/mm/yyyy' format.
         2. Cannot be a future date.
         3. The resulting age must be within the allowed range (`Person.MIN_AGE` to `Person.MAX_AGE`).
 
@@ -174,19 +173,16 @@ class Person(ABC):
             date: The validated native Python date object.
 
         Raises:
+            TypeError: If the input is neither a string nor a date object.
             InvalidBirthDateError: If the format is incorrect, the date is in the future,
-                the calculated age is outside the valid limits, or the type is invalid.
+                or the calculated age is outside the valid limits.
         """
+        verify.verify_instance(birth_date, (str, date))
         try:
-            match birth_date:
-                case str():
-                    date_obj = validators.validate_date_format(birth_date)
-                case date():
-                    date_obj = birth_date
-                case _:
-                    raise TypeError(
-                        f"Expected str or date. Got {type(birth_date).__name__}"
-                    )
+            if isinstance(birth_date, str):
+                date_obj = date.strptime(birth_date, "%d/%m/%Y")
+            elif isinstance(birth_date, date):
+                date_obj = birth_date
 
             today = date.today()
             if date_obj > today:
@@ -200,7 +196,7 @@ class Person(ABC):
                 )
 
             return date_obj
-        except (ValueError, TypeError) as e:
+        except ValueError as e:
             raise InvalidBirthDateError(
                 f"Value {birth_date} is invalid for date of birth. Cause: {e}"
             ) from e
@@ -226,9 +222,9 @@ class Person(ABC):
         """
         Validates the CPF by delegating mathematical verification to infrastructure.
 
-        Acts as a Domain Facade. It catches low-level technical errors (ValueError,
-        TypeError) from the shared validator and translates them into a formal
-        'InvalidCpfError', providing the necessary context for the Domain layer.
+        Acts as a Domain Facade. It catches structural and mathematical errors (ValueError)
+        from the shared validator and translates them into a formal 'InvalidCpfError',
+        providing business context.
 
         Args:
             cpf (str): The CPF string to validate.
@@ -237,12 +233,13 @@ class Person(ABC):
             str: The validated CPF string.
 
         Raises:
-            InvalidCpfError: If the CPF is technically invalid or poorly formatted,
-                encapsulating the original cause.
+            TypeError: If the CPF is not a string (indicates a system type bug).
+            InvalidCpfError: If the CPF length is invalid, has all repeated digits,
+                or fails the mathematical checksum validation.
         """
         try:
             return validators.validate_cpf(cpf)
-        except (ValueError, TypeError) as e:
+        except ValueError as e:
             raise InvalidCpfError(f"Person CPF is invalid: {e}")
 
     def to_dict(self) -> dict:

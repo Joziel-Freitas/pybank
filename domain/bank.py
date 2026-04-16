@@ -45,7 +45,7 @@ from shared.exceptions import (
 )
 from shared.types import BankContext
 
-from .account import Account, WithdrawalInfo
+from .account import Account
 from .person import Client
 
 
@@ -131,12 +131,13 @@ class Bank:
             password (str): The password string to validate.
 
         Raises:
-            BankPasswordError: If the password is not a string or not 6 digits.
+            TypeError: If the password is not a string (indicates a system type bug).
+            BankPasswordError: If the password does not consist of exactly 6 digits.
         """
+        verify.verify_instance(password, str)
         try:
-            verify.verify_instance(password, str)
             verify.verify_digits(password, 6)
-        except verify.VERIFY_ERRORS as e:
+        except ValueError as e:
             raise BankPasswordError(f"Invalid password. Cause: {e}")
 
     def _generate_password_hash(self, password_str: str) -> str:
@@ -624,62 +625,39 @@ class Bank:
         self._ensure_account_is_active(acc_credentials)
         self._repository.save_transaction(branch_code, account_num, amount)
 
-    def check_withdrawal_info(
-        self, access_token: AccessToken, amount: Decimal
-    ) -> WithdrawalInfo:
-        """
-        Evaluates a withdrawal request against the specific account's domain rules.
-
-        Acts as a secure gateway to the Account entity. It ensures the request originates
-        from a highly authenticated session (Vault level) before delegating the mathematical
-        evaluation to the underlying account instance.
-
-        This method is purely analytical and side-effect free; it does not alter the balance.
-
-        Args:
-            access_token (AccessToken): The cryptographic token proving vault access authorization.
-            amount (Decimal): The requested withdrawal amount.
-
-        Returns:
-            WithdrawalInfo: A domain DTO detailing the authorization status and limit usage.
-
-        Raises:
-            TypeError: If the amount is not a valid Decimal instance.
-            BankAuthenticationError: If the access token is invalid, expired, or tampered with.
-            AccountNotFoundError: If the account linked to the token cannot be found.
-            BlockedAccountError: If the account is currently frozen.
-        """
-        self._validate_token(access_token)
-        verify.verify_instance(amount, Decimal)
-
-        account_obj = self._get_account(access_token)
-        return account_obj.check_withdrawal(amount)
-
-    def execute_withdraw(self, access_token: AccessToken, amount: Decimal) -> None:
+    def execute_withdraw(
+        self, access_token: AccessToken, amount: Decimal, use_overdraft: bool = False
+    ) -> None:
         """
         Executes a secure withdrawal operation and persists it to the database.
 
         This method operates under a 'Zero Trust' security model. Acting as the
         Aggregate Root, the Bank resolves the target Account strictly from the
         provided AccessToken, ensuring no external layer can inject a tampered
-        Account entity.
+        Account entity. It delegates the mathematical evaluation and limit usage
+        directly to the Account instance.
 
         Args:
             access_token (AccessToken): A valid, securely signed vault token.
             amount (Decimal): The positive monetary amount to be withdrawn.
+            use_overdraft (bool, optional): Explicit authorization to utilize the
+                account's credit limit if the amount exceeds the standard balance.
+                Defaults to False.
 
         Raises:
             TypeError: If the arguments are not of the expected types.
             BankSecurityError: If the token is invalid, tampered with, or expired.
+            OverdraftRequiredError: If the requested amount exceeds the balance
+                and explicit overdraft consent (`use_overdraft=True`) was not provided.
             InvalidWithdrawError: If the withdrawal amount violates business rules
-                (e.g., negative amount, exceeds balance + credit).
+                (e.g., negative amount, exceeds total available funds).
             RepositoryError: If the transaction fails to be saved in the database.
         """
         self._validate_token(access_token)
         verify.verify_instance(amount, Decimal)
 
         account_obj = self._get_account(access_token)
-        account_obj.withdraw(amount)
+        account_obj.withdraw(amount, use_overdraft=use_overdraft)
         self._repository.save_transaction(
             access_token.branch_code, access_token.account_num, -amount
         )

@@ -138,7 +138,7 @@ class Account(ABC):
         """
         Validates the format and length of the branch code.
 
-        The branch code must be a string of 4 numeric characters.
+        The branch code must be a string of exactly 4 numeric characters.
 
         Args:
             code (str): The branch code string to validate.
@@ -147,13 +147,14 @@ class Account(ABC):
             str: The validated branch code.
 
         Raises:
-            InvalidBranchError: If the branch code is not a string, not numeric, or not of length 4.
+            TypeError: If the branch code is not a string (indicates a system type bug).
+            InvalidBranchError: If the branch code contains non-numeric characters or is not of length 4.
         """
+        verify.verify_instance(code, str)
         try:
-            verify.verify_instance(code, str)
             verify.verify_digits(code, 4)
             return code
-        except verify.VERIFY_ERRORS as e:
+        except ValueError as e:
             raise InvalidBranchError(f"Invalid branch code. Cause: {e}") from e
 
     @staticmethod
@@ -161,7 +162,7 @@ class Account(ABC):
         """
         Validates the format and length of the account number.
 
-        The account number must be a string of 8 numeric characters.
+        The account number must be a string of exactly 8 numeric characters.
 
         Args:
             acc_num (str): The account number string to validate.
@@ -170,13 +171,14 @@ class Account(ABC):
             str: The validated account number.
 
         Raises:
-            InvalidAccountError: If the account number is not a string, not numeric, or not of length 8.
+            TypeError: If the account number is not a string (indicates a system type bug).
+            InvalidAccountError: If the account number contains non-numeric characters or is not of length 8.
         """
+        verify.verify_instance(acc_num, str)
         try:
-            verify.verify_instance(acc_num, str)
             verify.verify_digits(acc_num, 8)
             return acc_num
-        except verify.VERIFY_ERRORS as e:
+        except ValueError as e:
             raise InvalidAccountError(f"Invalid account number. Cause: {e}") from e
 
     @staticmethod
@@ -193,13 +195,14 @@ class Account(ABC):
             Decimal: The validated balance.
 
         Raises:
-            InvalidBalanceError: If the value is not a Decimal or is negative.
+            TypeError: If the value is not a Decimal instance.
+            InvalidBalanceError: If the balance is negative.
         """
+        verify.verify_instance(bal, Decimal)
         try:
-            verify.verify_instance(bal, Decimal)
             verify.verify_interval(bal, min_val=Decimal("0"))
             return bal
-        except verify.VERIFY_ERRORS as e:
+        except ValueError as e:
             raise InvalidBalanceError(f"Invalid balance value. Cause: {e}") from e
 
     @staticmethod
@@ -213,12 +216,13 @@ class Account(ABC):
             val (Decimal): The deposit amount.
 
         Raises:
-            InvalidDepositError: If the value is not a Decimal or is less than the minimum ATM transaction allowed.
+            TypeError: If the value is not a Decimal instance.
+            InvalidDepositError: If the deposit amount is less than the minimum ATM transaction allowed.
         """
+        verify.verify_instance(val, Decimal)
         try:
-            verify.verify_instance(val, Decimal)
             verify.verify_interval(val, min_val=Decimal(Account.MIN_ATM_TRANSACTION))
-        except verify.VERIFY_ERRORS as e:
+        except ValueError as e:
             raise InvalidDepositError(f"Invalid deposit value. Cause: {e}") from e
 
     @staticmethod
@@ -234,15 +238,16 @@ class Account(ABC):
             available_val (Decimal): The total funds available for withdrawal (e.g., balance + limit).
 
         Raises:
-            InvalidWithdrawError: If the value is not a Decimal, is less than the minimum ATM transaction,
-                                  or exceeds available funds.
+            TypeError: If the withdrawal value is not a Decimal instance.
+            InvalidWithdrawError: If the value is less than the minimum ATM transaction,
+                                  or if it exceeds the available funds.
         """
+        verify.verify_instance(val, Decimal)
         try:
-            verify.verify_instance(val, Decimal)
             verify.verify_interval(
                 val, min_val=Decimal(Account.MIN_ATM_TRANSACTION), max_val=available_val
             )
-        except verify.VERIFY_ERRORS as e:
+        except ValueError as e:
             raise InvalidWithdrawError(f"Invalid withdraw value: Cause: {e}") from e
 
     def to_dict(self) -> dict[str, Any]:
@@ -452,13 +457,14 @@ class CheckingAccount(Account):
             InvalidWithdrawError: If the withdrawal amount is invalid or exceeds the total
                 available funds (balance + credit limit).
         """
+        available = CheckingAccount.CREDIT_LIMIT + self._balance
+        Account._validate_account_withdraw(val=amount, available_val=available)
+
         if amount > self.balance and not use_overdraft:
             raise OverdraftRequiredError(
                 "The requested amount exceeds the standard balance. Explicit overdraft consent required."
             )
 
-        available = CheckingAccount.CREDIT_LIMIT + self._balance
-        Account._validate_account_withdraw(val=amount, available_val=available)
         self._balance -= amount
 
         # Update used credit if we enter or remain in overdraft

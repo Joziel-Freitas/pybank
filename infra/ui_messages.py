@@ -10,6 +10,7 @@ TRANSACTION_MESSAGES: dict[str, dict[str, str]] = {
         "acc_blocked": "Transação não permitida para esta conta no momento. Entre em contato com o titular",
     },
     "withdraw": {
-        "unauthorized": "O valor excede o montante em conta. Transação não autorizada",
+        "value": "Valor inválido para saque. Transação não autorizada",
+        "overdraft": "Valor insuficiente em conta. Para sacar essa quantia autorize o uso do limite especial",
     },
 }

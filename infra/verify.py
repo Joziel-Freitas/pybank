@@ -5,8 +5,6 @@ Raises exceptions when invalid values are detected.
 
 from decimal import Decimal
 
-VERIFY_ERRORS = (TypeError, ValueError)
-
 
 def verify_instance(
     param: object, inst_type: type | tuple[type, ...], error_msg: str | None = None
@@ -58,10 +56,11 @@ def verify_interval(
     max_val: int | float | Decimal | None = None,
 ) -> None:
     """
-    Ensures that a numeric value falls within a specified interval.
+    Ensures that a numeric value falls within a specified interval and enforces strict type matching.
 
-    At least one of 'min_val' or 'max_val' must be provided.
-    Both bounds are inclusive.
+    At least one of 'min_val' or 'max_val' must be provided. Both bounds are inclusive.
+    To prevent precision bugs and runtime errors during comparison, the provided limits
+    must exactly match the type of the 'target_value'.
 
     Args:
         target_value (int | float | Decimal): The numeric value to validate.
@@ -69,29 +68,32 @@ def verify_interval(
         max_val (int | float | Decimal | None): The maximum allowed value (inclusive).
 
     Raises:
-        TypeError: If 'target_value', 'min_val', or 'max_val' are not numeric types
-                   (int, float, or Decimal), or if no bounds are provided.
+        TypeError: If 'target_value' is not a valid numeric type, if no bounds are provided,
+                   or if the type of the provided limits does not exactly match the type
+                   of the 'target_value'.
         ValueError: If 'target_value' is outside the specified interval.
     """
     valid_types = (int, float, Decimal)
 
     if not isinstance(target_value, valid_types):
-        raise TypeError("The method accepts only int or float values")
+        raise TypeError("The method accepts only int, float or Decimal values")
+
+    target_type = type(target_value)
 
     if min_val is None and max_val is None:
         raise TypeError("At least one limit (min_val or max_val) must be provided")
 
-    if min_val is not None and not isinstance(min_val, valid_types):
-        raise TypeError("min_val must be int or float")
+    if min_val is not None and type(min_val) is not target_type:
+        raise TypeError("min_val must be of the exact same type as target_value")
 
-    if max_val is not None and not isinstance(max_val, valid_types):
-        raise TypeError("max_val must be int or float")
+    if max_val is not None and type(max_val) is not target_type:
+        raise TypeError("max_val must be of the exact same type as target_value")
 
-    if min_val is not None and target_value < min_val:
+    if min_val and target_value < min_val:
         raise ValueError(
             f"Value {target_value} must be greater than or equal to {min_val}"
         )
-    if max_val is not None and target_value > max_val:
+    if max_val and target_value > max_val:
         raise ValueError(
             f"Value {target_value} must be less than or equal to {max_val}"
         )
@@ -112,13 +114,13 @@ def verify_digits(param: str, size: int) -> None:
     """
 
     if not isinstance(param, str):
-        raise TypeError("param must be a string")
+        raise TypeError(f"param expects str, got {type(param).__name__}")
 
     if not isinstance(size, int):
-        raise TypeError("size must be int type")
-
-    if len(param) != size:
-        raise ValueError(f"Value {param} must have exactly {size} digits")
+        raise TypeError(f"size expects int, got {type(size).__name__}")
 
     if not param.isdigit():
         raise ValueError(f"Value {param} must contain only digits")
+
+    if len(param) != size:
+        raise ValueError(f"Value {param} must have exactly {size} digits")

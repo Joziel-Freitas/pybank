@@ -3,7 +3,7 @@ from decimal import Decimal
 from functools import partial
 from typing import Any, Callable, ClassVar, Generic, TypeVar, cast
 
-from domain.account import Account, CheckingAccount, SavingsAccount, WithdrawalInfo
+from domain.account import Account, CheckingAccount, SavingsAccount
 from domain.bank import Bank
 from domain.person import Client, Person
 from infra import config, io_utils, verify, views
@@ -27,8 +27,8 @@ from shared.exceptions import (
     HomeBranchRestrictionError,
     InvalidBirthDateError,
     InvalidDepositError,
-    InvalidWithdrawError,
     NotEmptyAccountError,
+    OverdraftRequiredError,
     UserAbortError,
 )
 from shared.types import (
@@ -45,44 +45,6 @@ T = TypeVar("T", bound=Bank | Person | Account)
 R = TypeVar("R")
 
 UserInputT = TypeVar("UserInputT", bound=InputType)
-
-
-def _verify_config_map(obj_config: config.ConfigMap) -> None:
-    """
-    Verifies if the configuration map follows the expected nested dictionary structure.
-
-    Ensures that the provided map is a dictionary where each key is a string,
-    and its value is an inner dictionary. It validates that within the inner
-    dictionary, the 'value_type' key holds a type object, while all other keys
-    hold string values.
-
-    Args:
-        obj_config (config.ConfigMap):
-            The configuration map to be verified.
-
-    Raises:
-        TypeError:
-            If the structure does not match the expected InnerConfig schema.
-    """
-    try:
-        verify.verify_instance(obj_config, dict)
-
-        for key, inner_dict in obj_config.items():
-            verify.verify_instance(key, str)
-            verify.verify_instance(inner_dict, dict)
-
-            for k, v in inner_dict.items():
-                verify.verify_instance(k, str)
-
-                if k == "value_type":
-                    verify.verify_instance(v, type)
-                    continue
-
-                verify.verify_instance(v, str)
-    except TypeError as e:
-        raise TypeError(
-            "obj_config must follow the InnerConfig schema strictly."
-        ) from e
 
 
 def _verify_message_map(message_map: dict[str, dict[str, str]]) -> None:
@@ -213,7 +175,7 @@ class CreationController(BaseController[CreatableT, CreatableT]):
         ),
     }
 
-    _obj_config: config.ConfigMap
+    _obj_config: io_utils.ConfigMap
     _pre_filled_data: dict[str, Any] | None
 
     def __init__(
@@ -234,7 +196,7 @@ class CreationController(BaseController[CreatableT, CreatableT]):
         """
         super().__init__(model_class)
 
-        _verify_config_map(obj_config)
+        io_utils.verify_config_map(obj_config)
         self._obj_config = obj_config
         self._pre_filled_data = pre_filled_data
 
@@ -334,10 +296,10 @@ class TransactionController(BaseController[Account, None], UIExceptionHandlerMix
         verify.verify_instance(bank_instance, Bank)
         self._bank_instance = bank_instance
 
-        _verify_config_map(auth_config)
+        io_utils.verify_config_map(auth_config)
         self._auth_config = auth_config
 
-        _verify_config_map(transaction_config)
+        io_utils.verify_config_map(transaction_config)
         self._transaction_config = transaction_config
 
         verify.verify_instance(transaction_type, TransactionType)
@@ -394,47 +356,31 @@ class TransactionController(BaseController[Account, None], UIExceptionHandlerMix
         value = _assert_input(value_raw, Decimal)
         return value
 
-    def _confirm_withdraw(self, info: WithdrawalInfo) -> bool:
-
-        if not info.authorized:
-            views.controller_output("transaction", None)
-            return False
-
-        if info.uses_limit is False:
-            return True
-
-        views.controller_output("transaction", False)
-        use_limit_mapper = {1: True, 2: False}
-        limit_option_raw = io_utils.get_single_input(
+    def _confirm_overdraft(self) -> bool:
+        use_overdraft_mapper = {1: True, 2: False}
+        user_in_raw = io_utils.get_single_input(
             "limit", self._transaction_config, self._controller_validator_cb
         )
-        limit_option = _assert_input(limit_option_raw, int)
-        use_limit = use_limit_mapper[limit_option]
-
-        if not use_limit:
-            raise UserAbortError
-
-        return True
+        int_user_in = _assert_input(user_in_raw, int)
+        return use_overdraft_mapper[int_user_in]
 
     def _handle_withdraw(self) -> None:
         amount = self._get_transaction_value()
 
         try:
-            info = self._bank_instance.check_withdrawal_info(
-                self._active_access_token, amount
-            )
-            verify.verify_instance(info, WithdrawalInfo)
-            proceed = self._confirm_withdraw(info)
-
-            if not proceed:
-                raise ControllerOperationError
-
             self._bank_instance.execute_withdraw(self._active_access_token, amount)
-            views.controller_output("transaction", True)
-        except InvalidWithdrawError:
-            raise ControllerOperationError
-        except BlockedAccountError:
-            views.controller_output("access", "withdraw_blocked")
+
+        except OverdraftRequiredError:
+            use_overdraft = self._confirm_overdraft()
+
+            if not use_overdraft:
+                raise UserAbortError
+
+            self._bank_instance.execute_withdraw(
+                self._active_access_token, amount, use_overdraft=True
+            )
+        except DomainError as e:
+            self._handle_exception_ui("withdraw", e)
             raise ControllerCredentialsError
 
     def _handle_public_deposit(self) -> None:
@@ -450,14 +396,16 @@ class TransactionController(BaseController[Account, None], UIExceptionHandlerMix
         try:
             self._bank_instance.execute_deposit(branch_code, account_num, amount)
             views.controller_output("transaction", True)
-        except InvalidDepositError:
-            raise ControllerOperationError
         except AccountNotFoundError:
             views.controller_output("transaction", "not_found")
             raise ControllerOperationError
         except BlockedAccountError:
             views.controller_output("transaction", "blocked")
             raise ControllerOperationError
+        except InvalidDepositError:
+            raise RuntimeError(
+                "Logical validation error in io_utils deposit value input"
+            )
 
     def run_controller(self) -> None:
         match self._transaction_type:
@@ -541,7 +489,7 @@ class BankSystemController(BaseController[Bank, None]):
         )
 
         for cfg_map in config_mappers:
-            _verify_config_map(cfg_map)
+            io_utils.verify_config_map(cfg_map)
 
         self._menu_config = config.menu_config
         self._identification_config = config.identification_config

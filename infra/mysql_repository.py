@@ -56,16 +56,6 @@ class MySQLRepository:
             cursorclass=cursors.DictCursor,
         )
 
-    def _insert_transaction_record(
-        self, cursor, account_id: int, amount: Decimal
-    ) -> None:
-        """Helper method to insert a transaction. Does NOT manage commits."""
-
-        sql = """INSERT INTO transactions (account_id, amount)
-        VALUES (%s, %s)"""
-
-        cursor.execute(sql, (account_id, amount))
-
     def _insert_client_record(self, cursor: cursors.DictCursor, client: Client) -> int:
         """
         Internal helper to persist a new Client entity within an active transaction.
@@ -89,6 +79,16 @@ class MySQLRepository:
             return cursor.lastrowid
         except err.IntegrityError as e:
             raise DuplicatedDataError("client") from e
+
+    def _insert_transaction_record(
+        self, cursor, account_id: int, amount: Decimal
+    ) -> None:
+        """Helper method to insert a transaction. Does NOT manage commits."""
+
+        sql = """INSERT INTO transactions (account_id, amount)
+        VALUES (%s, %s)"""
+
+        cursor.execute(sql, (account_id, amount))
 
     def _insert_account_record(
         self,

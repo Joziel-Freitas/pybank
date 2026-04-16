@@ -179,12 +179,16 @@ class InvalidBalanceError(AccountError):
     """Raised for invalid initial balances."""
 
 
+class InvalidDepositError(AccountError):
+    """Raised when a deposit value is non-positive."""
+
+
 class InvalidWithdrawError(AccountError):
     """Raised when a withdrawal violates business rules (e.g., funds, negative value)."""
 
 
-class InvalidDepositError(AccountError):
-    """Raised when a deposit value is non-positive."""
+class OverdraftRequiredError(AccountError):
+    """Raised when requested amount exceeds account balance"""
 
 
 # --- Error Metadata Mappers ---
@@ -213,6 +217,7 @@ DOMAIN_ERROR_MAP: ErrorMapType = {
     InvalidBalanceError: "balance",
     InvalidDepositError: "value",
     InvalidWithdrawError: "value",
+    OverdraftRequiredError: "use_limit",
 }
 
 
