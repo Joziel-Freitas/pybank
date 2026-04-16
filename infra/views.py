@@ -1,9 +1,11 @@
 """
 Presentation Layer Module.
 
-This module is responsible for all terminal output formatting, user feedback messages,
-and visual delimiters. It acts as the 'View' in the MVC architecture, keeping the
-business logic (Controllers) decoupled from the specific output mechanism (Print/Console).
+This module acts strictly as the 'View' in the MVC architecture. It is
+responsible for formatting text, displaying banners, and rendering
+user feedback to the terminal. It is an entirely 'dumb' layer, devoid
+of business logic, error mapping, or decision-making, ensuring complete
+decoupling from the application's internal states.
 """
 
 import os
@@ -11,7 +13,6 @@ import subprocess
 from decimal import Decimal
 from time import sleep
 
-from domain.account import Account
 from domain.person import AccountCard
 
 
@@ -37,84 +38,18 @@ def bye() -> None:
 
 # Dictionary mapping internal status keys to user-friendly messages
 
-TRANSACTION_MESSAGES: dict[str, dict[str, str]] = {
-    "general": {
-        'success': "Transação realizada com sucesso",
-        'min_value': f"Valor mínimo para transação: {Account.MIN_ATM_TRANSACTION}"
-    }
-
-}
-method_mappers = {
-    "menus": {
-        "security": "Sessão encerrada por questão de segurança. Voltando à tela inicial",
-        "exit": "Sessão encerrada. Voltando à tela inicial",
-        "cancel": "Operação cancelada. Voltando ao menu anterior",
-    },
-    "auth": {
-        True: "Autenticado com sucesso",
-        "auth_error": "Falha na autenticação. Insira os dados novamente",
-    },
-    "access": {
-        True: "Acesso Concedido",
-        False: "Senha incorreta. Acesso Negado",
-        "last": "Atenção: Última tentativa. Se errar a senha, a conta será bloqueada",
-        "blocked": "Conta BLOQUEADA por segurança. Desbloqueie a conta para usá-la novamente",
-    },
-    "transaction": {
-        "min_value": f"Valor mínimo para transação: {Account.MIN_ATM_TRANSACTION}",
-        True:
-        False: "Valor insuficiente em conta. Para sacar esse valor, autorize o uso do limite especial",
-        None: "O valor excede o montante em conta. Transação não autorizada",
-        "deposit_blocked": "Transação não permitida para esta conta no momento. Entre em contato com o titular",
-        "withdraw_blocked": "Sua conta foi BLOQUEADA por segurança. Desbloqueie a conta pra usá-la novamente",
-        "not_found": "Conta inexistente no sistema do PyBank",
-    },
-    "client": {
-        "new": "Bem vindo ao PyBank. Faça o seu cadastro",
-        "not_new": "Bem vindo de volta ao PyBank",
-    },
-    "new_account": {
-        True: "Conta registrada com sucesso",
-        "duplicated": "Essa conta já se encontra registrada no sistema. Crie uma nova conta",
-        "password": "Falha ao registrar sua senha. Tente novamente",
-        False: "Erro ao registrar sua conta. Tente novamente",
-    },
-    "prompt_password": {
-        "1": "Insira sua senha",
-        "2": "Insira novamente sua senha",
-        False: "As senhas não conferem. Tente novamente",
-    },
-    "update_password": {True: "Senha alterada com sucesso"},
-    "unfreeze": {
-        True: "Conta desbloqueada com sucesso",
-        "authentication": "Falha na autenticação. A data de nascimento informada não corresponde",
-        "already_active": "Essa conta está ativa. Impossível desbloquear",
-    },
-    "close_account": {
-        True: "Sua conta foi encerrada corretamente e seus dados removidos do sistema",
-        False: "Operação negada. O encerramento de conta deve ser realizado presencialmente na sua agência de origem",
-    },
-    "card": {
-        True: "Cartão válido",
-        False: "Falha na leitura do cartão",
-        None: "Você não possui nenhum cartão cadastrado",
-    },
-}
-
 
 def controller_output(message: str) -> None:
     """
-    Retrieves and displays a standardized status message based on the operation context.
+    Renders a standard system message to the terminal.
 
-    Uses a predefined dictionary to map internal state keys to user-friendly strings.
-    Includes a short delay to ensure the user has time to read the feedback before
-    the screen refreshes or the menu reappears.
+    Acts as the primary output channel for Controllers to communicate
+    with the user. Includes a brief pause to ensure readability before
+    the console is refreshed or the next prompt appears.
 
     Args:
-        mapper_key (str): The category of the operation (e.g., 'auth', 'transaction').
-        status_key (str | bool | None): The specific result state of the operation.
+        message (str): The pre-formatted text string to be displayed.
     """
-
     print()
     print(message)
     sleep(3)
@@ -176,24 +111,3 @@ def show_cards(client_cards: list[AccountCard]) -> None:
     print(f"{' Seus cartões ':-^50}")
     for idx, card in enumerate(client_cards):
         print(f"{idx}: {card}")
-
-
-def show_close_account_status(balance: Decimal) -> None:
-    """
-    Displays specific feedback based on the account balance during a closure attempt.
-
-    Informs the user if they need to withdraw remaining funds or pay off debts
-    before the account can be permanently closed.
-
-    Args:
-        balance (Decimal): The current balance of the account being closed.
-    """
-    subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
-    if balance > 0:
-        print(
-            f"ERRO: Você possui saldo de R${balance}. Realize o SAQUE do valor total antes de encerrar a conta."
-        )
-    if balance < 0:
-        print(
-            f"ERRO: Você possui dívida de R${balance}. Realize o DEPÓSITO do valor total antes de encerrar a conta."
-        )

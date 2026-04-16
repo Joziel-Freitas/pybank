@@ -85,13 +85,27 @@ def _assert_input(user_in: InputType, expected_type: type[UserInputT]) -> UserIn
     )
 
 
-class UIExceptionHandlerMixin:
+class UIMessageHandlerMixin:
     _ui_message_map: dict[str, dict[str, str]]
 
-    def _handle_exception_ui(self, method_key: str, error: DomainError) -> None:
-        error_context = exceptions.map_exceptions(error)
-        error_msg = self._ui_message_map[method_key][error_context]
+    def _handle_exception_ui(
+        self, context_key: str, error: DomainError, **kwargs
+    ) -> None:
+        error_key = exceptions.map_exceptions(error)
+        error_msg = self._ui_message_map[context_key][error_key]
+
+        if kwargs:
+            error_msg = error_msg.format(**kwargs)
+
         views.controller_output(error_msg)
+
+    def _handle_info_ui(self, context_key: str, info_key: str, **kwargs) -> None:
+        info_msg = self._ui_message_map[context_key][info_key]
+
+        if kwargs:
+            info_msg = info_msg.format(**kwargs)
+
+        views.controller_output(info_msg)
 
 
 class BaseController(ABC, Generic[T, R]):
@@ -241,7 +255,7 @@ class CreationController(BaseController[CreatableT, CreatableT]):
                 object_attr[config_key] = new_value
 
 
-class TransactionController(BaseController[Account, None], UIExceptionHandlerMixin):
+class TransactionController(BaseController[Account, None], UIMessageHandlerMixin):
     """
     Controller responsible for executing banking transactions (Deposit, Withdraw, Statement).
 
@@ -419,7 +433,7 @@ class TransactionController(BaseController[Account, None], UIExceptionHandlerMix
                 raise RuntimeError("Unmapped TransactionType")
 
 
-class BankSystemController(BaseController[Bank, None]):
+class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
     """
     The Main Application Controller (Maestro) for the PyBank terminal.
 

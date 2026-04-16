@@ -1,16 +1,55 @@
-from domain.account import Account
-
 TRANSACTION_MESSAGES: dict[str, dict[str, str]] = {
-    "general": {
+    "transaction": {
         "success": "Transação realizada com sucesso",
-        "min_value": f"Valor mínimo para transação: {Account.MIN_ATM_TRANSACTION}",
+        "min_value": "Valor mínimo para transação: {min_atm}}",
     },
     "deposit": {
         "acc_not_found": "Conta inexistente no sistema do PyBank",
         "acc_blocked": "Transação não permitida para esta conta no momento. Entre em contato com o titular",
     },
     "withdraw": {
-        "value": "Valor inválido para saque. Transação não autorizada",
+        "value": "Valor indisponível para saque. Transação não autorizada",
         "overdraft": "Valor insuficiente em conta. Para sacar essa quantia autorize o uso do limite especial",
+        "acc_blocked": "Sua conta foi BLOQUEADA por segurança. Desbloqueie a conta pra usá-la novamente",
+    },
+}
+
+SYSTEM_MESSAGES: dict[str, dict[str, str]] = {
+    "menus": {
+        "security": "Sessão encerrada por questão de segurança. Voltando à tela inicial",
+        "exit": "Sessão encerrada. Voltando à tela inicial",
+        "cancel": "Operação cancelada. Voltando ao menu anterior",
+    },
+    "client": {
+        "new": "Bem vindo ao PyBank. Faça o seu cadastro",
+        "not_new": "Bem vindo de volta ao PyBank",
+    },
+    "new_account": {
+        "success": "Conta registrada com sucesso",
+        "duplicated": "Essa conta já se encontra registrada no sistema. Crie uma nova conta",
+        "password": "Falha ao registrar sua senha. Tente novamente",
+        "run_time": "Erro ao registrar sua conta. Tente novamente",
+    },
+    "prompt_password": {
+        "first": "Insira sua senha",
+        "second": "Insira novamente sua senha",
+        "error": "As senhas não conferem. Tente novamente",
+    },
+    "access": {
+        "success": "Acesso Concedido",
+        "auth": "Senha incorreta. Acesso Negado",
+        "last": "Atenção: Última tentativa. Se errar a senha, a conta será bloqueada",
+        "blocked": "Conta BLOQUEADA por segurança. Desbloqueie a conta para usá-la novamente",
+    },
+    "unfreeze": {
+        "success": "Conta desbloqueada com sucesso",
+        "authentication": "Falha na autenticação. A data de nascimento informada não corresponde",
+        "already_active": "Essa conta está ativa. Impossível desbloquear",
+    },
+    "close_account": {
+        "success": "Sua conta foi encerrada corretamente e seus dados removidos do sistema",
+        "positive": "Você possui saldo de R${balance}. Realize o SAQUE do valor total antes de encerrar a conta",
+        "negative": "Você possui dívida de R${balance}. Realize o DEPÓSITO do valor total antes de encerrar a conta.",
+        "other_branch": "Operação negada. O encerramento de conta deve ser realizado presencialmente na sua agência de origem",
     },
 }
