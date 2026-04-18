@@ -13,8 +13,8 @@ from shared import exceptions, validators
 from shared.credentials import AccessToken, AccountCard, AuthToken
 from shared.exceptions import (
     AccountAlreadyActiveError,
-    AccountNotFoundError,
     BankAuthenticationError,
+    BankError,
     BankPasswordError,
     BankSecurityError,
     BlockedAccountError,
@@ -361,9 +361,10 @@ class TransactionController(BaseController[Account, None], UIMessageHandlerMixin
             raise RuntimeError(
                 f"Method doesn't handle {self._transaction_type} operation"
             )
-
+        self._handle_info_ui(
+            "transaction", "min_value", min_atm=Account.MIN_ATM_TRANSACTION
+        )
         transaction_key = transaction_mapper[self._transaction_type]
-        views.controller_output("transaction", "min_value")
         value_raw = io_utils.get_single_input(
             transaction_key, self._transaction_config, self._controller_validator_cb
         )
@@ -380,22 +381,26 @@ class TransactionController(BaseController[Account, None], UIMessageHandlerMixin
 
     def _handle_withdraw(self) -> None:
         amount = self._get_transaction_value()
+        use_overdraft = False
 
-        try:
-            self._bank_instance.execute_withdraw(self._active_access_token, amount)
+        while True:
+            try:
+                self._bank_instance.execute_withdraw(
+                    self._active_access_token, amount, use_overdraft=use_overdraft
+                )
+                self._handle_info_ui("transaction", "success")
+                break
+            except OverdraftRequiredError as e:
+                self._handle_exception_ui("withdraw", e)
+                proceed = self._confirm_overdraft()
 
-        except OverdraftRequiredError:
-            use_overdraft = self._confirm_overdraft()
+                if not proceed:
+                    raise UserAbortError
 
-            if not use_overdraft:
-                raise UserAbortError
-
-            self._bank_instance.execute_withdraw(
-                self._active_access_token, amount, use_overdraft=True
-            )
-        except DomainError as e:
-            self._handle_exception_ui("withdraw", e)
-            raise ControllerCredentialsError
+                use_overdraft = True
+            except DomainError as e:
+                self._handle_exception_ui("withdraw", e)
+                raise ControllerCredentialsError
 
     def _handle_public_deposit(self) -> None:
         user_in_dict = io_utils.get_selected_inputs(
@@ -409,13 +414,9 @@ class TransactionController(BaseController[Account, None], UIMessageHandlerMixin
 
         try:
             self._bank_instance.execute_deposit(branch_code, account_num, amount)
-            views.controller_output("transaction", True)
-        except AccountNotFoundError:
-            views.controller_output("transaction", "not_found")
-            raise ControllerOperationError
-        except BlockedAccountError:
-            views.controller_output("transaction", "blocked")
-            raise ControllerOperationError
+            self._handle_info_ui("transaction", "success")
+        except BankError as e:
+            self._handle_exception_ui("deposit", e)
         except InvalidDepositError:
             raise RuntimeError(
                 "Logical validation error in io_utils deposit value input"
@@ -604,7 +605,9 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
             AccountCard: The selected card object.
         """
         client_cards = self._active_client.cards
-        views.show_cards(client_cards)
+        cards_list: list[str] = [str(card) for card in client_cards]
+
+        views.show_cards(cards_list)
 
         def local_validator_cb(field: str, user_in_raw: InputType) -> CallbackReturn:
             user_in = _assert_input(user_in_raw, int)
@@ -856,7 +859,7 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
             views.controller_output("close_account", True)
             self._end_session()
         except NotEmptyAccountError:
-            views.show_close_account_status(account.balance)
+            views.show_close_account_status()
             raise ControllerOperationError
         except HomeBranchRestrictionError:
             views.controller_output("close_account", False)

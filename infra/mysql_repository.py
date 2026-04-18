@@ -259,175 +259,6 @@ class MySQLRepository:
                     f"Failed to update account transactions due to DB error: {e}"
                 )
 
-    def get_client(self, cpf: str) -> Client:
-        """
-        Retrieves a fully hydrated Client domain entity and their associated account cards.
-
-        Executes two sequential, lightweight queries to fetch the core client
-        data and their account credentials. This KISS approach prevents cartesian
-        products (JOINs) and simplifies the data reconstruction process.
-        The raw database records are mapped directly into a domain object before returning.
-
-        Args:
-            cpf (str): The 11-digit string representing the client's CPF.
-
-        Returns:
-            Client: A fully populated Client domain object, including their
-                wallet of AccountCards.
-
-        Raises:
-            TypeError: If the provided CPF is not a string.
-            DataNotFoundError: If no client matches the provided CPF.
-        """
-        verify_instance(cpf, str)
-
-        client_sql = "SELECT * FROM clients WHERE cpf = %s"
-        account_sql = (
-            "SELECT branch_code, account_num FROM accounts WHERE client_id = %s"
-        )
-
-        with self._connection.cursor() as cursor:
-            cursor.execute(client_sql, (cpf,))
-            client_dict = cursor.fetchone()
-
-            if not client_dict:
-                raise DataNotFoundError("Client not registered under this CPF")
-
-            client_id = client_dict.pop("id")
-            cursor.execute(account_sql, (client_id,))
-            rows = cursor.fetchall()
-
-        cards_list = []
-        for row in rows:
-            row["cpf"] = cpf
-            cards_list.append(row)
-
-        client_dict["account_cards"] = cards_list
-        client_obj = Client.from_dict(client_dict)
-        return client_obj
-
-    def get_account_credentials(
-        self, branch_code: str, account_num: str
-    ) -> dict[str, Any]:
-        """
-        Fetches only the security metadata required for authentication.
-        Extremely lightweight, avoids hydrating the full Account entity or its transactions.
-        """
-        verify_instance(branch_code, str)
-        verify_instance(account_num, str)
-
-        sql = (
-            "SELECT is_active, password_hash, failed_login_attempts"
-            "FROM accounts "
-            "WHERE branch_code = %s AND account_num = %s "
-        )
-        with self._connection.cursor() as cursor:
-            cursor.execute(sql, (branch_code, account_num))
-            result = cursor.fetchone()
-
-            if not result:
-                raise DataNotFoundError("Account not found in the database")
-
-            return result
-
-    def get_account(self, branch_code: str, account_num: str) -> Account:
-        """
-        Retrieves an account from the database.
-
-        Acts as an Anti-Corruption Layer, mapping raw database columns back to
-        the keys expected by the domain's `Account.from_dict()` factory.
-        This method is highly optimized and fetches only the current state
-        of the account, omitting the transaction history for performance.
-
-        Args:
-            branch_code (str): The 4-digit string representing the branch.
-            account_num (str): The unique 8-digit string representing the account.
-
-        Returns:
-            Account: A fully hydrated Account domain object (either CheckingAccount
-                or SavingsAccount).
-
-        Raises:
-            TypeError: If the provided arguments are not strings.
-            DataNotFoundError: If the account does not exist in the database.
-        """
-        verify_instance(branch_code, str)
-        verify_instance(account_num, str)
-
-        acc_keys_mapper = {
-            "branch_code": "branch_code",
-            "account_num": "account_num",
-            "account_type": "type",
-            "balance": "balance",
-            "used_credit": "used_credit",
-        }
-        main_sql = "SELECT * FROM accounts WHERE branch_code = %s AND account_num = %s"
-
-        with self._connection.cursor() as cursor:
-            cursor.execute(main_sql, (branch_code, account_num))
-            db_acc_dict = cursor.fetchone()
-
-            if not db_acc_dict:
-                raise DataNotFoundError("Account not found in the database")
-
-            acc_dict: dict[str, Any] = {
-                acc_keys_mapper[k]: v
-                for k, v in db_acc_dict.items()
-                if k in acc_keys_mapper
-            }
-
-            if acc_dict.get("used_credit") is None:
-                acc_dict.pop("used_credit")
-
-            account_obj = Account.from_dict(acc_dict)
-            return account_obj
-
-    def get_transactions(
-        self, branch_code: str, account_num: str, start_date: datetime
-    ) -> tuple[dict[str, Any], ...]:
-        """
-        Retrieves a chronological record of transactions for a specific account.
-
-        Filters transactions based on a provided start date, pushing the
-        computational load of date filtering and ordering to the database motor.
-        Executes an optimized JOIN operation to link the account identifiers to
-        their respective transaction history.
-
-        Args:
-            branch_code (str): The 4-digit string representing the branch.
-            account_num (str): The unique 8-digit string representing the account.
-            start_date (datetime): The cutoff date; fetches all transactions occurring
-                on or after this exact timestamp.
-
-        Returns:
-            tuple[dict[str, Any], ...]: A tuple of dictionaries, where each dictionary
-                represents a transaction containing the 'amount' (Decimal) and
-                'created_at' (datetime). Ordered from newest to oldest.
-
-        Raises:
-            TypeError: If the provided arguments are not of the expected types.
-        """
-        verify_instance(branch_code, str)
-        verify_instance(account_num, str)
-        verify_instance(start_date, datetime)
-
-        sql = (
-            "SELECT t.amount, t.created_at "
-            "FROM transactions AS t "
-            "JOIN accounts AS a "
-            "ON t.account_id = a.id "
-            "WHERE a.branch_code = %s "
-            "AND a.account_num = %s "
-            "AND t.created_at >= %s "
-            "ORDER BY t.created_at DESC"
-        )
-
-        with self._connection.cursor() as cursor:
-            cursor.execute(sql, (branch_code, account_num, start_date))
-            result = cursor.fetchall()
-
-        return result
-
     def client_exists(self, cpf: str) -> bool:
         """
         Performs a highly optimized existence check for a client by CPF.
@@ -480,6 +311,198 @@ class MySQLRepository:
             result = cursor.fetchone()
 
         return bool(result)
+
+    def get_client(self, cpf: str) -> Client:
+        """
+        Retrieves a fully hydrated Client domain entity and their associated account cards.
+
+        Executes two sequential, lightweight queries to fetch the core client
+        data and their account credentials. This KISS approach prevents cartesian
+        products (JOINs) and simplifies the data reconstruction process.
+        The raw database records are mapped directly into a domain object before returning.
+
+        Args:
+            cpf (str): The 11-digit string representing the client's CPF.
+
+        Returns:
+            Client: A fully populated Client domain object, including their
+                wallet of AccountCards.
+
+        Raises:
+            TypeError: If the provided CPF is not a string.
+            DataNotFoundError: If no client matches the provided CPF.
+        """
+        verify_instance(cpf, str)
+
+        client_sql = "SELECT * FROM clients WHERE cpf = %s"
+        account_sql = (
+            "SELECT branch_code, account_num FROM accounts WHERE client_id = %s"
+        )
+
+        with self._connection.cursor() as cursor:
+            cursor.execute(client_sql, (cpf,))
+            client_dict = cursor.fetchone()
+
+            if not client_dict:
+                raise DataNotFoundError("Client not registered under this CPF")
+
+            client_id = client_dict.pop("id")
+            cursor.execute(account_sql, (client_id,))
+            rows = cursor.fetchall()
+
+        cards_list = []
+        for row in rows:
+            row["cpf"] = cpf
+            cards_list.append(row)
+
+        client_dict["account_cards"] = cards_list
+        client_obj = Client.from_dict(client_dict)
+        return client_obj
+
+    def get_account_credentials(
+        self, branch_code: str, account_num: str
+    ) -> dict[str, Any]:
+        """
+        Fetches only the security metadata required for authentication.
+
+        This method is highly optimized. It executes a lightweight query to retrieve
+        strictly the necessary fields ('is_active', 'password_hash', 'failed_login_attempts'),
+        avoiding the overhead of hydrating the full Account entity or its transaction history.
+
+        Args:
+            branch_code (str): The 4-digit string representing the branch.
+            account_num (str): The unique 8-digit string representing the account.
+
+        Returns:
+            dict[str, Any]: A dictionary containing the account's security credentials.
+
+        Raises:
+            TypeError: If the provided branch_code or account_num are not strings.
+            DataNotFoundError: If the requested account does not exist in the database.
+        """
+        verify_instance(branch_code, str)
+        verify_instance(account_num, str)
+
+        sql = (
+            "SELECT is_active, password_hash, failed_login_attempts "
+            "FROM accounts "
+            "WHERE branch_code = %s AND account_num = %s "
+        )
+        with self._connection.cursor() as cursor:
+            cursor.execute(sql, (branch_code, account_num))
+            result = cursor.fetchone()
+
+            if not result:
+                raise DataNotFoundError("Account not found in the database")
+
+            return result
+
+    def get_account(self, branch_code: str, account_num: str) -> Account:
+        """
+        Retrieves an account from the database.
+
+        Acts as an Anti-Corruption Layer, mapping raw database columns back to
+        the keys expected by the domain's `Account.from_dict()` factory.
+        This method is highly optimized and fetches only the current state
+        of the account, omitting the transaction history for performance.
+
+        Args:
+            branch_code (str): The 4-digit string representing the branch.
+            account_num (str): The unique 8-digit string representing the account.
+
+        Returns:
+            Account: A fully hydrated Account domain object (either CheckingAccount
+                or SavingsAccount).
+
+        Raises:
+            TypeError: If the provided arguments are not strings.
+            DataNotFoundError: If the account does not exist in the database.
+        """
+        verify_instance(branch_code, str)
+        verify_instance(account_num, str)
+
+        acc_keys_mapper = {
+            "branch_code": "branch_code",
+            "account_num": "account_num",
+            "account_type": "type",
+            "balance": "balance",
+            "used_credit": "used_credit",
+        }
+        sql = "SELECT * FROM accounts WHERE branch_code = %s AND account_num = %s"
+
+        with self._connection.cursor() as cursor:
+            cursor.execute(sql, (branch_code, account_num))
+            db_acc_dict = cursor.fetchone()
+
+            if not db_acc_dict:
+                raise DataNotFoundError("Account not found in the database")
+
+            acc_dict: dict[str, Any] = {
+                acc_keys_mapper[k]: v
+                for k, v in db_acc_dict.items()
+                if k in acc_keys_mapper
+            }
+
+            if acc_dict.get("used_credit") is None:
+                acc_dict.pop("used_credit")
+
+            account_obj = Account.from_dict(acc_dict)
+            return account_obj
+
+    def get_transactions(
+        self, branch_code: str, account_num: str, start_date: datetime
+    ) -> tuple[dict[str, Any], ...]:
+        """
+        Retrieves a chronological record of transactions for a specific account.
+
+        Enforces a Fail-Fast validation by explicitly verifying the account's
+        existence before executing the main query. This mitigates TOCTOU
+        (Time-of-Check to Time-of-Use) race conditions, preventing the return
+        of a false-positive empty statement for an account that was deleted
+        in another session.
+
+        Filters transactions based on a provided start date, pushing the
+        computational load of date filtering and ordering to the database motor
+        using an optimized JOIN operation.
+
+        Args:
+            branch_code (str): The 4-digit string representing the branch.
+            account_num (str): The unique 8-digit string representing the account.
+            start_date (datetime): The cutoff date; fetches all transactions occurring
+                on or after this exact timestamp.
+
+        Returns:
+            tuple[dict[str, Any], ...]: A tuple of dictionaries, where each dictionary
+                represents a transaction containing the 'amount' (Decimal) and
+                'created_at' (datetime). Ordered from newest to oldest.
+
+        Raises:
+            TypeError: If the provided arguments are not of the expected types.
+            DataNotFoundError: If the requested account does not exist in the database.
+        """
+        verify_instance(branch_code, str)
+        verify_instance(account_num, str)
+        verify_instance(start_date, datetime)
+
+        if not self.account_exists(branch_code, account_num):
+            raise DataNotFoundError("Account not found in the database")
+
+        sql = (
+            "SELECT t.amount, t.created_at "
+            "FROM transactions AS t "
+            "JOIN accounts AS a "
+            "ON t.account_id = a.id "
+            "WHERE a.branch_code = %s "
+            "AND a.account_num = %s "
+            "AND t.created_at >= %s "
+            "ORDER BY t.created_at DESC"
+        )
+
+        with self._connection.cursor() as cursor:
+            cursor.execute(sql, (branch_code, account_num, start_date))
+            result = cursor.fetchall()
+
+        return result
 
     def register_failed_login(self, branch_code: str, account_num: str) -> None:
         """

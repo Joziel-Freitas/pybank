@@ -7,7 +7,7 @@ for UI navigation states and operation routing, promoting type safety and
 eliminating the use of magic numbers in the user interface menus.
 """
 
-from enum import IntEnum
+from enum import IntEnum, StrEnum
 
 
 class MainMenuType(IntEnum):
@@ -74,3 +74,30 @@ class ManagementType(IntEnum):
     PASSWORD = 1
     UNFREEZE = 2
     CLOSE = 3
+
+
+class ErrorContext(StrEnum):
+    """
+    Base enumeration for generic error context payloads.
+
+    Inherits from StrEnum to guarantee that all members are natively treated
+    as strings. This allows seamless instantiation from exception arguments
+    (e.g., `ErrorContext(str(e))`) and ensures type safety while eliminating
+    the fragility of magic strings across the system.
+    """
+
+
+class BankContext(ErrorContext):
+    """
+    Defines standardized context identifiers for Bank-related data collisions or misses.
+
+    Acts as a strict contractual vocabulary to identify which specific entity
+    was involved in an error event, replacing arbitrary string matching.
+
+    Attributes:
+        CLIENT: Context representing the Client entity (e.g., for duplication or not-found events).
+        ACCOUNT: Context representing the Account entity.
+    """
+
+    CLIENT = "client"
+    ACCOUNT = "account"

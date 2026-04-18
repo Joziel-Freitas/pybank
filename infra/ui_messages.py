@@ -9,16 +9,17 @@ TRANSACTION_MESSAGES: dict[str, dict[str, str]] = {
     },
     "withdraw": {
         "value": "Valor indisponível para saque. Transação não autorizada",
-        "overdraft": "Valor insuficiente em conta. Para sacar essa quantia autorize o uso do limite especial",
+        "use_limit": "Valor insuficiente em conta. Para sacar essa quantia autorize o uso do limite especial",
         "acc_blocked": "Sua conta foi BLOQUEADA por segurança. Desbloqueie a conta pra usá-la novamente",
     },
 }
 
 SYSTEM_MESSAGES: dict[str, dict[str, str]] = {
     "menus": {
-        "security": "Sessão encerrada por questão de segurança. Voltando à tela inicial",
-        "exit": "Sessão encerrada. Voltando à tela inicial",
         "cancel": "Operação cancelada. Voltando ao menu anterior",
+        "exit": "Sessão encerrada. Voltando à tela inicial",
+        "security": "Sessão encerrada por questão de segurança. Voltando à tela inicial",
+        "unavailable": "O sistema do PyBank está temporariamente indisponível. Tente novamente mais tarde",
     },
     "client": {
         "new": "Bem vindo ao PyBank. Faça o seu cadastro",

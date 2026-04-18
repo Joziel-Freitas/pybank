@@ -129,6 +129,10 @@ class HomeBranchRestrictionError(BankError):
     """Raised when an operation is restricted to the account's home branch."""
 
 
+class BankUnavailableError(BankError):
+    """Raised when an operation fails due to internal infrastructure issues."""
+
+
 # --- Person Domain Exceptions ---
 
 
@@ -218,6 +222,7 @@ DOMAIN_ERROR_MAP: ErrorMapType = {
     InvalidDepositError: "value",
     InvalidWithdrawError: "value",
     OverdraftRequiredError: "use_limit",
+    BankUnavailableError: "unavailable",
 }
 
 

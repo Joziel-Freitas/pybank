@@ -13,8 +13,6 @@ import subprocess
 from decimal import Decimal
 from time import sleep
 
-from domain.person import AccountCard
-
 
 def welcome() -> None:
     """Displays the application's startup banner and initial instructions."""
@@ -106,7 +104,18 @@ def show_statement(
         sleep(1)
 
 
-def show_cards(client_cards: list[AccountCard]) -> None:
+def show_cards(client_cards: list[str]) -> None:
+    """
+    Renders a numbered list of available account cards to the terminal.
+
+    This function acts purely as a display mechanism. It expects card data
+    to be pre-formatted as strings, ensuring the presentation layer remains
+    completely decoupled from internal domain objects (like AccountCard).
+
+    Args:
+        client_cards (list[str]): A list containing the string representation
+                                  of each card available to the client.
+    """
     subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
     print(f"{' Seus cartões ':-^50}")
     for idx, card in enumerate(client_cards):
