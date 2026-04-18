@@ -187,26 +187,36 @@ class Bank:
         Validates the cryptographic integrity and authenticity of a session token.
 
         Operates seamlessly with both AuthToken (Lobby access) and AccessToken
-        (Vault access). Utilizing a pattern matching approach, it dynamically
-        reconstructs the expected payload. For AccessTokens, it enforces a Zero
-        Trust model by fetching the freshest password hash from the repository,
-        acting as an automatic session invalidator if the user's password was
-        recently changed.
+        (Vault access). It enforces a strict Zero Trust model by unconditionally
+        verifying the account's existence in the repository before checking the
+        signature, effectively mitigating Time-of-Check to Time-of-Use (TOCTOU)
+        race conditions for all session types.
+
+        For AccessTokens, it dynamically reconstructs the expected payload using
+        the freshest password hash, acting as an automatic session invalidator
+        if the user's password was recently changed.
 
         Args:
             token (AccessToken | AuthToken): The token instance to be validated.
 
         Raises:
-            BankSecurityError: If the token instance is unknown, or if the
-                cryptographic signature has been tampered with or invalidated.
+            BankSecurityError: If the token instance is unknown, if the account
+                no longer exists (TOCTOU mitigation), or if the cryptographic
+                signature has been tampered with or invalidated.
         """
+        try:
+            acc_credentials = self._get_account_credentials(
+                token.branch_code, token.account_num
+            )
+        except AccountNotFoundError as e:
+            raise BankSecurityError(
+                "Security breach or race condition: Account no longer exists"
+            ) from e
+
         match token:
             case AuthToken():
                 payload = f"{token.cpf}:{token.branch_code}:{token.account_num}"
             case AccessToken():
-                acc_credentials = self._get_account_credentials(
-                    token.branch_code, token.account_num
-                )
                 pwd_hash = acc_credentials["password_hash"]
                 payload = f"{token.branch_code}:{token.account_num}:{pwd_hash}"
             case _:
@@ -529,28 +539,6 @@ class Bank:
             cpf=client.cpf, branch_code=branch_code, account_num=account_num
         )
 
-    def get_remaining_login_attempts(self, auth_token: AuthToken) -> int:
-        """
-        Calculates the remaining vault access attempts for an authenticated client.
-
-        Acts as a safe query method for the presentation layer to synchronize its
-        UI state with the strict security records in the database, preventing
-        unexpected account freezes without proper user warnings.
-
-        Args:
-            auth_token (AuthToken): A valid, securely signed authentication token.
-
-        Returns:
-            int: The number of remaining attempts before the account is frozen.
-        """
-        self._validate_token(auth_token)
-        acc_credentials = self._get_account_credentials(
-            auth_token.branch_code, auth_token.account_num
-        )
-        failed_attempts = acc_credentials["failed_login_attempts"]
-
-        return self.MAX_LOGIN_ATTEMPTS - failed_attempts
-
     def authorize_vault_access(
         self, auth_token: AuthToken, password: str
     ) -> AccessToken:
@@ -579,9 +567,14 @@ class Bank:
         Bank.validate_password(password)
         self._validate_token(auth_token)
 
-        acc_credentials = self._get_account_credentials(
-            auth_token.branch_code, auth_token.account_num
-        )
+        try:
+            acc_credentials = self._get_account_credentials(
+                auth_token.branch_code, auth_token.account_num
+            )
+        except AccountNotFoundError as e:
+            raise BankSecurityError(
+                "Security breach or race condition: Account no longer exists"
+            ) from e
         self._ensure_account_is_active(acc_credentials)
 
         branch_code = auth_token.branch_code
@@ -599,13 +592,46 @@ class Bank:
                 auth_token=auth_token, password_hash=hashed_pwd
             )
         except BankAuthenticationError as e:
-            self._repository.register_failed_login(branch_code, account_num)
-            if (failed_logins + 1) >= Bank.MAX_LOGIN_ATTEMPTS:
-                self._repository.update_account_status(branch_code, account_num, False)
-                raise BlockedAccountError(
-                    "The account was frozen due to 3 consecutive failed login attempts"
+            try:
+                self._repository.register_failed_login(branch_code, account_num)
+                if (failed_logins + 1) >= Bank.MAX_LOGIN_ATTEMPTS:
+                    self._repository.update_account_status(
+                        branch_code, account_num, False
+                    )
+                    raise BlockedAccountError(
+                        "The account was frozen due to 3 consecutive failed login attempts"
+                    ) from e
+                raise e
+            except RepositoryError as e:
+                raise BankUnavailableError(
+                    "The intended operation could not be persisted due to an internal error"
                 ) from e
-            raise e
+        except RepositoryError as e:
+            raise BankUnavailableError(
+                "The intended operation could not be persisted due to an internal error"
+            ) from e
+
+    def get_remaining_login_attempts(self, auth_token: AuthToken) -> int:
+        """
+        Calculates the remaining vault access attempts for an authenticated client.
+
+        Acts as a safe query method for the presentation layer to synchronize its
+        UI state with the strict security records in the database, preventing
+        unexpected account freezes without proper user warnings.
+
+        Args:
+            auth_token (AuthToken): A valid, securely signed authentication token.
+
+        Returns:
+            int: The number of remaining attempts before the account is frozen.
+        """
+        self._validate_token(auth_token)
+        acc_credentials = self._get_account_credentials(
+            auth_token.branch_code, auth_token.account_num
+        )
+        failed_attempts = acc_credentials["failed_login_attempts"]
+
+        return self.MAX_LOGIN_ATTEMPTS - failed_attempts
 
     def execute_deposit(
         self,
@@ -753,18 +779,18 @@ class Bank:
             BankUnavailableError: If the update could not be persisted due to an internal error.
         """
         Bank.validate_password(new_password)
-        try:
-            self._validate_token(access_token)
-        except AccountNotFoundError:
-            raise BankSecurityError(
-                "Security breach or race condition: Account no longer exists"
-            )
+        self._validate_token(access_token)
 
         hashed_pwd = self._generate_password_hash(new_password)
 
-        self._repository.update_password(
-            access_token.branch_code, access_token.account_num, hashed_pwd
-        )
+        try:
+            self._repository.update_password(
+                access_token.branch_code, access_token.account_num, hashed_pwd
+            )
+        except RepositoryError as e:
+            raise BankUnavailableError(
+                "The intended operation could not be persisted due to an internal error"
+            ) from e
 
     def unfreeze_account(
         self, auth_token: AuthToken, birth_date: date, new_password: str
@@ -783,7 +809,8 @@ class Bank:
             new_password (str): The new 6-digit password to be set.
 
         Raises:
-            BankSecurityError: If the AuthToken is tampered with.
+            BankSecurityError: If the AuthToken is tampered with, or if the account
+                no longer exists (TOCTOU mitigation).
             BankPasswordError: If the new password format is invalid.
             AccountAlreadyActiveError: If the account is already operational.
             AuthenticationError: If the provided birth date does not match.
@@ -793,28 +820,32 @@ class Bank:
         Bank.validate_password(new_password)
         verify.verify_instance(birth_date, date)
 
-        acc_credentials = self._get_account_credentials(
-            auth_token.branch_code, auth_token.account_num
-        )
-
-        if acc_credentials["is_active"]:
-            raise AccountAlreadyActiveError(
-                "Impossible to unfreeze an operational account"
-            )
-
-        client = self.get_registered_client(auth_token.cpf)
-
-        if client.birth_date != birth_date:
-            raise BankAuthenticationError(
-                "The given birth date doesn't match with registered birth date"
-            )
-
-        pwd_hash = self._generate_password_hash(new_password)
-
         try:
+            acc_credentials = self._get_account_credentials(
+                auth_token.branch_code, auth_token.account_num
+            )
+
+            if acc_credentials["is_active"]:
+                raise AccountAlreadyActiveError(
+                    "Impossible to unfreeze an operational account"
+                )
+
+            client = self.get_registered_client(auth_token.cpf)
+
+            if client.birth_date != birth_date:
+                raise BankAuthenticationError(
+                    "The given birth date doesn't match with registered birth date"
+                )
+
+            pwd_hash = self._generate_password_hash(new_password)
+
             self._repository.update_security_credentials(
                 auth_token.branch_code, auth_token.account_num, pwd_hash, True
             )
+        except AccountNotFoundError as e:
+            raise BankSecurityError(
+                "Security breach or race condition: Account no longer exists"
+            ) from e
         except RepositoryError as e:
             raise BankUnavailableError(
                 "The intended operation could not be persisted due to an internal error"
@@ -838,7 +869,8 @@ class Bank:
             HomeBranchRestrictionError: If the account's branch does not match
                 the current terminal's branch.
             NotEmptyAccountError: If the account has a positive or negative balance.
-            BankSecurityError: If the token is invalid or tampered with.
+            BankSecurityError: If the token is invalid, tampered with, or if the
+                account no longer exists (TOCTOU mitigation).
             BankUnavailableError: If the deletion could not be executed due to an internal error.
         """
         self._validate_token(access_token)

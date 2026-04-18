@@ -185,8 +185,9 @@ class MySQLRepository:
         verify_instance(client_or_cpf, (Client, str))
         verify_instance(password_hash, str)
 
-        with self._connection.cursor() as cursor:
-            try:
+        try:
+            with self._connection.cursor() as cursor:
+
                 if isinstance(client_or_cpf, Client):
                     client_id = self._insert_client_record(cursor, client_or_cpf)
                 else:
@@ -194,15 +195,12 @@ class MySQLRepository:
 
                 self._insert_account_record(cursor, account, client_id, password_hash)
                 self._connection.commit()
-            except DuplicatedDataError:
-                self._connection.rollback()
-                raise
-            except DataNotFoundError:
-                self._connection.rollback()
-                raise
-            except Exception as e:
-                self._connection.rollback()
-                raise RepositoryError(f"Object's register failed due to DB error: {e}")
+        except (DuplicatedDataError, DataNotFoundError):
+            self._connection.rollback()
+            raise
+        except Exception as e:
+            self._connection.rollback()
+            raise RepositoryError(f"Object's register failed due to DB error: {e}")
 
     def save_transaction(
         self, branch_code: str, account_num: str, amount: Decimal
@@ -235,29 +233,32 @@ class MySQLRepository:
 
         update_sql = "UPDATE accounts SET balance = balance + %s WHERE id = %s"
 
-        with self._connection.cursor() as cursor:
-            cursor.execute(
-                select_sql,
-                (
-                    branch_code,
-                    account_num,
-                ),
-            )
-            result = cursor.fetchone()
+        try:
+            with self._connection.cursor() as cursor:
+                cursor.execute(
+                    select_sql,
+                    (
+                        branch_code,
+                        account_num,
+                    ),
+                )
+                result = cursor.fetchone()
 
-            if not result:
-                raise DataNotFoundError("Account not found in the database")
+                if not result:
+                    raise DataNotFoundError("Account not found in the database")
 
-            account_id = result["id"]
-            try:
+                account_id = result["id"]
+
                 self._insert_transaction_record(cursor, account_id, amount)
                 cursor.execute(update_sql, (amount, account_id))
                 self._connection.commit()
-            except Exception as e:
-                self._connection.rollback()
-                raise RepositoryError(
-                    f"Failed to update account transactions due to DB error: {e}"
-                )
+        except DataNotFoundError:
+            self._connection.rollback()
+        except Exception as e:
+            self._connection.rollback()
+            raise RepositoryError(
+                f"Failed to update account transactions due to DB error: {e}"
+            )
 
     def client_exists(self, cpf: str) -> bool:
         """
@@ -514,6 +515,7 @@ class MySQLRepository:
 
         Raises:
             TypeError: If the provided arguments are not strings.
+            RepositoryError: If a database error occurs, triggering a transaction rollback.
         """
         verify_instance(branch_code, str)
         verify_instance(account_num, str)
@@ -524,9 +526,14 @@ class MySQLRepository:
             "WHERE branch_code = %s AND account_num = %s"
         )
 
-        with self._connection.cursor() as cursor:
-            cursor.execute(sql, (branch_code, account_num))
-            self._connection.commit()
+        try:
+            with self._connection.cursor() as cursor:
+
+                cursor.execute(sql, (branch_code, account_num))
+                self._connection.commit()
+        except Exception as e:
+            self._connection.rollback()
+            raise RepositoryError(f"Failed to update data due to DB error: {e}")
 
     def reset_login_attempts(self, branch_code: str, account_num: str) -> None:
         """
@@ -540,6 +547,7 @@ class MySQLRepository:
 
         Raises:
             TypeError: If the provided arguments are not strings.
+            RepositoryError: If a database error occurs, triggering a transaction rollback.
         """
         verify_instance(branch_code, str)
         verify_instance(account_num, str)
@@ -549,15 +557,19 @@ class MySQLRepository:
             "SET failed_login_attempts = 0 "
             "WHERE branch_code = %s AND account_num = %s"
         )
-        with self._connection.cursor() as cursor:
-            cursor.execute(
-                sql,
-                (
-                    branch_code,
-                    account_num,
-                ),
-            )
-            self._connection.commit()
+        try:
+            with self._connection.cursor() as cursor:
+                cursor.execute(
+                    sql,
+                    (
+                        branch_code,
+                        account_num,
+                    ),
+                )
+                self._connection.commit()
+        except Exception as e:
+            self._connection.rollback()
+            raise RepositoryError(f"Failed to update data due to DB error: {e}")
 
     def update_account_status(
         self, branch_code: str, account_num: str, is_active: bool
@@ -572,6 +584,7 @@ class MySQLRepository:
 
         Raises:
             TypeError: If the provided arguments have incorrect types.
+            RepositoryError: If a database error occurs, triggering a transaction rollback.
         """
         verify_instance(branch_code, str)
         verify_instance(account_num, str)
@@ -583,9 +596,14 @@ class MySQLRepository:
             "WHERE branch_code = %s AND account_num = %s"
         )
 
-        with self._connection.cursor() as cursor:
-            cursor.execute(sql, (is_active, branch_code, account_num))
-            self._connection.commit()
+        try:
+            with self._connection.cursor() as cursor:
+
+                cursor.execute(sql, (is_active, branch_code, account_num))
+                self._connection.commit()
+        except Exception as e:
+            self._connection.rollback()
+            raise RepositoryError(f"Failed to update data due to DB error: {e}")
 
     def update_password(
         self, branch_code: str, account_num: str, new_password_hash: str
@@ -603,6 +621,7 @@ class MySQLRepository:
 
         Raises:
             TypeError: If the arguments are not strings.
+            RepositoryError: If a database error occurs, triggering a transaction rollback.
         """
         parameters = (branch_code, account_num, new_password_hash)
         for p in parameters:
@@ -614,9 +633,13 @@ class MySQLRepository:
             "WHERE branch_code = %s AND account_num = %s"
         )
 
-        with self._connection.cursor() as cursor:
-            cursor.execute(sql, (new_password_hash, branch_code, account_num))
-            self._connection.commit()
+        try:
+            with self._connection.cursor() as cursor:
+                cursor.execute(sql, (new_password_hash, branch_code, account_num))
+                self._connection.commit()
+        except Exception as e:
+            self._connection.rollback()
+            raise RepositoryError(f"Failed to update data due to DB error: {e}")
 
     def update_security_credentials(
         self,
