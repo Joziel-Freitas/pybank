@@ -27,6 +27,7 @@ from shared.exceptions import (
     HomeBranchRestrictionError,
     InvalidBirthDateError,
     InvalidDepositError,
+    InvalidWithdrawError,
     NotEmptyAccountError,
     OverdraftRequiredError,
     UserAbortError,
@@ -383,7 +384,7 @@ class TransactionController(BaseController[Account, None], UIMessageHandlerMixin
         amount = self._get_transaction_value()
         use_overdraft = False
 
-        while True:
+        for i in range(2):
             try:
                 self._bank_instance.execute_withdraw(
                     self._active_access_token, amount, use_overdraft=use_overdraft
@@ -398,9 +399,9 @@ class TransactionController(BaseController[Account, None], UIMessageHandlerMixin
                     raise UserAbortError
 
                 use_overdraft = True
-            except DomainError as e:
+            except InvalidWithdrawError as e:
                 self._handle_exception_ui("withdraw", e)
-                raise ControllerCredentialsError
+                break
 
     def _handle_public_deposit(self) -> None:
         user_in_dict = io_utils.get_selected_inputs(
@@ -558,13 +559,13 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
             str: The validated, matching 6-digit password string.
         """
         while True:
-            views.controller_output("update_password", "1")
+            self._handle_info_ui("new_password", "first")
             raw_pwd_1 = io_utils.get_single_input(
                 "password", self._auth_config, self._controller_validator_cb
             )
             pwd_1 = _assert_input(raw_pwd_1, str)
 
-            views.controller_output("update_password", "2")
+            self._handle_info_ui("new_password", "second")
             raw_pwd_2 = io_utils.get_single_input(
                 "password", self._auth_config, self._controller_validator_cb
             )
@@ -575,7 +576,7 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
             if matched:
                 return pwd_1
 
-            views.controller_output("update_password", False)
+            self._handle_info_ui("new_password", "error")
 
     def _prompt_cpf(self) -> str:
         """
@@ -595,7 +596,7 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
         Prompts for a CPF and retrieves the corresponding registered Client entity.
         """
         cpf = self._prompt_cpf()
-        return self._bank_instance.get_registered_client(cpf)
+        return self._bank_instance._get_client(cpf)
 
     def _select_card(self) -> AccountCard:
         """
@@ -706,21 +707,12 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
                 self._active_card = None
 
         if self._active_auth_token is None:
-            raise ControllerCredentialsError("Authentication process failed")
+            raise ControllerCredentialsError(
+                "Authentication process failed due to unknown issue"
+            )
 
     def _ensure_access(self) -> None:
-        """
-        The 'Vault Door'. Upgrades an AuthToken to a highly secure AccessToken.
 
-        Requires a password challenge. Synchronizes with the Domain to check for
-        account freezes and remaining login attempts, providing real-time warnings
-        to the user via the View.
-
-        Raises:
-            RuntimeError: If called without a prior AuthToken.
-            ControllerCredentialsError: If password validation fails entirely or
-                the account gets blocked during the process.
-        """
         if not self._active_auth_token:
             raise RuntimeError("AuthToken is needed to get vault access")
 
@@ -730,7 +722,7 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
 
         for attempt in range(attempts_left, 0, -1):
             if attempt == 1:
-                views.controller_output(mapper_key="access", inner_key="last")
+                self._handle_info_ui("access", "last")
 
             raw_password = io_utils.get_single_input(
                 "password", self._auth_config, self._controller_validator_cb
@@ -741,16 +733,22 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
                 self._active_access_token = self._bank_instance.authorize_vault_access(
                     self._active_auth_token, password=password
                 )
-                views.controller_output(mapper_key="access", inner_key=True)
+                self._handle_info_ui("access", "success")
                 break
-            except BankAuthenticationError:
-                views.controller_output(mapper_key="access", inner_key=False)
-            except BlockedAccountError:
-                views.controller_output(mapper_key="access", inner_key="blocked")
-                raise ControllerCredentialsError("Access process failed")
+            except BankAuthenticationError as e:
+                self._handle_exception_ui("access", e)
+            except BlockedAccountError as e:
+                self._handle_exception_ui("access", e)
+                raise ControllerCredentialsError(
+                    "Access process failed due to security issues"
+                )
+            except BankPasswordError:
+                raise RuntimeError("Critical error in I/O password validation logic")
 
         if self._active_access_token is None:
-            raise ControllerCredentialsError("Access process failed")
+            raise ControllerCredentialsError(
+                "Access process failed due to unknown issue"
+            )
 
     def _ensure_credentials(self, operation: TransactionType | ManagementType) -> None:
         """
@@ -797,9 +795,9 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
         try:
             self._bank_instance.update_password(self._active_access_token, new_password)
             self._active_access_token = None
-            views.controller_output("update_password", True)
+            self._handle_info_ui("new_password", "updated")
         except BankPasswordError as e:
-            raise RuntimeError("Critical error in I/O logic") from e
+            raise RuntimeError("Critical error in I/O password input logic") from e
 
     def _unfreeze_account(self) -> None:
         """
@@ -817,16 +815,13 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
         birth_date_str = _assert_input(raw_birth_date, str)
 
         try:
-            birth_date = validators.validate_date_format(birth_date_str)
+            birth_date = Person.validate_birth_date(birth_date_str)
             self._bank_instance.unfreeze_account(
                 self._active_auth_token, birth_date, new_password
             )
-            views.controller_output("unfreeze", True)
-        except BankAuthenticationError:
-            views.controller_output("unfreeze", "authentication")
-            raise ControllerOperationError
-        except AccountAlreadyActiveError:
-            views.controller_output("unfreeze", "already_active")
+            self._handle_info_ui("unfreeze", "success")
+        except (BankAuthenticationError, AccountAlreadyActiveError) as e:
+            self._handle_exception_ui("unfreeze", e)
             raise ControllerOperationError
         except (BankPasswordError, InvalidBirthDateError) as e:
             raise RuntimeError("Critical error in I/O logic") from e

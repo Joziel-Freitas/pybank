@@ -31,9 +31,10 @@ SYSTEM_MESSAGES: dict[str, dict[str, str]] = {
         "password": "Falha ao registrar sua senha. Tente novamente",
         "run_time": "Erro ao registrar sua conta. Tente novamente",
     },
-    "prompt_password": {
+    "new_password": {
         "first": "Insira sua senha",
         "second": "Insira novamente sua senha",
+        "updated": "Senha alterada com sucesso",
         "error": "As senhas não conferem. Tente novamente",
     },
     "access": {
@@ -44,7 +45,7 @@ SYSTEM_MESSAGES: dict[str, dict[str, str]] = {
     },
     "unfreeze": {
         "success": "Conta desbloqueada com sucesso",
-        "authentication": "Falha na autenticação. A data de nascimento informada não corresponde",
+        "auth": "Falha na autenticação. A data de nascimento informada não corresponde",
         "already_active": "Essa conta está ativa. Impossível desbloquear",
     },
     "close_account": {

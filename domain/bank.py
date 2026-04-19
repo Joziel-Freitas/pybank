@@ -300,6 +300,25 @@ class Bank:
             signature=signature,
         )
 
+    def _get_client(self, cpf: str) -> Client:
+        """
+        Retrieves a fully hydrated client entity from the repository.
+
+        Args:
+            cpf (str): The 11-digit string representing the client's CPF.
+
+        Returns:
+            Client: The domain Client object.
+
+        Raises:
+            ClientNotFoundError: If the CPF is not registered in the system.
+        """
+        try:
+            client_obj = self._repository.get_client(cpf=cpf)
+            return client_obj
+        except DataNotFoundError as e:
+            raise ClientNotFoundError("Not client registered under this CPF") from e
+
     def _get_account_credentials(
         self, branch_code: str, account_num: str
     ) -> dict[str, Any]:
@@ -389,69 +408,6 @@ class Bank:
                 "Security breach or race condition: Account no longer exists"
             ) from e
 
-    def check_client_exists(self, cpf: str) -> bool:
-        """
-        Verifies if a client is registered in the banking system.
-
-        This is a highly optimized, lightweight check that queries the repository
-        without hydrating the full Client domain entity. Ideal for pre-validation
-        during onboarding workflows.
-
-        Args:
-            cpf (str): The 11-digit string representing the client's CPF.
-
-        Returns:
-            bool: True if the client exists, False otherwise.
-
-        Raises:
-            TypeError: If the provided CPF is not a string.
-        """
-        verify.verify_instance(cpf, str)
-
-        return self._repository.client_exists(cpf)
-
-    def check_account_exists(self, branch_code: str, account_num: str) -> bool:
-        """
-        Verifies if an account is registered in the banking system.
-
-        Provides a fast, lightweight existence check avoiding the overhead of
-        loading the Account object or its transaction history. Useful for
-        preventing duplicate creation attempts at the controller level.
-
-        Args:
-            branch_code (str): The 4-digit string representing the branch.
-            account_num (str): The unique 8-digit string representing the account.
-
-        Returns:
-            bool: True if the account exists, False otherwise.
-
-        Raises:
-            TypeError: If any of the provided arguments are not strings.
-        """
-        verify.verify_instance(branch_code, str)
-        verify.verify_instance(account_num, str)
-
-        return self._repository.account_exists(branch_code, account_num)
-
-    def get_registered_client(self, cpf: str) -> Client:
-        """
-        Retrieves a fully hydrated client entity from the repository.
-
-        Args:
-            cpf (str): The 11-digit string representing the client's CPF.
-
-        Returns:
-            Client: The domain Client object.
-
-        Raises:
-            ClientNotFoundError: If the CPF is not registered in the system.
-        """
-        try:
-            client_obj = self._repository.get_client(cpf=cpf)
-            return client_obj
-        except DataNotFoundError as e:
-            raise ClientNotFoundError("Not client registered under this CPF") from e
-
     def register_account(
         self, new_account: Account, client_or_cpf: Client | str, password: str
     ) -> None:
@@ -508,18 +464,61 @@ class Bank:
                 "The intended operation could not be persisted due to an internal error"
             )
 
-    def authenticate(
-        self, client: Client, branch_code: str, account_num: str
-    ) -> AuthToken:
+    def check_client_exists(self, cpf: str) -> bool:
+        """
+        Verifies if a client is registered in the banking system.
+
+        This is a highly optimized, lightweight check that queries the repository
+        without hydrating the full Client domain entity. Ideal for pre-validation
+        during onboarding workflows.
+
+        Args:
+            cpf (str): The 11-digit string representing the client's CPF.
+
+        Returns:
+            bool: True if the client exists, False otherwise.
+
+        Raises:
+            TypeError: If the provided CPF is not a string.
+        """
+        verify.verify_instance(cpf, str)
+
+        return self._repository.client_exists(cpf)
+
+    def check_account_exists(self, branch_code: str, account_num: str) -> bool:
+        """
+        Verifies if an account is registered in the banking system.
+
+        Provides a fast, lightweight existence check avoiding the overhead of
+        loading the Account object or its transaction history. Useful for
+        preventing duplicate creation attempts at the controller level.
+
+        Args:
+            branch_code (str): The 4-digit string representing the branch.
+            account_num (str): The unique 8-digit string representing the account.
+
+        Returns:
+            bool: True if the account exists, False otherwise.
+
+        Raises:
+            TypeError: If any of the provided arguments are not strings.
+        """
+        verify.verify_instance(branch_code, str)
+        verify.verify_instance(account_num, str)
+
+        return self._repository.account_exists(branch_code, account_num)
+
+    def authenticate(self, cpf: str, branch_code: str, account_num: str) -> AuthToken:
         """
         Authenticates a client's claim to an account and issues a stateless token.
 
         This is the "Lobby" access. It does not open the vault or check if the
         account is frozen. It merely verifies ownership and issues an AuthToken
-        that can be used for subsequent secure operations.
+        that can be used for subsequent secure operations. This method securely
+        hydrates the Client entity internally to prevent domain leakage.
 
         Args:
-            client (Client): The client attempting to access the account.
+            cpf (str): The 11-digit string representing the client's CPF.
             branch_code (str): The branch code of the target account.
             account_num (str): The target account number.
 
@@ -527,9 +526,17 @@ class Bank:
             AuthToken: A securely signed, stateless authentication token.
 
         Raises:
-            AuthenticationError: If the account does not belong to the client.
+            TypeError: If any of the provided arguments are not strings.
+            ClientNotFoundError: If the provided CPF is not registered in the system.
+            BankAuthenticationError: If the requested account does not belong to the client.
         """
+        verify.verify_instance(cpf, str)
+        verify.verify_instance(branch_code, str)
+        verify.verify_instance(account_num, str)
+
+        client = self._get_client(cpf)
         temp_card = AccountCard(client.cpf, branch_code, account_num)
+
         if not client.has_account(temp_card):
             raise BankAuthenticationError(
                 "Account card not found between client's cards"
@@ -539,17 +546,46 @@ class Bank:
             cpf=client.cpf, branch_code=branch_code, account_num=account_num
         )
 
+    def get_client_cards(self, cpf: str) -> list[AccountCard]:
+        """
+        Safely retrieves the list of registered account cards for a client.
+
+        Acts as a secure data gateway, extracting Data Transfer Objects (DTOs)
+        from the rich Client entity. This prevents Domain leakage, ensuring the
+        Presentation layer can display available cards without gaining direct
+        access to the Client object's internal state or business methods.
+
+        Args:
+            cpf (str): The 11-digit string representing the client's CPF.
+
+        Returns:
+            list[AccountCard]: A list of lightweight, immutable card representations.
+
+        Raises:
+            TypeError: If the provided CPF is not a string.
+            ClientNotFoundError: If the provided CPF is not registered in the system.
+        """
+        verify.verify_instance(cpf, str)
+
+        client = self._get_client(cpf)
+
+        return client.cards
+
     def authorize_vault_access(
         self, auth_token: AuthToken, password: str
     ) -> AccessToken:
         """
-        The public security checkpoint and brute-force mitigation mechanism.
+        The primary security checkpoint and brute-force mitigation mechanism.
 
-        This method performs the heavy lifting of security validation without
-        incurring the cost of hydrating a full Account entity. It validates
-        the active status, verifies the Bcrypt password hash, increments failed
-        login attempts on failure, and freezes the account if the threshold is met.
-        Upon success, it issues the highly secure AccessToken.
+        This method upgrades 'Lobby' access (AuthToken) to 'Vault' access
+        (AccessToken). Operating under a Zero Trust model, it verifies the
+        token's integrity and prevents Time-of-Check to Time-of-Use (TOCTOU)
+        race conditions by guaranteeing the account still exists.
+
+        It validates the account's active status and verifies the provided
+        password against the stored Bcrypt hash. To mitigate brute-force
+        attacks, it tracks failed login attempts, automatically freezing the
+        account if the maximum threshold is reached.
 
         Args:
             auth_token (AuthToken): A valid, securely signed authentication token.
@@ -559,10 +595,14 @@ class Bank:
             AccessToken: The cryptographic key granting full vault access.
 
         Raises:
+            BankPasswordError: If the provided password format is invalid.
+            BankSecurityError: If the AuthToken is tampered with, or if the account
+                no longer exists (TOCTOU mitigation).
             BlockedAccountError: If the account is already frozen, or if it reaches
                 the maximum allowed failed login attempts during this check.
-            AuthenticationError: If the provided password does not match the hash.
-            BankSecurityError: If the AuthToken is tampered with.
+            BankAuthenticationError: If the provided password does not match the hash.
+            BankUnavailableError: If the validation or security updates could not
+                be persisted due to an internal database error.
         """
         Bank.validate_password(password)
         self._validate_token(auth_token)
@@ -830,7 +870,7 @@ class Bank:
                     "Impossible to unfreeze an operational account"
                 )
 
-            client = self.get_registered_client(auth_token.cpf)
+            client = self._get_client(auth_token.cpf)
 
             if client.birth_date != birth_date:
                 raise BankAuthenticationError(
