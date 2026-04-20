@@ -546,31 +546,6 @@ class Bank:
             cpf=client.cpf, branch_code=branch_code, account_num=account_num
         )
 
-    def get_client_cards(self, cpf: str) -> list[AccountCard]:
-        """
-        Safely retrieves the list of registered account cards for a client.
-
-        Acts as a secure data gateway, extracting Data Transfer Objects (DTOs)
-        from the rich Client entity. This prevents Domain leakage, ensuring the
-        Presentation layer can display available cards without gaining direct
-        access to the Client object's internal state or business methods.
-
-        Args:
-            cpf (str): The 11-digit string representing the client's CPF.
-
-        Returns:
-            list[AccountCard]: A list of lightweight, immutable card representations.
-
-        Raises:
-            TypeError: If the provided CPF is not a string.
-            ClientNotFoundError: If the provided CPF is not registered in the system.
-        """
-        verify.verify_instance(cpf, str)
-
-        client = self._get_client(cpf)
-
-        return client.cards
-
     def authorize_vault_access(
         self, auth_token: AuthToken, password: str
     ) -> AccessToken:
@@ -672,6 +647,55 @@ class Bank:
         failed_attempts = acc_credentials["failed_login_attempts"]
 
         return self.MAX_LOGIN_ATTEMPTS - failed_attempts
+
+    def get_client_cards(self, cpf: str) -> list[AccountCard]:
+        """
+        Safely retrieves the list of registered account cards for a client.
+
+        Acts as a secure data gateway, extracting Data Transfer Objects (DTOs)
+        from the rich Client entity. This prevents Domain leakage, ensuring the
+        Presentation layer can display available cards without gaining direct
+        access to the Client object's internal state or business methods.
+
+        Args:
+            cpf (str): The 11-digit string representing the client's CPF.
+
+        Returns:
+            list[AccountCard]: A list of lightweight, immutable card representations.
+
+        Raises:
+            TypeError: If the provided CPF is not a string.
+            ClientNotFoundError: If the provided CPF is not registered in the system.
+        """
+        verify.verify_instance(cpf, str)
+
+        client = self._get_client(cpf)
+
+        return client.cards
+
+    def get_account_balance(self, access_token: AccessToken) -> Decimal:
+        """
+        Safely retrieves the current financial balance of an authenticated account.
+
+        Acts as a secure read-only facade for the Presentation layer. It extracts
+        and returns only the primitive Decimal value, preventing the full Account
+        domain entity from leaking into external layers, thereby preserving strict
+        Domain-Driven Design (DDD) boundaries.
+
+        Args:
+            access_token (AccessToken): A valid, securely signed vault token.
+
+        Returns:
+            Decimal: The current balance of the account.
+
+        Raises:
+            BankSecurityError: If the token is invalid, tampered with, or if the
+                account no longer exists (TOCTOU mitigation).
+        """
+        self._validate_token(access_token)
+        account = self._get_account(access_token)
+
+        return account.balance
 
     def execute_deposit(
         self,

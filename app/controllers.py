@@ -468,6 +468,10 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
         "use_card": validators.boolean_validator_dec(
             partial(verify.verify_interval, min_val=1, max_val=2)
         ),
+        "branch_code": validators.boolean_validator_dec(Account.validate_branch_code),
+        "account_num": validators.boolean_validator_dec(
+            Account.validate_account_number
+        ),
     }
 
     _bank_instance: Bank
@@ -476,10 +480,8 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
     _new_acc_config: config.ConfigMap
     _auth_config: config.ConfigMap
     _transaction_config: config.ConfigMap
-    _client: Client | None
-    _active_auth_token: AuthToken | None
-    _active_access_token: AccessToken | None
-    _active_card: AccountCard | None
+    _auth_token: AuthToken | None
+    _access_token: AccessToken | None
 
     def __init__(self, bank_instance: Bank):
         """
@@ -512,10 +514,8 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
         self._new_acc_config = config.new_account_config
         self._auth_config = config.auth_config
         self._transaction_config = config.transaction_config
-        self._client = None
-        self._active_auth_token = None
-        self._active_access_token = None
-        self._active_card = None
+        self._auth_token = None
+        self._access_token = None
 
     def __repr__(self) -> str:
         """
@@ -524,10 +524,8 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
         """
         class_name = type(self).__name__
 
-        auth_status = (
-            "Authenticated" if self._active_auth_token else "Not authenticated"
-        )
-        access_status = "Authorized" if self._active_access_token else "Not authorized"
+        auth_status = "Authenticated" if self._auth_token else "Not authenticated"
+        access_status = "Authorized" if self._access_token else "Not authorized"
         card_status = "Card Inserted" if self._active_card else "No Card"
 
         return (
@@ -537,19 +535,6 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
             f"access_status={access_status!r}"
             f"hardware_status={card_status!r})"
         )
-
-    @property
-    def _active_client(self):
-        """
-        Safely retrieves the hydrated Client entity for the active session.
-
-        Raises:
-            RuntimeError: If accessed before the client is properly authenticated.
-        """
-        if self._client is None:
-            raise RuntimeError("Getter called without an Client instance")
-
-        return self._client
 
     def _prompt_new_password(self) -> str:
         """
@@ -585,41 +570,33 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
         Returns:
             str: The CPF provided by the user.
         """
-        client_cpf = io_utils.get_single_input(
+        cpf = io_utils.get_single_input(
             "cpf", config.identification_config, self._controller_validator_cb
         )
-        client_cpf = _assert_input(client_cpf, str)
-        return client_cpf
+        cpf = _assert_input(cpf, str)
+        return cpf
 
-    def _get_client(self) -> Client:
-        """
-        Prompts for a CPF and retrieves the corresponding registered Client entity.
-        """
-        cpf = self._prompt_cpf()
-        return self._bank_instance._get_client(cpf)
-
-    def _select_card(self) -> AccountCard:
+    def _select_card(self, cards_list: list[AccountCard]) -> AccountCard:
         """
         Displays available hardware cards for the active client and prompts for selection.
 
         Returns:
             AccountCard: The selected card object.
         """
-        client_cards = self._active_client.cards
-        cards_list: list[str] = [str(card) for card in client_cards]
-
-        views.show_cards(cards_list)
 
         def local_validator_cb(field: str, user_in_raw: InputType) -> CallbackReturn:
             user_in = _assert_input(user_in_raw, int)
-            return {"result": 0 <= user_in < len(client_cards)}
+            return {"result": 0 <= user_in < len(cards_list)}
+
+        cards_views: list[str] = [str(card) for card in cards_list]
+        views.show_cards(cards_views)
 
         card_idx_raw = io_utils.get_single_input(
             "card", self._auth_config, local_validator_cb
         )
         card_idx = _assert_input(card_idx_raw, int)
 
-        return client_cards[card_idx]
+        return cards_list[card_idx]
 
     def _use_card_menu(self) -> bool:
         """
@@ -641,36 +618,27 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
 
         return use_card
 
-    def _end_session(self) -> None:
-        """
-        Purges all sensitive data and tokens from memory, resetting the terminal
-        to an unauthenticated state. Acts as a strict security teardown.
-        """
-        self._client = None
-        self._active_card = None
-        self._active_auth_token = None
-        self._active_access_token = None
-
-    def _authenticate_client(self) -> AuthToken:
+    def _authenticate_client(
+        self, cpf: str, card: AccountCard | None = None
+    ) -> AuthToken:
         """
         Generates the initial Lobby AuthToken via hardware card or manual input.
 
         Returns:
             AuthToken: A stateless token proving account ownership.
         """
-        if not self._active_card:
-            user_inputs = io_utils.config_loop(
-                self._auth_config, self._controller_validator_cb, skip_fields=["card"]
+        if not card:
+            user_inputs = io_utils.get_selected_inputs(
+                ("branch_code", "account_num"),
+                self._auth_config,
+                self._controller_validator_cb,
             )
             branch_code = _assert_input(user_inputs["branch_code"], str)
             account_num = _assert_input(user_inputs["account_num"], str)
-        else:
-            branch_code = self._active_card.branch_code
-            account_num = self._active_card.account_num
 
-        return self._bank_instance.authenticate(
-            self._active_client, branch_code, account_num
-        )
+            return self._bank_instance.authenticate(cpf, branch_code, account_num)
+
+        return self._bank_instance.authenticate(cpf, card.branch_code, card.account_num)
 
     def _ensure_authentication(self) -> None:
         """
@@ -684,40 +652,36 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
             ControllerCredentialsError: If the user fails to provide valid credentials
                 after repeated attempts.
         """
-        while True:
-            try:
-                if not self._client:
-                    self._client = self._get_client()
+        cpf = self._prompt_cpf()
+        client_cards = None
+        with_card = None
+        try:
+            client_cards = self._bank_instance.get_client_cards(cpf)
+            if client_cards:
+                with_card = self._use_card_menu()
 
-                with_card = False
-                if self._active_client.cards:
-                    with_card = self._use_card_menu()
+            if with_card:
+                card = self._select_card(client_cards)
+                self._auth_token = self._authenticate_client(cpf, card)
+            else:
+                self._auth_token = self._authenticate_client(cpf)
+            self._handle_info_ui("authentication", "success")
+        except (ClientNotFoundError, BankAuthenticationError) as e:
+            self._handle_exception_ui("authentication", e)
+            raise ControllerCredentialsError
 
-                if with_card:
-                    self._active_card = self._select_card()
-                else:
-                    self._active_card = None
-
-                self._active_auth_token = self._authenticate_client()
-                break
-            except ClientNotFoundError:
-                self._client = None
-                continue
-            except BankAuthenticationError:
-                self._active_card = None
-
-        if self._active_auth_token is None:
+        if self._auth_token is None:
             raise ControllerCredentialsError(
                 "Authentication process failed due to unknown issue"
             )
 
     def _ensure_access(self) -> None:
 
-        if not self._active_auth_token:
+        if not self._auth_token:
             raise RuntimeError("AuthToken is needed to get vault access")
 
         attempts_left = self._bank_instance.get_remaining_login_attempts(
-            self._active_auth_token
+            self._auth_token
         )
 
         for attempt in range(attempts_left, 0, -1):
@@ -730,8 +694,8 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
             password = _assert_input(raw_password, str)
 
             try:
-                self._active_access_token = self._bank_instance.authorize_vault_access(
-                    self._active_auth_token, password=password
+                self._access_token = self._bank_instance.authorize_vault_access(
+                    self._auth_token, password=password
                 )
                 self._handle_info_ui("access", "success")
                 break
@@ -745,7 +709,7 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
             except BankPasswordError:
                 raise RuntimeError("Critical error in I/O password validation logic")
 
-        if self._active_access_token is None:
+        if self._access_token is None:
             raise ControllerCredentialsError(
                 "Access process failed due to unknown issue"
             )
@@ -768,7 +732,7 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
             case TransactionType.DEPOSIT:
                 pass
             case ManagementType.UNFREEZE:
-                if not self._active_auth_token:
+                if not self._auth_token:
                     self._ensure_authentication()
             case (
                 TransactionType.WITHDRAW
@@ -776,25 +740,33 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
                 | ManagementType.PASSWORD
                 | ManagementType.CLOSE
             ):
-                if not self._active_auth_token:
+                if not self._auth_token:
                     self._ensure_authentication()
-                if not self._active_access_token:
+                if not self._access_token:
                     self._ensure_access()
             case _:
                 raise RuntimeError("Critical Security Error: Unmapped operation type.")
+
+    def _end_session(self) -> None:
+        """
+        Purges all sensitive data and tokens from memory, resetting the terminal
+        to an unauthenticated state. Acts as a strict security teardown.
+        """
+        self._auth_token = None
+        self._access_token = None
 
     def _update_password(self) -> None:
         """
         Orchestrates the secure password update workflow.
         Automatically revokes the current AccessToken upon success, forcing re-authentication.
         """
-        if not self._active_access_token:
+        if not self._access_token:
             raise RuntimeError("Access token required to update the password")
 
         new_password = self._prompt_new_password()
         try:
-            self._bank_instance.update_password(self._active_access_token, new_password)
-            self._active_access_token = None
+            self._bank_instance.update_password(self._access_token, new_password)
+            self._access_token = None
             self._handle_info_ui("new_password", "updated")
         except BankPasswordError as e:
             raise RuntimeError("Critical error in I/O password input logic") from e
@@ -804,7 +776,7 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
         Orchestrates the account recovery workflow.
         Verifies identity via birth date and resets the password, restoring account access.
         """
-        if self._active_auth_token is None:
+        if self._auth_token is None:
             raise RuntimeError("AuthToken required to perform the operation")
 
         raw_birth_date = io_utils.get_single_input(
@@ -817,7 +789,7 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
         try:
             birth_date = Person.validate_birth_date(birth_date_str)
             self._bank_instance.unfreeze_account(
-                self._active_auth_token, birth_date, new_password
+                self._auth_token, birth_date, new_password
             )
             self._handle_info_ui("unfreeze", "success")
         except (BankAuthenticationError, AccountAlreadyActiveError) as e:
@@ -830,34 +802,25 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
         """
         Orchestrates the permanent account closure workflow.
 
-        Enforces 'Defense in Depth' by validating the Home Branch Rule and Zero
-        Balance Rule at the presentation layer before delegating to the Domain.
+        Follows the 'Tell, Don't Ask' (EAFP) pattern. It delegates the execution
+        directly to the Domain, relying on Domain Exceptions (NotEmptyAccountError,
+        HomeBranchRestrictionError) to dynamically format and display the correct
+        UI warnings, ensuring business rules remain isolated in the Bank aggregate.
         """
-        if self._active_access_token is None:
+        if self._access_token is None:
             raise RuntimeError("AccessToken is required to close an account")
 
-        if (
-            self._active_access_token.branch_code
-            != self._bank_instance.bank_branch_code
-        ):
-            views.controller_output("close_account", False)
-            raise ControllerOperationError
-
-        account = self._bank_instance._get_account(self._active_access_token)
-
-        if account.balance != 0:
-            views.show_close_account_status(account.balance)
-            raise ControllerOperationError
-
         try:
-            self._bank_instance.close_account(self._active_access_token)
-            views.controller_output("close_account", True)
+            self._bank_instance.close_account(self._access_token)
+            self._handle_info_ui("close_account", "success")
             self._end_session()
         except NotEmptyAccountError:
-            views.show_close_account_status()
+            balance = self._bank_instance.get_account_balance(self._access_token)
+            key = "positive" if balance > 0 else "negative"
+            self._handle_info_ui("close_account", key, balance=balance)
             raise ControllerOperationError
-        except HomeBranchRestrictionError:
-            views.controller_output("close_account", False)
+        except HomeBranchRestrictionError as e:
+            self._handle_exception_ui("close_account", e)
             raise ControllerOperationError
 
     def _set_transaction_controller(self, transaction_type) -> TransactionController:
@@ -867,7 +830,7 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
             self._auth_config,
             self._transaction_config,
             transaction_type,
-            self._active_access_token,
+            self._access_token,
         )
         return controller_obj
 

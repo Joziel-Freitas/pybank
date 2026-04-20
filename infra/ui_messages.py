@@ -37,6 +37,11 @@ SYSTEM_MESSAGES: dict[str, dict[str, str]] = {
         "updated": "Senha alterada com sucesso",
         "error": "As senhas não conferem. Tente novamente",
     },
+    "authentication": {
+        "success": "Autenticado com sucesso",
+        "not_client": "Falha na autenticação. Cliente não encontrado",
+        "auth": "Falha na autenticação. Conta não ligada ao cliente",
+    },
     "access": {
         "success": "Acesso Concedido",
         "auth": "Senha incorreta. Acesso Negado",
