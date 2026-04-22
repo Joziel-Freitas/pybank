@@ -45,22 +45,22 @@ identification_config: ConfigMap = {
         "error_msg": "O nome deve conter apenas letras (no mínimo três), "
         "não pode conter caracteres especiais e nem começar e/ou terminar com espaços.",
     },
-    "birth_date": {
-        "info": "Identificação - Data de nascimento",
-        "prompt": "Informe sua data de nascimento (dd/mm/aaaa): ",
-        "value_type": str,
-        "error_msg": "Data de nascimento ou idade inválida(s). A data deve ser no formato dd/mm/aaaa e a idade estar entre 18 e 120 anos.",
-    },
     "cpf": {
         "info": "Identificação - CPF",
         "prompt": "Informe o CPF (somente números): ",
         "value_type": str,
         "error_msg": "CPF inválido. O CPF deve conter somente números e ter exatamente 11 dígitos",
     },
+    "birth_date": {
+        "info": "Identificação - Data de nascimento",
+        "prompt": "Informe sua data de nascimento (dd/mm/aaaa): ",
+        "value_type": str,
+        "error_msg": "Data de nascimento ou idade inválida(s). A data deve ser no formato dd/mm/aaaa e a idade estar entre 18 e 120 anos.",
+    },
 }
 
 new_account_config: ConfigMap = {
-    "acc_type": {
+    "account_type": {
         "info": "Conta - Escolha o tipo da conta",
         "prompt": "1 - Conta Corrente\n2 - Conta Poupança\nSua opção: ",
         "value_type": int,

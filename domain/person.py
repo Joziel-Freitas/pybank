@@ -40,18 +40,18 @@ class Person(ABC):
 
     # Type hints for the instance's variables
     _name: str
-    _birth_date: date
     _cpf: str
+    _birth_date: date
 
-    def __init__(self, name: str, birth_date: str | date, cpf: str):
+    def __init__(self, name: str, cpf: str, birth_date: str | date):
         """
         Initializes a Person instance with validated attributes.
 
         Args:
             name (str): The person's full name.
+            cpf (str): The person's CPF string (11 digits).
             birth_date (str | date): The person's date of birth. Can be a 'dd/mm/yyyy'
                 string (from user input) or a native date object (from the database).
-            cpf (str): The person's CPF string (11 digits).
 
         Raises:
             InvalidNameError: If the name is invalid.
@@ -59,8 +59,8 @@ class Person(ABC):
             InvalidCpfError: If the CPF is mathematically invalid or poorly formatted.
         """
         self.name = name
-        self._birth_date: date = Person.validate_birth_date(birth_date)
         self._cpf = Person.validate_cpf(cpf)
+        self._birth_date: date = Person.validate_birth_date(birth_date)
 
     def __repr__(self) -> str:
         """
@@ -156,6 +156,31 @@ class Person(ABC):
         return name
 
     @staticmethod
+    def validate_cpf(cpf: str) -> str:
+        """
+        Validates the CPF by delegating mathematical verification to infrastructure.
+
+        Acts as a Domain Facade. It catches structural and mathematical errors (ValueError)
+        from the shared validator and translates them into a formal 'InvalidCpfError',
+        providing business context.
+
+        Args:
+            cpf (str): The CPF string to validate.
+
+        Returns:
+            str: The validated CPF string.
+
+        Raises:
+            TypeError: If the CPF is not a string (indicates a system type bug).
+            InvalidCpfError: If the CPF length is invalid, has all repeated digits,
+                or fails the mathematical checksum validation.
+        """
+        try:
+            return validators.validate_cpf(cpf)
+        except ValueError as e:
+            raise InvalidCpfError(f"Person CPF is invalid: {e}")
+
+    @staticmethod
     def validate_birth_date(birth_date: str | date) -> date:
         """
         Validates a given birth date against domain business rules.
@@ -217,31 +242,6 @@ class Person(ABC):
 
         return age
 
-    @staticmethod
-    def validate_cpf(cpf: str) -> str:
-        """
-        Validates the CPF by delegating mathematical verification to infrastructure.
-
-        Acts as a Domain Facade. It catches structural and mathematical errors (ValueError)
-        from the shared validator and translates them into a formal 'InvalidCpfError',
-        providing business context.
-
-        Args:
-            cpf (str): The CPF string to validate.
-
-        Returns:
-            str: The validated CPF string.
-
-        Raises:
-            TypeError: If the CPF is not a string (indicates a system type bug).
-            InvalidCpfError: If the CPF length is invalid, has all repeated digits,
-                or fails the mathematical checksum validation.
-        """
-        try:
-            return validators.validate_cpf(cpf)
-        except ValueError as e:
-            raise InvalidCpfError(f"Person CPF is invalid: {e}")
-
     def to_dict(self) -> dict:
         """
         Serializes the person's core data into a dictionary format.
@@ -287,13 +287,13 @@ class Client(Person):
 
     _account_cards: set[AccountCard]
 
-    def __init__(self, name: str, birth_date: str | date, cpf: str):
+    def __init__(self, name: str, cpf: str, birth_date: str | date):
         """
         Initializes a Client instance.
 
         Initializes the client's wallet of account cards as empty.
         """
-        super().__init__(name, birth_date, cpf)
+        super().__init__(name, cpf, birth_date)
         self._account_cards = set()
 
     def __eq__(self, other: object) -> bool:

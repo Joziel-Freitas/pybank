@@ -3,20 +3,22 @@ from decimal import Decimal
 from functools import partial
 from typing import Any, Callable, ClassVar, Generic, TypeVar, cast
 
-from domain.account import Account, CheckingAccount, SavingsAccount
+from domain.account import Account
 from domain.bank import Bank
 from domain.person import Client, Person
-from infra import config, io_utils, verify, views
+from infra import config, io_utils, ui_messages, verify, views
 from infra.io_utils import CallbackReturn, InputType
 from settings import ADMIN_EXIT_CODE
 from shared import exceptions, validators
 from shared.credentials import AccessToken, AccountCard, AuthToken
+from shared.dtos import NewAccountDTO, NewClientDTO
 from shared.exceptions import (
     AccountAlreadyActiveError,
     BankAuthenticationError,
     BankError,
     BankPasswordError,
     BankSecurityError,
+    BankUnavailableError,
     BlockedAccountError,
     ClientNotFoundError,
     ControllerCredentialsError,
@@ -86,27 +88,54 @@ def _assert_input(user_in: InputType, expected_type: type[UserInputT]) -> UserIn
     )
 
 
-class UIMessageHandlerMixin:
-    _ui_message_map: dict[str, dict[str, str]]
+class SharedPromptsMixin(ABC):
+    _auth_config: io_utils.ConfigMap
+    _identification_config: io_utils.ConfigMap
+    _controller_validator_cb: Callable[[str, InputType], CallbackReturn]
 
-    def _handle_exception_ui(
-        self, context_key: str, error: DomainError, **kwargs
-    ) -> None:
-        error_key = exceptions.map_exceptions(error)
-        error_msg = self._ui_message_map[context_key][error_key]
-
-        if kwargs:
-            error_msg = error_msg.format(**kwargs)
-
-        views.controller_output(error_msg)
-
+    @abstractmethod
     def _handle_info_ui(self, context_key: str, info_key: str, **kwargs) -> None:
-        info_msg = self._ui_message_map[context_key][info_key]
+        raise NotImplementedError
 
-        if kwargs:
-            info_msg = info_msg.format(**kwargs)
+    def _prompt_new_password(self) -> str:
+        """
+        Handles the double-input loop for creating or updating a secure password.
 
-        views.controller_output(info_msg)
+        Returns:
+            str: The validated, matching 6-digit password string.
+        """
+        while True:
+            self._handle_info_ui("new_password", "first")
+            raw_pwd_1 = io_utils.get_single_input(
+                "password", self._auth_config, self._controller_validator_cb
+            )
+            pwd_1 = _assert_input(raw_pwd_1, str)
+
+            self._handle_info_ui("new_password", "second")
+            raw_pwd_2 = io_utils.get_single_input(
+                "password", self._auth_config, self._controller_validator_cb
+            )
+            pwd_2 = _assert_input(raw_pwd_2, str)
+
+            matched = pwd_1 == pwd_2
+
+            if matched:
+                return pwd_1
+
+            self._handle_info_ui("new_password", "error")
+
+    def _prompt_cpf(self) -> str:
+        """
+        Helper method to collect and enforce string type for the CPF input.
+
+        Returns:
+            str: The CPF provided by the user.
+        """
+        cpf = io_utils.get_single_input(
+            "cpf", config.identification_config, self._controller_validator_cb
+        )
+        cpf = _assert_input(cpf, str)
+        return cpf
 
 
 class BaseController(ABC, Generic[T, R]):
@@ -132,6 +161,7 @@ class BaseController(ABC, Generic[T, R]):
     _model_class: type[T]
     _validation_mapper: ClassVar[dict[str, ValidatorCallback]]
     _controller_validator_cb: Callable[[str, InputType], CallbackReturn]
+    _ui_message_map: dict[str, dict[str, str]]
 
     def __init__(self, model_class: type[T]):
         """
@@ -169,94 +199,113 @@ class BaseController(ABC, Generic[T, R]):
         """
         raise NotImplementedError()
 
+    def _handle_exception_ui(
+        self, context_key: str, error: DomainError, **kwargs
+    ) -> None:
+        error_key = exceptions.map_exceptions(error)
+        error_msg = self._ui_message_map[context_key][error_key]
 
-class CreationController(BaseController[CreatableT, CreatableT]):
-    """
-    Controller responsible for the instantiation workflow of new entities.
+        if kwargs:
+            error_msg = error_msg.format(**kwargs)
 
-    It handles the UI loop to collect data for Person or Account creation,
-    manages validation errors by re-prompting specific fields, and calls
-    the Model constructor to instantiate the class.
-    """
+        views.controller_output(error_msg)
 
+    def _handle_info_ui(self, context_key: str, info_key: str, **kwargs) -> None:
+        info_msg = self._ui_message_map[context_key][info_key]
+
+        if kwargs:
+            info_msg = info_msg.format(**kwargs)
+
+        views.controller_output(info_msg)
+
+
+class OnboardingController(BaseController[Bank, None], SharedPromptsMixin):
     _validation_mapper = {
         "name": validators.boolean_validator_dec(Person.validate_name),
+        "cpf": validators.boolean_validator_dec(Person.validate_cpf),
         "birth_date": validators.boolean_validator_dec(Person.validate_birth_date),
-        "balance": validators.boolean_validator_dec(
-            Account.validate_account_initial_balance
-        ),
         "account_num": validators.boolean_validator_dec(
             Account.validate_account_number
         ),
+        "balance": validators.boolean_validator_dec(
+            Account.validate_account_initial_balance
+        ),
+        "password": validators.boolean_validator_dec(Bank.validate_password),
     }
 
-    _obj_config: io_utils.ConfigMap
-    _pre_filled_data: dict[str, Any] | None
+    _bank_instance: Bank
+    _identification_config: config.ConfigMap
+    _new_account_config: config.ConfigMap
 
     def __init__(
         self,
-        model_class: type[CreatableT],
-        obj_config: config.ConfigMap,
-        pre_filled_data: dict[str, Any] | None = None,
+        bank_instance: Bank,
+        identification_config: io_utils.ConfigMap,
+        new_account_config: io_utils.ConfigMap,
+        ui_message_map: dict[str, dict[str, str]],
     ):
-        """
-        Initializes the controller for entity creation.
+        super().__init__(Bank)
 
-        Args:
-            model_class (type[CreatableT]): The domain class to be instantiated.
-            obj_config (config.ConfigMap): UI prompts and validation types for the entity.
-            pre_filled_data (dict[str, Any] | None, optional):
-                A dictionary of pre-validated data (e.g., CPF) to be injected directly
-                into the creation payload, bypassing the user input prompt. Defaults to None.
-        """
-        super().__init__(model_class)
+        verify.verify_instance(bank_instance, Bank)
+        self._bank_instance = bank_instance
+        io_utils.verify_config_map(new_account_config)
+        self._new_account_config = new_account_config
+        io_utils.verify_config_map(identification_config)
+        self._identification_config = identification_config
+        _verify_message_map(ui_message_map)
+        self._ui_message_map = ui_message_map
 
-        io_utils.verify_config_map(obj_config)
-        self._obj_config = obj_config
-        self._pre_filled_data = pre_filled_data
+    def _handle_client_data(self, cpf: str) -> NewClientDTO | str:
+        is_client = self._bank_instance.check_client_exists(cpf)
 
-    def __repr__(self) -> str:
-        class_name = type(self).__name__
-        config_keys = list(self._obj_config.keys())
+        if is_client:
+            self._handle_info_ui("client", "not_new")
+            return cpf
 
-        return (
-            f"{class_name}"
-            f"(model_class={self._model_class.__name__}, "
-            f"configured_fields={config_keys!r})"
+        self._handle_info_ui("client", "new")
+        obj_attr = io_utils.config_loop(
+            self._identification_config,
+            self._controller_validator_cb,
+            skip_fields=["cpf"],
         )
+        obj_attr["cpf"] = cpf
+        obj_attr = cast(dict[str, Any], obj_attr)
+        return NewClientDTO(**obj_attr)
 
-    def run_controller(self) -> CreatableT:
-        """
-        Orchestrates the creation loop: Input -> Validate -> Factory -> Retry on Error.
-
-        The loop continues until the ObjectFactory successfully returns a valid instance.
-        If a DomainError occurs (e.g., Invalid CPF logic), the exception mapper identifies
-        which field caused it, and the loop requests only that specific field again.
-
-        Returns:
-            CreatableT: A fully initialized instance of Person or Account.
-        """
-
-        object_attr = io_utils.config_loop(
-            self._obj_config, self._controller_validator_cb
+    def _handle_account_data(self) -> NewAccountDTO:
+        obj_attr = io_utils.config_loop(
+            self._new_account_config, self._controller_validator_cb
         )
-        object_attr = cast(dict[str, Any], object_attr)
+        obj_attr["branch_code"] = self._bank_instance.bank_branch_code
+        obj_attr = cast(dict[str, Any], obj_attr)
+        return NewAccountDTO(**obj_attr)
 
-        if self._pre_filled_data:
-            object_attr.update(self._pre_filled_data)
+    def run_controller(self) -> None:
+        try:
+            cpf = self._prompt_cpf()
+            client_dto_or_cpf = self._handle_client_data(cpf)
+            account_dto = self._handle_account_data()
+            password = self._prompt_new_password()
+            self._handle_info_ui("new_password", "created")
+            self._bank_instance.register_account(
+                account_dto=account_dto,
+                client_dto_or_cpf=client_dto_or_cpf,
+                password=password,
+            )
+            self._handle_info_ui("new_account", "success")
+        except DuplicatedAccountError as e:
+            self._handle_exception_ui("new_account", e)
+        except UserAbortError:
+            self._handle_info_ui("menus", "cancel")
+        except BankUnavailableError as e:
+            self._handle_exception_ui("menus", e)
+        except (BankPasswordError, DuplicatedClientError, ClientNotFoundError):
+            raise RuntimeError(
+                "Critical error in I/O logic in password input or internal method logic"
+            )
 
-        while True:
-            try:
-                return self._model_class(**object_attr)
-            except DomainError as error:
-                config_key = exceptions.map_exceptions(error)
-                new_value = io_utils.get_single_input(
-                    config_key, self._obj_config, self._controller_validator_cb
-                )
-                object_attr[config_key] = new_value
 
-
-class TransactionController(BaseController[Account, None], UIMessageHandlerMixin):
+class TransactionController(BaseController[Account, None]):
     """
     Controller responsible for executing banking transactions (Deposit, Withdraw, Statement).
 
@@ -291,8 +340,8 @@ class TransactionController(BaseController[Account, None], UIMessageHandlerMixin
     }
 
     _bank_instance: Bank
-    _auth_config: config.ConfigMap
-    _transaction_config: config.ConfigMap
+    _auth_config: io_utils.ConfigMap
+    _transaction_config: io_utils.ConfigMap
     _transaction_type: TransactionType
     _access_token: AccessToken | None
     _ui_message_map: dict[str, dict[str, str]]
@@ -300,8 +349,8 @@ class TransactionController(BaseController[Account, None], UIMessageHandlerMixin
     def __init__(
         self,
         bank_instance: Bank,
-        auth_config: config.ConfigMap,
-        transaction_config: config.ConfigMap,
+        auth_config: io_utils.ConfigMap,
+        transaction_config: io_utils.ConfigMap,
         transaction_type: TransactionType,
         access_token: AccessToken | None = None,
     ):
@@ -435,7 +484,7 @@ class TransactionController(BaseController[Account, None], UIMessageHandlerMixin
                 raise RuntimeError("Unmapped TransactionType")
 
 
-class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
+class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
     """
     The Main Application Controller (Maestro) for the PyBank terminal.
 
@@ -526,55 +575,13 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
 
         auth_status = "Authenticated" if self._auth_token else "Not authenticated"
         access_status = "Authorized" if self._access_token else "Not authorized"
-        card_status = "Card Inserted" if self._active_card else "No Card"
 
         return (
             f"{class_name}("
             f"connected_to={self._bank_instance.bank_name!r}"
             f"authentication_status={auth_status!r}"
             f"access_status={access_status!r}"
-            f"hardware_status={card_status!r})"
         )
-
-    def _prompt_new_password(self) -> str:
-        """
-        Handles the double-input loop for creating or updating a secure password.
-
-        Returns:
-            str: The validated, matching 6-digit password string.
-        """
-        while True:
-            self._handle_info_ui("new_password", "first")
-            raw_pwd_1 = io_utils.get_single_input(
-                "password", self._auth_config, self._controller_validator_cb
-            )
-            pwd_1 = _assert_input(raw_pwd_1, str)
-
-            self._handle_info_ui("new_password", "second")
-            raw_pwd_2 = io_utils.get_single_input(
-                "password", self._auth_config, self._controller_validator_cb
-            )
-            pwd_2 = _assert_input(raw_pwd_2, str)
-
-            matched = pwd_1 == pwd_2
-
-            if matched:
-                return pwd_1
-
-            self._handle_info_ui("new_password", "error")
-
-    def _prompt_cpf(self) -> str:
-        """
-        Helper method to collect and enforce string type for the CPF input.
-
-        Returns:
-            str: The CPF provided by the user.
-        """
-        cpf = io_utils.get_single_input(
-            "cpf", config.identification_config, self._controller_validator_cb
-        )
-        cpf = _assert_input(cpf, str)
-        return cpf
 
     def _select_card(self, cards_list: list[AccountCard]) -> AccountCard:
         """
@@ -834,85 +841,6 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
         )
         return controller_obj
 
-    def _set_create_client(self, cpf: str) -> CreationController:
-        """
-        Instantiates a CreationController for a new Client entity.
-        Injects the pre-validated CPF to streamline the UX.
-        """
-        new_client_config = self._identification_config.copy()
-        new_client_config.pop("cpf")
-        filled_data = {"cpf": cpf}
-
-        controller_obj = CreationController(Client, new_client_config, filled_data)
-
-        return controller_obj
-
-    def _set_create_account(self) -> CreationController:
-        """
-        Instantiates a dynamically typed CreationController for Accounts.
-        Silently injects the terminal's Home Branch Code to enforce domain rules.
-        """
-        acc_type_mapper = {1: CheckingAccount, 2: SavingsAccount}
-        new_acc_config = self._new_acc_config.copy()
-
-        user_in = io_utils.get_single_input(
-            "acc_type", self._new_acc_config, self._controller_validator_cb
-        )
-        int_user_in = _assert_input(user_in, int)
-        model_class = acc_type_mapper[int_user_in]
-        new_acc_config.pop("acc_type")
-
-        filled_data = {"branch_code": self._bank_instance.bank_branch_code}
-
-        controller_obj = CreationController(model_class, new_acc_config, filled_data)
-
-        return controller_obj
-
-    def _onboarding_workflow(self) -> None:
-        """
-        The Maestro of the Account Creation process.
-
-        Orchestrates a robust, ACID-ready workflow to register clients and accounts.
-        It evaluates client existence, delegates entity instantiation to internal
-        factories, and securely hashes the initial password.
-
-        Catches Domain-level race conditions (e.g., duplicated unique constraints
-        during parallel kiosk usage) and gracefully returns to the main menu without
-        crashing.
-        """
-        try:
-            cpf = self._prompt_cpf()
-            client_or_cpf = None
-
-            is_client = self._bank_instance.check_client_exists(cpf)
-
-            if not is_client:
-                views.controller_output("client", "new")
-                controller_obj = self._set_create_client(cpf)
-                client_or_cpf = controller_obj.run_controller()
-            else:
-                client_or_cpf = cpf
-                views.controller_output("client", "not_new")
-
-            controller_obj = self._set_create_account()
-            account = controller_obj.run_controller()
-            password = self._prompt_new_password()
-            self._bank_instance.register_account(account, client_or_cpf, password)
-            views.controller_output("new_account", True)
-        except UserAbortError:
-            views.controller_output("menu", "cancel")
-            return
-        except BankPasswordError:
-            views.controller_output("new_account", "password")
-        except DuplicatedAccountError:
-            views.controller_output("new_account", "duplicated")
-        except DuplicatedClientError:
-            views.controller_output("new_account", False)
-            return
-        except ClientNotFoundError:
-            views.controller_output("new_account", False)
-            return
-
     def _transactions_menu(self) -> None:
         """Displays and routes the Transactions sub-menu options."""
         try:
@@ -983,6 +911,16 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
                 views.controller_output("menu", "security")
                 return
 
+    def _set_onboarding_controller(self) -> OnboardingController:
+        controller_obj = OnboardingController(
+            self._bank_instance,
+            self._identification_config,
+            self._new_acc_config,
+            ui_messages.SYSTEM_MESSAGES,
+        )
+
+        return controller_obj
+
     def _main_menu(self) -> MainMenuType | None:
         """
         Displays the root entry point of the ATM.
@@ -1030,6 +968,7 @@ class BankSystemController(BaseController[Bank, None], UIMessageHandlerMixin):
                 case MainMenuType.OPERATIONS:
                     self._operation_hub()
                 case MainMenuType.ONBOARDING:
-                    self._onboarding_workflow()
+                    controller_obj = self._set_onboarding_controller()
+                    controller_obj.run_controller()
                 case _:
                     raise RuntimeError("Critical error in main menu logic")

@@ -28,6 +28,7 @@ import bcrypt
 from infra import verify
 from infra.mysql_repository import MySQLRepository
 from shared.credentials import AccessToken, AccountCard, AuthToken
+from shared.dtos import NewAccountDTO, NewClientDTO
 from shared.exceptions import (
     AccountAlreadyActiveError,
     AccountNotFoundError,
@@ -47,7 +48,7 @@ from shared.exceptions import (
 )
 from shared.types import BankContext
 
-from .account import Account
+from .account import Account, CheckingAccount, SavingsAccount
 from .person import Client
 
 
@@ -300,6 +301,43 @@ class Bank:
             signature=signature,
         )
 
+    def _account_factory(self, account_dto: NewAccountDTO) -> Account:
+        """
+        Internal factory to instantiate Account entities from a DTO.
+
+        Translates the integer flag within the DTO into the correct Account
+        subclass (CheckingAccount or SavingsAccount), keeping the Presentation
+        layer entirely decoupled from Domain implementations.
+
+        Args:
+            account_dto (NewAccountDTO): The immutable payload from the UI.
+
+        Returns:
+            Account: A fully initialized domain Account instance.
+        """
+        type_mapper = {1: CheckingAccount, 2: SavingsAccount}
+
+        acc_type = type_mapper[account_dto.account_type]
+        account_obj = acc_type(
+            account_dto.branch_code, account_dto.account_num, account_dto.balance
+        )
+
+        return account_obj
+
+    def _client_factory(self, client_dto: NewClientDTO) -> Client:
+        """
+        Internal factory to instantiate a Client entity from a DTO.
+
+        Args:
+            client_dto (NewClientDTO): The immutable payload containing the new client's data.
+
+        Returns:
+            Client: A fully initialized domain Client instance.
+        """
+        client_obj = Client(client_dto.name, client_dto.cpf, client_dto.birth_date)
+
+        return client_obj
+
     def _get_client(self, cpf: str) -> Client:
         """
         Retrieves a fully hydrated client entity from the repository.
@@ -409,18 +447,22 @@ class Bank:
             ) from e
 
     def register_account(
-        self, new_account: Account, client_or_cpf: Client | str, password: str
+        self,
+        account_dto: NewAccountDTO,
+        client_dto_or_cpf: NewClientDTO | str,
+        password: str,
     ) -> None:
         """
         Registers a newly created account and links it to a client.
 
-        This method handles both existing clients (by CPF) and new clients
-        (by Client object), securely hashes the initial password, and persists
-        everything via the repository.
+        Acts as the strict Domain boundary for the onboarding process.
+        It accepts immutable Data Transfer Objects (DTOs) from the Presentation
+        layer, delegates instantiation to internal factories, securely hashes
+        the password, and persists the domain entities via the repository.
 
         Args:
-            new_account (Account): The new domain Account entity to be saved.
-            client_or_cpf (Client | str): The owner Client object, or their CPF.
+            account_dto (NewAccountDTO): The immutable payload containing account setup data.
+            client_dto_or_cpf (NewClientDTO | str): The payload for a new client, or an existing client's CPF.
             password (str): The raw 6-digit password for the new account.
 
         Raises:
@@ -431,13 +473,17 @@ class Bank:
             ClientNotFoundError: If an existing client CPF is not found.
             BankUnavailableError: If the operation fails due to an internal database error.
         """
-        parameters = (new_account, client_or_cpf, password)
-        types = (Account, (Client, str), str)
-
-        for p, t in zip(parameters, types):
-            verify.verify_instance(p, t)
-
+        verify.verify_instance(account_dto, NewAccountDTO)
+        verify.verify_instance(client_dto_or_cpf, (str, NewClientDTO))
+        verify.verify_instance(password, str)
         Bank.validate_password(password)
+
+        new_account = self._account_factory(account_dto)
+
+        if isinstance(client_dto_or_cpf, NewClientDTO):
+            client_or_cpf = self._client_factory(client_dto_or_cpf)
+        elif isinstance(client_dto_or_cpf, str):
+            client_or_cpf = client_dto_or_cpf
 
         pwd_hash = self._generate_password_hash(password_str=password)
 

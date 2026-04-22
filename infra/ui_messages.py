@@ -34,6 +34,7 @@ SYSTEM_MESSAGES: dict[str, dict[str, str]] = {
     "new_password": {
         "first": "Insira sua senha",
         "second": "Insira novamente sua senha",
+        "created": "Senha criada com sucesso",
         "updated": "Senha alterada com sucesso",
         "error": "As senhas não conferem. Tente novamente",
     },
