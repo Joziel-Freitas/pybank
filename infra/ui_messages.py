@@ -15,7 +15,7 @@ TRANSACTION_MESSAGES: dict[str, dict[str, str]] = {
 }
 
 SYSTEM_MESSAGES: dict[str, dict[str, str]] = {
-    "menus": {
+    "menu": {
         "cancel": "Operação cancelada. Voltando ao menu anterior",
         "exit": "Sessão encerrada. Voltando à tela inicial",
         "security": "Sessão encerrada por questão de segurança. Voltando à tela inicial",

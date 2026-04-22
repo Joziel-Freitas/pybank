@@ -1,4 +1,6 @@
 from abc import ABC, abstractmethod
+from dataclasses import asdict
+from datetime import datetime, timedelta
 from decimal import Decimal
 from functools import partial
 from typing import Any, Callable, ClassVar, Generic, TypeVar, cast
@@ -234,26 +236,28 @@ class OnboardingController(BaseController[Bank, None], SharedPromptsMixin):
     }
 
     _bank_instance: Bank
-    _identification_config: config.ConfigMap
-    _new_account_config: config.ConfigMap
+    _auth_config: io_utils.ConfigMap
+    _identification_config: io_utils.ConfigMap
+    _new_account_config: io_utils.ConfigMap
 
     def __init__(
         self,
         bank_instance: Bank,
-        identification_config: io_utils.ConfigMap,
-        new_account_config: io_utils.ConfigMap,
-        ui_message_map: dict[str, dict[str, str]],
     ):
         super().__init__(Bank)
 
         verify.verify_instance(bank_instance, Bank)
+        io_utils.verify_config_map(config.auth_config)
+        io_utils.verify_config_map(config.identification_config)
+        io_utils.verify_config_map(config.new_account_config)
+
+        _verify_message_map(ui_messages.SYSTEM_MESSAGES)
+
         self._bank_instance = bank_instance
-        io_utils.verify_config_map(new_account_config)
-        self._new_account_config = new_account_config
-        io_utils.verify_config_map(identification_config)
-        self._identification_config = identification_config
-        _verify_message_map(ui_message_map)
-        self._ui_message_map = ui_message_map
+        self._auth_config = config.auth_config
+        self._identification_config = config.identification_config
+        self._new_account_config = config.new_account_config
+        self._ui_message_map = ui_messages.SYSTEM_MESSAGES
 
     def _handle_client_data(self, cpf: str) -> NewClientDTO | str:
         is_client = self._bank_instance.check_client_exists(cpf)
@@ -296,9 +300,9 @@ class OnboardingController(BaseController[Bank, None], SharedPromptsMixin):
         except DuplicatedAccountError as e:
             self._handle_exception_ui("new_account", e)
         except UserAbortError:
-            self._handle_info_ui("menus", "cancel")
+            self._handle_info_ui("menu", "cancel")
         except BankUnavailableError as e:
-            self._handle_exception_ui("menus", e)
+            self._handle_exception_ui("menu", e)
         except (BankPasswordError, DuplicatedClientError, ClientNotFoundError):
             raise RuntimeError(
                 "Critical error in I/O logic in password input or internal method logic"
@@ -340,17 +344,13 @@ class TransactionController(BaseController[Account, None]):
     }
 
     _bank_instance: Bank
-    _auth_config: io_utils.ConfigMap
-    _transaction_config: io_utils.ConfigMap
     _transaction_type: TransactionType
     _access_token: AccessToken | None
-    _ui_message_map: dict[str, dict[str, str]]
+    _controller_config: io_utils.ConfigMap
 
     def __init__(
         self,
         bank_instance: Bank,
-        auth_config: io_utils.ConfigMap,
-        transaction_config: io_utils.ConfigMap,
         transaction_type: TransactionType,
         access_token: AccessToken | None = None,
     ):
@@ -358,27 +358,24 @@ class TransactionController(BaseController[Account, None]):
         super().__init__(Account)
 
         verify.verify_instance(bank_instance, Bank)
-        self._bank_instance = bank_instance
-
-        io_utils.verify_config_map(auth_config)
-        self._auth_config = auth_config
-
-        io_utils.verify_config_map(transaction_config)
-        self._transaction_config = transaction_config
-
         verify.verify_instance(transaction_type, TransactionType)
-
-        if transaction_type != TransactionType.DEPOSIT and access_token is None:
-            raise RuntimeError(
-                "AccessToken is required to perform the requested operation"
-            )
-
-        self._transaction_type = transaction_type
+        io_utils.verify_config_map(config.auth_config)
+        io_utils.verify_config_map(config.transaction_config)
+        _verify_message_map(ui_messages.TRANSACTION_MESSAGES)
 
         if access_token is not None:
             verify.verify_instance(access_token, AccessToken)
 
+        if transaction_type is not TransactionType.DEPOSIT and access_token is None:
+            raise RuntimeError(
+                "AccessToken is required to perform the requested operation"
+            )
+
+        self._bank_instance = bank_instance
+        self._transaction_type = transaction_type
         self._access_token = access_token
+        self._controller_config = config.auth_config | config.transaction_config
+        self._ui_message_map = ui_messages.TRANSACTION_MESSAGES
 
     def __repr__(self) -> str:
         class_name = type(self).__name__
@@ -416,7 +413,7 @@ class TransactionController(BaseController[Account, None]):
         )
         transaction_key = transaction_mapper[self._transaction_type]
         value_raw = io_utils.get_single_input(
-            transaction_key, self._transaction_config, self._controller_validator_cb
+            transaction_key, self._controller_config, self._controller_validator_cb
         )
         value = _assert_input(value_raw, Decimal)
         return value
@@ -424,7 +421,7 @@ class TransactionController(BaseController[Account, None]):
     def _confirm_overdraft(self) -> bool:
         use_overdraft_mapper = {1: True, 2: False}
         user_in_raw = io_utils.get_single_input(
-            "limit", self._transaction_config, self._controller_validator_cb
+            "limit", self._controller_config, self._controller_validator_cb
         )
         int_user_in = _assert_input(user_in_raw, int)
         return use_overdraft_mapper[int_user_in]
@@ -455,7 +452,7 @@ class TransactionController(BaseController[Account, None]):
     def _handle_public_deposit(self) -> None:
         user_in_dict = io_utils.get_selected_inputs(
             ("branch_code", "account_num"),
-            self._auth_config,
+            self._controller_config,
             self._controller_validator_cb,
         )
         branch_code = _assert_input(user_in_dict["branch_code"], str)
@@ -468,9 +465,26 @@ class TransactionController(BaseController[Account, None]):
         except BankError as e:
             self._handle_exception_ui("deposit", e)
         except InvalidDepositError:
-            raise RuntimeError(
-                "Logical validation error in io_utils deposit value input"
-            )
+            raise RuntimeError("Critical error in I/O deposit value validation logic")
+
+    def _handle_statement(self) -> None:
+        days_mapper = {1: 30, 2: 90, 3: 180}
+
+        user_in_raw = io_utils.get_single_input(
+            "statement", self._controller_config, self._controller_validator_cb
+        )
+        int_user_in = _assert_input(user_in_raw, int)
+        days = days_mapper[int_user_in]
+        start_date = datetime.now() - timedelta(days=days)
+        statement_tuple = self._bank_instance.get_statement(
+            self._active_access_token, start_date
+        )
+        account_info_dto = self._bank_instance.get_account_info(
+            self._active_access_token
+        )
+        account_info_dict = asdict(account_info_dto)
+
+        views.show_statement(statement_tuple, account_info_dict)
 
     def run_controller(self) -> None:
         match self._transaction_type:
@@ -524,11 +538,9 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
     }
 
     _bank_instance: Bank
-    _menu_config: config.ConfigMap
-    _identification_config: config.ConfigMap
-    _new_acc_config: config.ConfigMap
-    _auth_config: config.ConfigMap
-    _transaction_config: config.ConfigMap
+    _auth_config: io_utils.ConfigMap
+    _identification_config: io_utils.ConfigMap
+    _menu_config: io_utils.ConfigMap
     _auth_token: AuthToken | None
     _access_token: AccessToken | None
 
@@ -545,24 +557,14 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
         super().__init__(Bank)
 
         verify.verify_instance(bank_instance, Bank)
+        io_utils.verify_config_map(config.auth_config)
+        io_utils.verify_config_map(config.identification_config)
+        io_utils.verify_config_map(config.menu_config)
+
         self._bank_instance = bank_instance
-
-        config_mappers = (
-            config.menu_config,
-            config.identification_config,
-            config.new_account_config,
-            config.auth_config,
-            config.transaction_config,
-        )
-
-        for cfg_map in config_mappers:
-            io_utils.verify_config_map(cfg_map)
-
-        self._menu_config = config.menu_config
-        self._identification_config = config.identification_config
-        self._new_acc_config = config.new_account_config
         self._auth_config = config.auth_config
-        self._transaction_config = config.transaction_config
+        self._identification_config = config.identification_config
+        self._menu_config = config.menu_config
         self._auth_token = None
         self._access_token = None
 
@@ -662,16 +664,18 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
         cpf = self._prompt_cpf()
         client_cards = None
         with_card = None
+        card = None
+
         try:
             client_cards = self._bank_instance.get_client_cards(cpf)
+
             if client_cards:
                 with_card = self._use_card_menu()
 
             if with_card:
                 card = self._select_card(client_cards)
-                self._auth_token = self._authenticate_client(cpf, card)
-            else:
-                self._auth_token = self._authenticate_client(cpf)
+
+            self._auth_token = self._authenticate_client(cpf, card)
             self._handle_info_ui("authentication", "success")
         except (ClientNotFoundError, BankAuthenticationError) as e:
             self._handle_exception_ui("authentication", e)
@@ -776,7 +780,7 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
             self._access_token = None
             self._handle_info_ui("new_password", "updated")
         except BankPasswordError as e:
-            raise RuntimeError("Critical error in I/O password input logic") from e
+            raise RuntimeError("Critical error in I/O password validation logic") from e
 
     def _unfreeze_account(self) -> None:
         """
@@ -803,7 +807,7 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
             self._handle_exception_ui("unfreeze", e)
             raise ControllerOperationError
         except (BankPasswordError, InvalidBirthDateError) as e:
-            raise RuntimeError("Critical error in I/O logic") from e
+            raise RuntimeError("Critical error in I/O validation logic") from e
 
     def _close_account(self) -> None:
         """
@@ -822,9 +826,9 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
             self._handle_info_ui("close_account", "success")
             self._end_session()
         except NotEmptyAccountError:
-            balance = self._bank_instance.get_account_balance(self._access_token)
-            key = "positive" if balance > 0 else "negative"
-            self._handle_info_ui("close_account", key, balance=balance)
+            account_info_dto = self._bank_instance.get_account_info(self._access_token)
+            key = "positive" if account_info_dto.balance > 0 else "negative"
+            self._handle_info_ui("close_account", key, balance=account_info_dto.balance)
             raise ControllerOperationError
         except HomeBranchRestrictionError as e:
             self._handle_exception_ui("close_account", e)
@@ -834,8 +838,6 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
         """Instantiates and prepares the TransactionController."""
         controller_obj = TransactionController(
             self._bank_instance,
-            self._auth_config,
-            self._transaction_config,
             transaction_type,
             self._access_token,
         )
@@ -852,8 +854,7 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
             controller_obj = self._set_transaction_controller(transaction)
             controller_obj.run_controller()
         except UserAbortError:
-            views.controller_output("menu", "cancel")
-            return
+            self._handle_info_ui("menu", "cancel")
         except ControllerOperationError:
             return
 
@@ -877,8 +878,7 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
                 case _:
                     raise RuntimeError("Unmapped type for ManagementType")
         except UserAbortError:
-            views.controller_output("menu", "cancel")
-            return
+            self._handle_info_ui("menu", "cancel")
         except ControllerOperationError:
             return
 
@@ -904,22 +904,16 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
                         raise RuntimeError("Unmapped OperationMenuType")
             except UserAbortError:
                 self._end_session()
-                views.controller_output("menu", "exit")
-                return
-            except (BankSecurityError, ControllerCredentialsError):
+                self._handle_info_ui("menu", "exit")
+            except BankSecurityError:
                 self._end_session()
-                views.controller_output("menu", "security")
+                self._handle_info_ui("menu", "security")
+            except BankUnavailableError:
+                self._end_session()
+                self._handle_info_ui("menu", "unavailable")
+            except ControllerCredentialsError:
+                self._end_session()
                 return
-
-    def _set_onboarding_controller(self) -> OnboardingController:
-        controller_obj = OnboardingController(
-            self._bank_instance,
-            self._identification_config,
-            self._new_acc_config,
-            ui_messages.SYSTEM_MESSAGES,
-        )
-
-        return controller_obj
 
     def _main_menu(self) -> MainMenuType | None:
         """
@@ -968,7 +962,7 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
                 case MainMenuType.OPERATIONS:
                     self._operation_hub()
                 case MainMenuType.ONBOARDING:
-                    controller_obj = self._set_onboarding_controller()
+                    controller_obj = OnboardingController(self._bank_instance)
                     controller_obj.run_controller()
                 case _:
                     raise RuntimeError("Critical error in main menu logic")

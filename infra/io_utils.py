@@ -7,7 +7,7 @@ based on configuration maps. It is agnostic to domain rules.
 """
 
 from decimal import Decimal, InvalidOperation
-from typing import Callable, NotRequired, Type, TypedDict
+from typing import Callable, NotRequired, TypedDict
 
 import verify
 from shared.exceptions import UserAbortError
@@ -165,10 +165,10 @@ def get_user_input(field_config: InnerConfig) -> InputType:
         TypeError:
             If the specified 'value_type' is not supported (must be str, int, float, or Decimal).
     """
-    info: str = field_config.get("info", "Coletando dados...")
-    prompt: str = field_config.get("prompt")
-    value_type: Type | str = field_config.get("value_type", str)
-    error_msg: str = field_config.get("error_msg", "Ocorreu um erro. Tente novamente")
+    info = field_config.get("info", "Coletando dados...")
+    prompt = field_config.get("prompt")
+    value_type = field_config.get("value_type", str)
+    error_msg = field_config.get("error_msg", "Ocorreu um erro. Tente novamente")
 
     if not prompt or not value_type:
         raise ValueError("I/O configuration has no value_type or prompt")
@@ -179,7 +179,7 @@ def get_user_input(field_config: InnerConfig) -> InputType:
     print(f"\n--- {info} ---\t>> 'S' para sair <<")
     while True:
         try:
-            value: str | int | float = input(prompt).strip()
+            value = input(prompt).strip()
 
             if value.upper() == EXIT_CMD:
                 raise UserAbortError("Input aborted by user")
@@ -233,8 +233,6 @@ def config_loop(
             If any key in 'skip_fields' is provided but not found in 'config_map'.
         TypeError:
             If 'callback_fn' is not callable or 'skip_fields' is not a list.
-        UtilsModuleError:
-            For unexpected return values from the callback.
     """
     if skip_fields is None:
         skip_fields = []
@@ -264,9 +262,9 @@ def config_loop(
         while True:
             user_in = get_user_input(config_dict)
 
-            callback_return: CallbackReturn = callback_fn(field, user_in)
-            result: bool = callback_return.get("result")
-            skip: tuple[str | None] | None = callback_return.get("skip_fields")
+            callback_return = callback_fn(field, user_in)
+            result = callback_return.get("result")
+            skip = callback_return.get("skip_fields")
 
             if skip is not None:
                 skip_fields.extend(skip)
@@ -313,8 +311,6 @@ def get_single_input(
             If 'field_key' is not present in 'config_map'.
         UserAbortError:
             If the user cancels the operation via the exit command.
-        UtilsModuleError:
-            If an error occurs during the generic loop execution.
     """
     if not isinstance(field_key, str):
         raise TypeError(f"field_key must be a string, got {type(field_key).__name__}")

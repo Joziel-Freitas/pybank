@@ -54,3 +54,30 @@ class NewAccountDTO:
     branch_code: str
     account_num: str
     balance: Decimal
+
+
+@dataclass(frozen=True)
+class AccountInfoDTO:
+    """
+    Data Transfer Object representing a read-only snapshot of an Account's current state.
+
+    Acts as a secure payload to transport account information from the Domain layer
+    to the Presentation layer. By encapsulating only primitive data types, it ensures
+    the core Account entity does not leak into the UI, preserving strict Domain-Driven
+    Design (DDD) boundaries.
+
+    Attributes:
+        branch_code (str): The 4-digit branch code where the account is registered.
+        account_num (str): The 8-digit unique account number.
+        balance (Decimal): The current available financial balance.
+        overdraft_limit (Decimal | None): The maximum overdraft limit. None if the account
+            does not support overdraft (e.g., SavingsAccount).
+        available_overdraft (Decimal | None): The currently available overdraft amount.
+            None if the account does not support overdraft.
+    """
+
+    branch_code: str
+    account_num: str
+    balance: Decimal
+    overdraft_limit: Decimal | None
+    available_overdraft: Decimal | None

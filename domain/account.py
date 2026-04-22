@@ -362,12 +362,12 @@ class CheckingAccount(Account):
     """
     Represents a Checking Account with an optional overdraft limit.
 
-    Allows withdrawals that exceed the balance, up to the defined CREDIT_LIMIT.
-    Tracks the amount of credit used (`_used_credit`).
+    Allows withdrawals that exceed the balance, up to the defined OVERDRAFT_LIMIT.
+    Tracks the amount of overdraft used (`_used_overdraft`).
     """
 
-    CREDIT_LIMIT: ClassVar[Decimal] = Decimal("3000.00")
-    _used_credit: Decimal
+    OVERDRAFT_LIMIT: ClassVar[Decimal] = Decimal("3000.00")
+    _used_overdraft: Decimal
 
     def __init__(
         self, branch_code: str, account_num: str, balance: Decimal = Decimal("0.00")
@@ -375,29 +375,29 @@ class CheckingAccount(Account):
         """
         Initializes a CheckingAccount.
 
-        Sets `_used_credit` to 0.0.
+        Sets `_used_overdraft` to 0.0.
         """
         super().__init__(branch_code, account_num, balance)
-        self._used_credit = Decimal("0.00")
+        self._used_overdraft = Decimal("0.00")
 
     @property
-    def remaining_credit(self) -> Decimal:
-        """Returns the remaining credit (CREDIT_LIMIT minus used credit)."""
-        return CheckingAccount.CREDIT_LIMIT - self._used_credit
+    def available_overdraft(self) -> Decimal:
+        """Returns the available overdraft (OVERDRAFT_LIMIT minus used overdraft)."""
+        return CheckingAccount.OVERDRAFT_LIMIT - self._used_overdraft
 
     def to_dict(self) -> dict[str, Any]:
         """
         Serializes the CheckingAccount, extending the base serialization.
 
-        Adds specific credit attributes (`CREDIT_LIMIT` and `used_credit`) to the
-        dictionary. Note that `CREDIT_LIMIT` is strictly informational, as the
+        Adds specific overdraft attributes (`OVERDRAFT_LIMIT` and `used_overdraft`) to the
+        dictionary. Note that `OVERDRAFT_LIMIT` is strictly informational, as the
         value is defined as a class constant.
 
         Returns:
-            dict: The complete dictionary with base account data plus credit info.
+            dict: The complete dictionary with base account data plus overdraft info.
         """
         obj_data = super().to_dict()
-        obj_data["used_credit"] = self._used_credit
+        obj_data["used_overdraft"] = self._used_overdraft
 
         return obj_data
 
@@ -407,26 +407,26 @@ class CheckingAccount(Account):
         Reconstructs a CheckingAccount instance.
 
         Delegates the core hydration to the parent class and then populates the
-        specific `_used_credit` attribute.
+        specific `_used_overdraft` attribute.
 
         Args:
             data (dict): The dictionary containing account data.
 
         Returns:
-            CheckingAccount: The restored instance with the correct credit usage state.
+            CheckingAccount: The restored instance with the correct overdraft usage state.
         """
         instance = cast(CheckingAccount, super().from_dict(data))
-        instance._used_credit = data["used_credit"]
+        instance._used_overdraft = data["used_overdraft"]
 
         return instance
 
     def deposit(self, value: Decimal) -> None:
         """
-        Deposits an amount and adjusts the used credit line.
+        Deposits an amount and adjusts the used overdraft.
 
         Extends the base Account.deposit logic. After the funds are added to
-        the balance, this method recalculates the `_used_credit`. If the
-        deposit restores the balance to positive, `_used_credit` is reset to zero.
+        the balance, this method recalculates the `_used_overdraft`. If the
+        deposit restores the balance to positive, `_used_overdraft` is reset to zero.
 
         Args:
             value (Decimal): The amount to deposit.
@@ -436,28 +436,30 @@ class CheckingAccount(Account):
         """
         super().deposit(value)
 
-        # If balance is still negative, update used credit. Otherwise, reset to 0.
-        self._used_credit = abs(self._balance) if self._balance < 0 else Decimal("0.00")
+        # If balance is still negative, update used overdraft. Otherwise, reset to 0.
+        self._used_overdraft = (
+            abs(self._balance) if self._balance < 0 else Decimal("0.00")
+        )
 
     def withdraw(self, amount: Decimal, use_overdraft: bool = False) -> None:
         """
-        Withdraws an amount, utilizing the overdraft credit limit if authorized and necessary.
+        Withdraws an amount, utilizing the overdraft limit if authorized and necessary.
 
-        The total available funds are calculated as `balance + CREDIT_LIMIT`.
-        If the withdrawal drives the balance below zero, `_used_credit` is updated.
+        The total available funds are calculated as `balance + OVERDRAFT_LIMIT`.
+        If the withdrawal drives the balance below zero, `_used_overdraft` is updated.
 
         Args:
             amount (Decimal): The amount to withdraw.
             use_overdraft (bool, optional): Explicit authorization to dip into the
-                credit limit if the requested amount exceeds the standard balance. Defaults to False.
+                overdraft limit if the requested amount exceeds the standard balance. Defaults to False.
 
         Raises:
             OverdraftRequiredError: If the requested amount exceeds the current balance
                 but `use_overdraft` was not explicitly set to True.
             InvalidWithdrawError: If the withdrawal amount is invalid or exceeds the total
-                available funds (balance + credit limit).
+                available funds (balance + overdraft limit).
         """
-        available = CheckingAccount.CREDIT_LIMIT + self._balance
+        available = CheckingAccount.OVERDRAFT_LIMIT + self._balance
         Account._validate_account_withdraw(val=amount, available_val=available)
 
         if amount > self.balance and not use_overdraft:
@@ -467,6 +469,6 @@ class CheckingAccount(Account):
 
         self._balance -= amount
 
-        # Update used credit if we enter or remain in overdraft
+        # Update used overdraft if we enter or remain in overdraft
         if self._balance < 0:
-            self._used_credit = abs(self._balance)
+            self._used_overdraft = abs(self._balance)

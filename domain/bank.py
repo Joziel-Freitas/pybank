@@ -28,7 +28,7 @@ import bcrypt
 from infra import verify
 from infra.mysql_repository import MySQLRepository
 from shared.credentials import AccessToken, AccountCard, AuthToken
-from shared.dtos import NewAccountDTO, NewClientDTO
+from shared.dtos import AccountInfoDTO, NewAccountDTO, NewClientDTO
 from shared.exceptions import (
     AccountAlreadyActiveError,
     AccountNotFoundError,
@@ -719,29 +719,43 @@ class Bank:
 
         return client.cards
 
-    def get_account_balance(self, access_token: AccessToken) -> Decimal:
+    def get_account_info(self, access_token: AccessToken) -> AccountInfoDTO:
         """
-        Safely retrieves the current financial balance of an authenticated account.
+        Safely retrieves a read-only snapshot of an authenticated account's current state.
 
-        Acts as a secure read-only facade for the Presentation layer. It extracts
-        and returns only the primitive Decimal value, preventing the full Account
-        domain entity from leaking into external layers, thereby preserving strict
-        Domain-Driven Design (DDD) boundaries.
+        Operates under a Zero Trust model. It fetches the account using the validated
+        AccessToken and projects the internal state into an immutable AccountInfoDTO.
+        This acts as a secure read-only facade, preventing the full Account domain entity
+        from leaking into external layers (Controllers/Views).
 
         Args:
             access_token (AccessToken): A valid, securely signed vault token.
 
         Returns:
-            Decimal: The current balance of the account.
+            AccountInfoDTO: An immutable snapshot containing the account's branch, number,
+                balance, and overdraft information (if applicable).
 
         Raises:
             BankSecurityError: If the token is invalid, tampered with, or if the
-                account no longer exists (TOCTOU mitigation).
+                account no longer exists during the active session (TOCTOU mitigation).
         """
         self._validate_token(access_token)
         account = self._get_account(access_token)
 
-        return account.balance
+        overdraft_limit = None
+        available_overdraft = None
+
+        if isinstance(account, CheckingAccount):
+            overdraft_limit = account.OVERDRAFT_LIMIT
+            available_overdraft = account.available_overdraft
+
+        return AccountInfoDTO(
+            branch_code=account.branch_code,
+            account_num=account.account_num,
+            balance=account.balance,
+            overdraft_limit=overdraft_limit,
+            available_overdraft=available_overdraft,
+        )
 
     def execute_deposit(
         self,

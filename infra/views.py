@@ -10,8 +10,8 @@ decoupling from the application's internal states.
 
 import os
 import subprocess
-from decimal import Decimal
 from time import sleep
+from typing import Any
 
 
 def welcome() -> None:
@@ -55,27 +55,9 @@ def controller_output(message: str) -> None:
 
 
 def show_statement(
-    transactions: list[Decimal],
-    balance: Decimal,
-    overdraft_info: dict[str, Decimal] | None = None,
+    statement_tuple: tuple[dict[str, Any], ...], info_dict: dict[str, Any]
 ) -> None:
-    """
-    Renders the account bank statement to the terminal.
 
-    Formats the transaction list with alignment and currency symbols, creating
-    a readable report. Calculates appropriate labels (Deposit/Withdraw) based
-    on the sign of the value.
-
-    If `overdraft_info` is provided (typically for Checking Accounts), it
-    appends the credit limit status to the footer.
-
-    Args:
-        transactions (list[Decimal]): List of transaction values.
-        balance (Decimal): The final calculated balance.
-        overdraft_info (dict[str, Decimal] | None, optional): A dictionary containing
-            'total_limit' and 'remaining' keys to display overdraft details.
-            Defaults to None.
-    """
     subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
     print("\n" + "=" * 45)
     print(f"{'EXTRATO BANCÁRIO':^45}")
@@ -117,6 +99,6 @@ def show_cards(client_cards: list[str]) -> None:
                                   of each card available to the client.
     """
     subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
-    print(f"{' Seus cartões ':-^50}")
+    print(f"{' Escolha seu cartão ':-^50}")
     for idx, card in enumerate(client_cards):
         print(f"{idx}: {card}")
