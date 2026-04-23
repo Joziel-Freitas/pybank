@@ -67,6 +67,7 @@ class AccountInfoDTO:
     Design (DDD) boundaries.
 
     Attributes:
+        client_name (str): The full name of the client who owns the account.
         branch_code (str): The 4-digit branch code where the account is registered.
         account_num (str): The 8-digit unique account number.
         balance (Decimal): The current available financial balance.
@@ -76,6 +77,7 @@ class AccountInfoDTO:
             None if the account does not support overdraft.
     """
 
+    client_name: str
     branch_code: str
     account_num: str
     balance: Decimal

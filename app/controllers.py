@@ -19,7 +19,6 @@ from shared.exceptions import (
     BankAuthenticationError,
     BankError,
     BankPasswordError,
-    BankSecurityError,
     BankUnavailableError,
     BlockedAccountError,
     ClientNotFoundError,
@@ -34,6 +33,7 @@ from shared.exceptions import (
     InvalidWithdrawError,
     NotEmptyAccountError,
     OverdraftRequiredError,
+    SecurityError,
     UserAbortError,
 )
 from shared.types import (
@@ -476,15 +476,14 @@ class TransactionController(BaseController[Account, None]):
         int_user_in = _assert_input(user_in_raw, int)
         days = days_mapper[int_user_in]
         start_date = datetime.now() - timedelta(days=days)
-        statement_tuple = self._bank_instance.get_statement(
+        transactions_raw = self._bank_instance.get_statement(
             self._active_access_token, start_date
         )
         account_info_dto = self._bank_instance.get_account_info(
             self._active_access_token
         )
         account_info_dict = asdict(account_info_dto)
-
-        views.show_statement(statement_tuple, account_info_dict)
+        views.show_statement(transactions_raw, account_info_dict)
 
     def run_controller(self) -> None:
         match self._transaction_type:
@@ -905,7 +904,7 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
             except UserAbortError:
                 self._end_session()
                 self._handle_info_ui("menu", "exit")
-            except BankSecurityError:
+            except SecurityError:
                 self._end_session()
                 self._handle_info_ui("menu", "security")
             except BankUnavailableError:

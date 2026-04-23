@@ -10,6 +10,7 @@ decoupling from the application's internal states.
 
 import os
 import subprocess
+from datetime import datetime
 from time import sleep
 from typing import Any
 
@@ -55,13 +56,18 @@ def controller_output(message: str) -> None:
 
 
 def show_statement(
-    statement_tuple: tuple[dict[str, Any], ...], info_dict: dict[str, Any]
+    transactions: tuple[dict[str, Any], ...], account_info: dict[str, Any]
 ) -> None:
 
+    dt = datetime.now()
+    date = dt.today().strftime("%d/%m/%Y")
+    time = dt.time().strftime("%H:%M:%S")
+
     subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
-    print("\n" + "=" * 45)
-    print(f"{'EXTRATO BANCÁRIO':^45}")
-    print("=" * 45 + "\n")
+    print("\n" + "-" * 45)
+    print(f"{'PYBANK S. A.':^45}")
+
+    print("-" * 45 + "\n")
 
     if not transactions:
         print("Nenhuma movimentação registrada")

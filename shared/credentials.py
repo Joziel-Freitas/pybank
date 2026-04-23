@@ -18,6 +18,7 @@ Classes:
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 
 
 @dataclass(frozen=True)
@@ -51,12 +52,15 @@ class AuthToken:
         account_num (str): The account number associated with the session.
         signature (str): A cryptographic hash (e.g., HMAC-SHA256) generated exclusively
             by the Bank's internal secret key, proving the authenticity of the token.
+        expires_at (datetime): The exact timestamp when this token becomes invalid,
+            enforcing a strict Time-To-Live (TTL) for the Lobby session.
     """
 
     cpf: str
     branch_code: str
     account_num: str
     signature: str
+    expires_at: datetime
 
 
 @dataclass(frozen=True)
@@ -66,7 +70,8 @@ class AccessToken:
 
     Acts as the 'Vault Key' for sensitive financial operations. Unlike the
     AuthToken, which only proves identity (Lobby access), the AccessToken
-    proves that strict authorization (password verification) has occurred.
+    proves that strict authorization (password verification) has occurred and
+    securely binds the user's identity (CPF) to the accessed account for auditing.
 
     Its cryptographic signature integrates the account's current database
     password hash. This Zero Trust design ensures that the token becomes
@@ -74,12 +79,17 @@ class AccessToken:
     as an automatic defense mechanism against session hijacking.
 
     Attributes:
-        branch_code (str): The branch code associated with the vault.
-        account_num (str): The account number associated with the vault.
+        cpf (str): The client's unique identifier (Who is accessing the vault).
+        branch_code (str): The branch code associated with the vault (Where).
+        account_num (str): The account number associated with the vault (Where).
         signature (str): A cryptographic hash (e.g., HMAC-SHA256) proving
             both authenticity and active password validation.
+        expires_at (datetime): The exact timestamp when this token becomes invalid,
+            enforcing a strict Time-To-Live (TTL) for the Vault session.
     """
 
+    cpf: str
     branch_code: str
     account_num: str
     signature: str
+    expires_at: datetime

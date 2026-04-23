@@ -12,7 +12,7 @@ CREATE TABLE accounts (
     account_type VARCHAR(20) NOT NULL,
     balance DECIMAL(13, 2) NOT NULL,
     is_active BOOLEAN NOT NULL,
-    used_credit DECIMAL(10, 2),
+    used_overdraft DECIMAL(10, 2),
     password_hash VARCHAR(255) NOT NULL,
     failed_login_attempts INT DEFAULT 0,
     client_id INT NOT NULL,
@@ -22,6 +22,7 @@ CREATE TABLE accounts (
 
 CREATE TABLE transactions (
     id INT PRIMARY KEY AUTO_INCREMENT NOT NULL,
+    initial_balance DECIMAL (10, 2) NOT NULL,
     amount DECIMAL(10, 2) NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     account_id INT NOT NULL,

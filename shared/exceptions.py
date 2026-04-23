@@ -49,6 +49,10 @@ class BankSecurityError(SecurityError):
     """
 
 
+class ExpiredTokenError(SecurityError):
+    """Raised when a token's Time-To-Live (TTL) has passed."""
+
+
 # --- Domain Layer Exceptions ---
 
 

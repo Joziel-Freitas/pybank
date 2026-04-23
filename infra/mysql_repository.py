@@ -81,14 +81,25 @@ class MySQLRepository:
             raise DuplicatedDataError("client") from e
 
     def _insert_transaction_record(
-        self, cursor, account_id: int, amount: Decimal
+        self, cursor, account_id: int, balance: Decimal, amount: Decimal
     ) -> None:
-        """Helper method to insert a transaction. Does NOT manage commits."""
+        """
+        Helper method to insert a transaction record for auditing purposes.
 
-        sql = """INSERT INTO transactions (account_id, amount)
-        VALUES (%s, %s)"""
+        Records the exact balance prior to the operation alongside the transaction
+        amount to ensure chronological consistency. Does NOT manage commits.
 
-        cursor.execute(sql, (account_id, amount))
+        Args:
+            cursor: The active database cursor.
+            account_id (int): The primary key of the account.
+            balance (Decimal): The account balance strictly BEFORE the transaction.
+            amount (Decimal): The transaction amount (positive for deposit, negative for withdraw).
+        """
+
+        sql = """INSERT INTO transactions (account_id, initial_balance, amount)
+        VALUES (%s, %s, %s)"""
+
+        cursor.execute(sql, (account_id, balance, amount))
 
     def _insert_account_record(
         self,
@@ -99,6 +110,10 @@ class MySQLRepository:
     ) -> None:
         """
         Internal helper to persist a new Account and its opening deposit.
+
+        If the account is opened with an initial balance greater than zero, it
+        automatically generates a corresponding transaction record with an
+        initial balance of 0.00 to satisfy auditing rules.
 
         Args:
             cursor (cursors.DictCursor): The active database cursor.
@@ -113,7 +128,14 @@ class MySQLRepository:
         acc_dict = account.to_dict()
 
         sql = (
-            "INSERT INTO accounts (branch_code, account_num, account_type, balance, is_active, used_credit, password_hash, client_id)"
+            "INSERT INTO accounts (branch_code, "
+            "account_num, "
+            "account_type, "
+            "balance, "
+            "is_active, "
+            "used_overdraft, "
+            "password_hash, "
+            "client_id) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
         )
 
@@ -123,7 +145,7 @@ class MySQLRepository:
             acc_dict["account_type"],
             acc_dict["balance"],
             True,
-            acc_dict.get("used_credit", None),
+            acc_dict.get("used_overdraft", None),
             password_hash,
             client_id,
         )
@@ -131,7 +153,9 @@ class MySQLRepository:
             cursor.execute(sql, values)
             if acc_dict["balance"] > 0:
                 new_acc_id = cursor.lastrowid
-                self._insert_transaction_record(cursor, new_acc_id, acc_dict["balance"])
+                self._insert_transaction_record(
+                    cursor, new_acc_id, Decimal("0.00"), acc_dict["balance"]
+                )
         except err.IntegrityError as e:
             raise DuplicatedDataError("account") from e
 
@@ -211,7 +235,8 @@ class MySQLRepository:
 
         This method guarantees data consistency by performing both the balance
         update and the transaction insertion within the same database transaction.
-        If either operation fails, a rollback is triggered.
+        It explicitly fetches the current balance prior to the update to satisfy
+        the snapshotting requirements of the transaction ledger.
 
         Args:
             branch_code (str): The 4-digit string representing the branch.
@@ -227,9 +252,7 @@ class MySQLRepository:
         verify_instance(account_num, str)
         verify_instance(amount, Decimal)
 
-        select_sql = (
-            "SELECT id FROM accounts WHERE branch_code = %s AND account_num = %s"
-        )
+        select_sql = "SELECT id, balance FROM accounts WHERE branch_code = %s AND account_num = %s"
 
         update_sql = "UPDATE accounts SET balance = balance + %s WHERE id = %s"
 
@@ -248,12 +271,14 @@ class MySQLRepository:
                     raise DataNotFoundError("Account not found in the database")
 
                 account_id = result["id"]
+                balance = result["balance"]
 
-                self._insert_transaction_record(cursor, account_id, amount)
+                self._insert_transaction_record(cursor, account_id, balance, amount)
                 cursor.execute(update_sql, (amount, account_id))
                 self._connection.commit()
         except DataNotFoundError:
             self._connection.rollback()
+            raise
         except Exception as e:
             self._connection.rollback()
             raise RepositoryError(
@@ -427,7 +452,7 @@ class MySQLRepository:
             "account_num": "account_num",
             "account_type": "type",
             "balance": "balance",
-            "used_credit": "used_credit",
+            "used_overdraft": "used_overdraft",
         }
         sql = "SELECT * FROM accounts WHERE branch_code = %s AND account_num = %s"
 
@@ -444,8 +469,8 @@ class MySQLRepository:
                 if k in acc_keys_mapper
             }
 
-            if acc_dict.get("used_credit") is None:
-                acc_dict.pop("used_credit")
+            if acc_dict.get("used_overdraft") is None:
+                acc_dict.pop("used_overdraft")
 
             account_obj = Account.from_dict(acc_dict)
             return account_obj
@@ -489,7 +514,7 @@ class MySQLRepository:
             raise DataNotFoundError("Account not found in the database")
 
         sql = (
-            "SELECT t.amount, t.created_at "
+            "SELECT t.initial_balance, t.amount, t.created_at, "
             "FROM transactions AS t "
             "JOIN accounts AS a "
             "ON t.account_id = a.id "

@@ -20,7 +20,7 @@ verification, maintaining absolute consistency across the financial domain.
 
 import hashlib
 import hmac
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, ClassVar
 
@@ -42,6 +42,7 @@ from shared.exceptions import (
     DuplicatedAccountError,
     DuplicatedClientError,
     DuplicatedDataError,
+    ExpiredTokenError,
     HomeBranchRestrictionError,
     NotEmptyAccountError,
     RepositoryError,
@@ -65,9 +66,17 @@ class Bank:
         MAX_LOGIN_ATTEMPTS (ClassVar[int]): The universal business rule defining
             the maximum allowed consecutive failed authentication attempts before
             an account is automatically frozen. Currently set to 3.
+        LOBBY_TIME_MINUTES (ClassVar[timedelta]): The strict Time-To-Live (TTL)
+            duration for an AuthToken, defining how long a client can remain
+            in the unauthenticated lobby.
+        VAULT_TIME_MINUTES (ClassVar[timedelta]): The strict Time-To-Live (TTL)
+            duration for an AccessToken, defining the maximum duration of a
+            highly sensitive, authenticated vault session.
     """
 
     MAX_LOGIN_ATTEMPTS: ClassVar[int] = 3
+    LOBBY_TIME_MINUTES: ClassVar[timedelta] = timedelta(minutes=5)
+    VAULT_TIME_MINUTES: ClassVar[timedelta] = timedelta(minutes=2)
 
     _bank_name: str
     _branch_code: str
@@ -185,26 +194,34 @@ class Bank:
 
     def _validate_token(self, token: AccessToken | AuthToken) -> None:
         """
-        Validates the cryptographic integrity and authenticity of a session token.
+        Validates the cryptographic integrity, Time-To-Live (TTL), and authenticity
+        of a session token.
 
         Operates seamlessly with both AuthToken (Lobby access) and AccessToken
-        (Vault access). It enforces a strict Zero Trust model by unconditionally
-        verifying the account's existence in the repository before checking the
-        signature, effectively mitigating Time-of-Check to Time-of-Use (TOCTOU)
-        race conditions for all session types.
+        (Vault access). It enforces a strict Zero Trust model by:
+        1. Checking the TTL to prevent the use of expired sessions (Fail-Fast).
+        2. Unconditionally verifying the account's existence in the repository
+           before checking the signature, mitigating Time-of-Check to Time-of-Use
+           (TOCTOU) race conditions.
 
         For AccessTokens, it dynamically reconstructs the expected payload using
-        the freshest password hash, acting as an automatic session invalidator
-        if the user's password was recently changed.
+        the client's CPF and the freshest password hash, acting as an automatic
+        session invalidator if the user's password was recently changed.
 
         Args:
             token (AccessToken | AuthToken): The token instance to be validated.
 
         Raises:
+            ExpiredTokenError: If the token's TTL has passed.
             BankSecurityError: If the token instance is unknown, if the account
                 no longer exists (TOCTOU mitigation), or if the cryptographic
                 signature has been tampered with or invalidated.
         """
+        if datetime.now() > token.expires_at:
+            raise ExpiredTokenError(
+                "This token is no longer valid because it has expired"
+            )
+
         try:
             acc_credentials = self._get_account_credentials(
                 token.branch_code, token.account_num
@@ -219,7 +236,9 @@ class Bank:
                 payload = f"{token.cpf}:{token.branch_code}:{token.account_num}"
             case AccessToken():
                 pwd_hash = acc_credentials["password_hash"]
-                payload = f"{token.branch_code}:{token.account_num}:{pwd_hash}"
+                payload = (
+                    f"{token.cpf}:{token.branch_code}:{token.account_num}:{pwd_hash}"
+                )
             case _:
                 raise BankSecurityError("Security breach: Invalid token instance")
 
@@ -271,6 +290,7 @@ class Bank:
             branch_code=branch_code,
             account_num=account_num,
             signature=signature,
+            expires_at=datetime.now() + Bank.LOBBY_TIME_MINUTES,
         )
 
     def _generate_access_token(
@@ -292,13 +312,15 @@ class Bank:
         Returns:
             AccessToken: A securely signed vault access token.
         """
-        payload = f"{auth_token.branch_code}:{auth_token.account_num}:{password_hash}"
+        payload = f"{auth_token.cpf}:{auth_token.branch_code}:{auth_token.account_num}:{password_hash}"
         signature = self._sign_token_payload(payload)
 
         return AccessToken(
+            cpf=auth_token.cpf,
             branch_code=auth_token.branch_code,
             account_num=auth_token.account_num,
             signature=signature,
+            expires_at=datetime.now() + Bank.VAULT_TIME_MINUTES,
         )
 
     def _account_factory(self, account_dto: NewAccountDTO) -> Account:
@@ -723,23 +745,28 @@ class Bank:
         """
         Safely retrieves a read-only snapshot of an authenticated account's current state.
 
-        Operates under a Zero Trust model. It fetches the account using the validated
-        AccessToken and projects the internal state into an immutable AccountInfoDTO.
-        This acts as a secure read-only facade, preventing the full Account domain entity
-        from leaking into external layers (Controllers/Views).
+        Operates under a strict Zero Trust model. It fetches both the account and the
+        client using the securely validated AccessToken, projecting this cross-entity
+        state into an immutable AccountInfoDTO. This acts as a secure read-only facade,
+        preventing full domain entities (Account and Client) from leaking into external
+        layers (Controllers/Views).
 
         Args:
-            access_token (AccessToken): A valid, securely signed vault token.
+            access_token (AccessToken): A valid, securely signed vault token containing
+                the client's CPF for identity resolution.
 
         Returns:
-            AccountInfoDTO: An immutable snapshot containing the account's branch, number,
-                balance, and overdraft information (if applicable).
+            AccountInfoDTO: An immutable snapshot containing the client's name, account
+                branch, number, balance, and overdraft information (if applicable).
 
         Raises:
+            ExpiredTokenError: If the token's TTL has passed.
             BankSecurityError: If the token is invalid, tampered with, or if the
-                account no longer exists during the active session (TOCTOU mitigation).
+                account/client no longer exists during the active session (TOCTOU mitigation).
         """
         self._validate_token(access_token)
+
+        client = self._get_client(access_token.cpf)
         account = self._get_account(access_token)
 
         overdraft_limit = None
@@ -750,6 +777,7 @@ class Bank:
             available_overdraft = account.available_overdraft
 
         return AccountInfoDTO(
+            client_name=client.name,
             branch_code=account.branch_code,
             account_num=account.account_num,
             balance=account.balance,
