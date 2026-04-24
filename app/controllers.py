@@ -38,9 +38,9 @@ from shared.exceptions import (
 )
 from shared.types import (
     MainMenuType,
-    ManagementType,
+    ManagementMenuType,
     OperationMenuType,
-    TransactionType,
+    TransactionMenuType,
 )
 from shared.validators import ValidatorCallback
 
@@ -344,21 +344,21 @@ class TransactionController(BaseController[Account, None]):
     }
 
     _bank_instance: Bank
-    _transaction_type: TransactionType
+    _transaction_type: TransactionMenuType
     _access_token: AccessToken | None
     _controller_config: io_utils.ConfigMap
 
     def __init__(
         self,
         bank_instance: Bank,
-        transaction_type: TransactionType,
+        transaction_type: TransactionMenuType,
         access_token: AccessToken | None = None,
     ):
 
         super().__init__(Account)
 
         verify.verify_instance(bank_instance, Bank)
-        verify.verify_instance(transaction_type, TransactionType)
+        verify.verify_instance(transaction_type, TransactionMenuType)
         io_utils.verify_config_map(config.auth_config)
         io_utils.verify_config_map(config.transaction_config)
         _verify_message_map(ui_messages.TRANSACTION_MESSAGES)
@@ -366,7 +366,7 @@ class TransactionController(BaseController[Account, None]):
         if access_token is not None:
             verify.verify_instance(access_token, AccessToken)
 
-        if transaction_type is not TransactionType.DEPOSIT and access_token is None:
+        if transaction_type is not TransactionMenuType.DEPOSIT and access_token is None:
             raise RuntimeError(
                 "AccessToken is required to perform the requested operation"
             )
@@ -400,8 +400,8 @@ class TransactionController(BaseController[Account, None]):
 
     def _get_transaction_value(self) -> Decimal:
         transaction_mapper = {
-            TransactionType.WITHDRAW: "withdraw",
-            TransactionType.DEPOSIT: "deposit",
+            TransactionMenuType.WITHDRAW: "withdraw",
+            TransactionMenuType.DEPOSIT: "deposit",
         }
 
         if self._transaction_type not in transaction_mapper:
@@ -487,11 +487,11 @@ class TransactionController(BaseController[Account, None]):
 
     def run_controller(self) -> None:
         match self._transaction_type:
-            case TransactionType.DEPOSIT:
+            case TransactionMenuType.DEPOSIT:
                 self._handle_public_deposit()
-            case TransactionType.WITHDRAW:
+            case TransactionMenuType.WITHDRAW:
                 self._handle_withdraw()
-            case TransactionType.STATEMENT:
+            case TransactionMenuType.STATEMENT:
                 ...
             case _:
                 raise RuntimeError("Unmapped TransactionType")
@@ -724,7 +724,9 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
                 "Access process failed due to unknown issue"
             )
 
-    def _ensure_credentials(self, operation: TransactionType | ManagementType) -> None:
+    def _ensure_credentials(
+        self, operation: TransactionMenuType | ManagementMenuType
+    ) -> None:
         """
         Security Routing Checkpoint.
 
@@ -739,16 +741,16 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
             RuntimeError: If an unknown operation bypasses the security map.
         """
         match operation:
-            case TransactionType.DEPOSIT:
+            case TransactionMenuType.DEPOSIT:
                 pass
-            case ManagementType.UNFREEZE:
+            case ManagementMenuType.UNFREEZE:
                 if not self._auth_token:
                     self._ensure_authentication()
             case (
-                TransactionType.WITHDRAW
-                | TransactionType.STATEMENT
-                | ManagementType.PASSWORD
-                | ManagementType.CLOSE
+                TransactionMenuType.WITHDRAW
+                | TransactionMenuType.STATEMENT
+                | ManagementMenuType.PASSWORD
+                | ManagementMenuType.CLOSE
             ):
                 if not self._auth_token:
                     self._ensure_authentication()
@@ -848,7 +850,7 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
             transaction_option = io_utils.get_single_input(
                 "transactions", self._menu_config, self._controller_validator_cb
             )
-            transaction = TransactionType(transaction_option)
+            transaction = TransactionMenuType(transaction_option)
             self._ensure_credentials(transaction)
             controller_obj = self._set_transaction_controller(transaction)
             controller_obj.run_controller()
@@ -863,16 +865,16 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
             management_option = io_utils.get_single_input(
                 "management", self._menu_config, self._controller_validator_cb
             )
-            management = ManagementType(management_option)
+            management = ManagementMenuType(management_option)
 
             self._ensure_credentials(management)
 
             match management:
-                case ManagementType.PASSWORD:
+                case ManagementMenuType.PASSWORD:
                     self._update_password()
-                case ManagementType.UNFREEZE:
+                case ManagementMenuType.UNFREEZE:
                     self._unfreeze_account()
-                case ManagementType.CLOSE:
+                case ManagementMenuType.CLOSE:
                     self._close_account()
                 case _:
                     raise RuntimeError("Unmapped type for ManagementType")

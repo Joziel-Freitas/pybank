@@ -58,15 +58,34 @@ def controller_output(message: str) -> None:
 def show_statement(
     transactions: tuple[dict[str, Any], ...], account_info: dict[str, Any]
 ) -> None:
-
+    account_type_mapper = {
+        "CheckingAccount": "CONTA CORRENTE",
+        "SavingsAccount": "CONTA POUPANÇA",
+    }
     dt = datetime.now()
     date = dt.today().strftime("%d/%m/%Y")
     time = dt.time().strftime("%H:%M:%S")
 
-    subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
-    print("\n" + "-" * 45)
-    print(f"{'PYBANK S. A.':^45}")
+    name = account_info["client_name"]
+    branch_code = account_info["branch_code"]
+    account_num = account_info["account_num"]
+    account_type = account_type_mapper[account_info["account_type"]]
+    balance = account_info["balance"]
+    overdraft_limit = account_info["overdraft_limit"]
+    available_overdraft = account_info["available_overdraft"]
 
+    subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
+
+    print(f"{'PYBANK S. A.':^45}")
+    print(f"{date} - {'AUTO-ATENDIMENTO'} - {time}")
+    print(
+        f"EXTRATO DE {account_type_mapper[account_info['account_type']]} PARA SIMPLES CONFERÊNCIA"
+    )
+    print()
+    print(f"AGÊNCIA: {branch_code},\t CONTA: {account_num}")
+    print(f"CLIENTE: {name}")
+    print()
+    print(f"{'DATA'}\t{'HISTÓRICO'}\t{'VALOR'}")
     print("-" * 45 + "\n")
 
     if not transactions:

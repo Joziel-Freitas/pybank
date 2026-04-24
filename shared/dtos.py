@@ -70,6 +70,7 @@ class AccountInfoDTO:
         client_name (str): The full name of the client who owns the account.
         branch_code (str): The 4-digit branch code where the account is registered.
         account_num (str): The 8-digit unique account number.
+        account_type (str): The classification of the account (e.g., Checking, Savings).
         balance (Decimal): The current available financial balance.
         overdraft_limit (Decimal | None): The maximum overdraft limit. None if the account
             does not support overdraft (e.g., SavingsAccount).
@@ -80,6 +81,7 @@ class AccountInfoDTO:
     client_name: str
     branch_code: str
     account_num: str
+    account_type: str
     balance: Decimal
     overdraft_limit: Decimal | None
     available_overdraft: Decimal | None

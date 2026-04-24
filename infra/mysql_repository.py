@@ -500,7 +500,7 @@ class MySQLRepository:
         Returns:
             tuple[dict[str, Any], ...]: A tuple of dictionaries, where each dictionary
                 represents a transaction containing the 'amount' (Decimal) and
-                'created_at' (datetime). Ordered from newest to oldest.
+                'created_at' (datetime). Ordered from oldest to newest.
 
         Raises:
             TypeError: If the provided arguments are not of the expected types.
@@ -514,14 +514,14 @@ class MySQLRepository:
             raise DataNotFoundError("Account not found in the database")
 
         sql = (
-            "SELECT t.initial_balance, t.amount, t.created_at, "
+            "SELECT t.initial_balance, t.amount, t.created_at "
             "FROM transactions AS t "
             "JOIN accounts AS a "
             "ON t.account_id = a.id "
             "WHERE a.branch_code = %s "
             "AND a.account_num = %s "
             "AND t.created_at >= %s "
-            "ORDER BY t.created_at DESC"
+            "ORDER BY t.created_at ASC"
         )
 
         with self._connection.cursor() as cursor:

@@ -436,36 +436,31 @@ class Bank:
         if not credentials_dict["is_active"]:
             raise BlockedAccountError("Account is unavailable for transactions.")
 
-    def _get_account(self, access_token: AccessToken) -> Account:
+    def _get_account(self, branch_code: str, account_num: str) -> Account:
         """
-        The Vault Door. Grants access to an active, fully hydrated Account entity.
+        Internal gateway to fetch an active, fully hydrated Account entity.
 
-        This method acts as the primary gateway for sensitive operations. It enforces
-        a strict Zero Trust model: even if the AccessToken's cryptographic signature
-        is mathematically valid, it actively verifies that the underlying account
-        still exists in the persistence layer at the exact moment of the operation.
-        This prevents Time-of-Check to Time-of-Use (TOCTOU) race conditions where an
-        account might be deleted in another terminal while a session remains active.
+        This is an internal Trust Zone method. It acts as a neutral data provider,
+        translating infrastructure misses into domain-specific misses. It relies
+        on the calling public method to determine the security implications of
+        a missing account.
 
         Args:
-            access_token (AccessToken): A valid, securely signed vault token.
+            branch_code (str): The branch code.
+            account_num (str): The account number.
 
         Returns:
             Account: The fully hydrated Account domain entity.
 
         Raises:
-            BankSecurityError: If the AccessToken is invalid, tampered with,
-                invalidated by a recent password change, or if the account was
-                deleted/not found during the active session (TOCTOU mitigation).
+            AccountNotFoundError: If the account does not exist in the repository.
         """
-        self._validate_token(access_token)
+
         try:
-            return self._repository.get_account(
-                access_token.branch_code, access_token.account_num
-            )
+            return self._repository.get_account(branch_code, account_num)
         except DataNotFoundError as e:
-            raise BankSecurityError(
-                "Security breach or race condition: Account no longer exists"
+            raise AccountNotFoundError(
+                "The requested account does not exist in our records"
             ) from e
 
     def register_account(
@@ -576,6 +571,31 @@ class Bank:
 
         return self._repository.account_exists(branch_code, account_num)
 
+    def get_client_cards(self, cpf: str) -> list[AccountCard]:
+        """
+        Safely retrieves the list of registered account cards for a client.
+
+        Acts as a secure data gateway, extracting Data Transfer Objects (DTOs)
+        from the rich Client entity. This prevents Domain leakage, ensuring the
+        Presentation layer can display available cards without gaining direct
+        access to the Client object's internal state or business methods.
+
+        Args:
+            cpf (str): The 11-digit string representing the client's CPF.
+
+        Returns:
+            list[AccountCard]: A list of lightweight, immutable card representations.
+
+        Raises:
+            TypeError: If the provided CPF is not a string.
+            ClientNotFoundError: If the provided CPF is not registered in the system.
+        """
+        verify.verify_instance(cpf, str)
+
+        client = self._get_client(cpf)
+
+        return client.cards
+
     def authenticate(self, cpf: str, branch_code: str, account_num: str) -> AuthToken:
         """
         Authenticates a client's claim to an account and issues a stateless token.
@@ -613,6 +633,28 @@ class Bank:
         return self._generate_auth_token(
             cpf=client.cpf, branch_code=branch_code, account_num=account_num
         )
+
+    def get_remaining_login_attempts(self, auth_token: AuthToken) -> int:
+        """
+        Calculates the remaining vault access attempts for an authenticated client.
+
+        Acts as a safe query method for the presentation layer to synchronize its
+        UI state with the strict security records in the database, preventing
+        unexpected account freezes without proper user warnings.
+
+        Args:
+            auth_token (AuthToken): A valid, securely signed authentication token.
+
+        Returns:
+            int: The number of remaining attempts before the account is frozen.
+        """
+        self._validate_token(auth_token)
+        acc_credentials = self._get_account_credentials(
+            auth_token.branch_code, auth_token.account_num
+        )
+        failed_attempts = acc_credentials["failed_login_attempts"]
+
+        return self.MAX_LOGIN_ATTEMPTS - failed_attempts
 
     def authorize_vault_access(
         self, auth_token: AuthToken, password: str
@@ -694,53 +736,6 @@ class Bank:
                 "The intended operation could not be persisted due to an internal error"
             ) from e
 
-    def get_remaining_login_attempts(self, auth_token: AuthToken) -> int:
-        """
-        Calculates the remaining vault access attempts for an authenticated client.
-
-        Acts as a safe query method for the presentation layer to synchronize its
-        UI state with the strict security records in the database, preventing
-        unexpected account freezes without proper user warnings.
-
-        Args:
-            auth_token (AuthToken): A valid, securely signed authentication token.
-
-        Returns:
-            int: The number of remaining attempts before the account is frozen.
-        """
-        self._validate_token(auth_token)
-        acc_credentials = self._get_account_credentials(
-            auth_token.branch_code, auth_token.account_num
-        )
-        failed_attempts = acc_credentials["failed_login_attempts"]
-
-        return self.MAX_LOGIN_ATTEMPTS - failed_attempts
-
-    def get_client_cards(self, cpf: str) -> list[AccountCard]:
-        """
-        Safely retrieves the list of registered account cards for a client.
-
-        Acts as a secure data gateway, extracting Data Transfer Objects (DTOs)
-        from the rich Client entity. This prevents Domain leakage, ensuring the
-        Presentation layer can display available cards without gaining direct
-        access to the Client object's internal state or business methods.
-
-        Args:
-            cpf (str): The 11-digit string representing the client's CPF.
-
-        Returns:
-            list[AccountCard]: A list of lightweight, immutable card representations.
-
-        Raises:
-            TypeError: If the provided CPF is not a string.
-            ClientNotFoundError: If the provided CPF is not registered in the system.
-        """
-        verify.verify_instance(cpf, str)
-
-        client = self._get_client(cpf)
-
-        return client.cards
-
     def get_account_info(self, access_token: AccessToken) -> AccountInfoDTO:
         """
         Safely retrieves a read-only snapshot of an authenticated account's current state.
@@ -757,7 +752,8 @@ class Bank:
 
         Returns:
             AccountInfoDTO: An immutable snapshot containing the client's name, account
-                branch, number, balance, and overdraft information (if applicable).
+                branch, number, raw account type (e.g., 'CheckingAccount'), balance,
+                and overdraft information (if applicable).
 
         Raises:
             ExpiredTokenError: If the token's TTL has passed.
@@ -767,7 +763,8 @@ class Bank:
         self._validate_token(access_token)
 
         client = self._get_client(access_token.cpf)
-        account = self._get_account(access_token)
+        account = self._get_account(access_token.branch_code, access_token.account_num)
+        account_type = type(account).__name__
 
         overdraft_limit = None
         available_overdraft = None
@@ -780,6 +777,7 @@ class Bank:
             client_name=client.name,
             branch_code=account.branch_code,
             account_num=account.account_num,
+            account_type=account_type,
             balance=account.balance,
             overdraft_limit=overdraft_limit,
             available_overdraft=available_overdraft,
@@ -792,15 +790,12 @@ class Bank:
         amount: Decimal,
     ) -> None:
         """
-        Executes a secure, public-facing deposit operation directly to the repository.
+        Executes a secure, public-facing deposit operation.
 
-        This method bypasses both 'Vault' access (no password required) and
-        session validation (no AuthToken required) to allow fast deposits from
-        third parties. It strictly ensures the target account exists and is active
-        before executing the transaction.
-
-        It delegates mathematical validation to the Account domain entity before
-        persisting the transaction via the injected Repository.
+        This method bypasses 'Vault' access (no password required) to allow fast
+        deposits from third parties. However, it strictly respects Domain boundaries
+        by hydrating the target Account entity and delegating all mathematical and
+        state-mutating logic to it.
 
         Args:
             branch_code (str): The branch code of the target account.
@@ -808,15 +803,21 @@ class Bank:
             amount (Decimal): The positive amount to be deposited.
 
         Raises:
+            TypeError: If the arguments are not of the expected types.
             InvalidDepositError: If the deposit amount violates business rules.
             BlockedAccountError: If the target account is currently frozen.
             AccountNotFoundError: If the provided branch or account number does not exist.
             BankUnavailableError: If the deposit could not be persisted due to an internal error.
         """
-        Account.validate_account_deposit(amount)
+        verify.verify_instance(branch_code, str)
+        verify.verify_instance(branch_code, str)
+        verify.verify_instance(amount, Decimal)
 
+        Account.validate_account_deposit(amount)
         acc_credentials = self._get_account_credentials(branch_code, account_num)
         self._ensure_account_is_active(acc_credentials)
+        account = self._get_account(branch_code, account_num)
+        transaction = account.deposit(amount)
         try:
             self._repository.save_transaction(branch_code, account_num, amount)
         except DataNotFoundError as e:
@@ -859,7 +860,9 @@ class Bank:
         self._validate_token(access_token)
         verify.verify_instance(amount, Decimal)
 
-        account_obj = self._get_account(access_token)
+        account_obj = self._get_account(
+            access_token.branch_code, access_token.account_num
+        )
         account_obj.withdraw(amount, use_overdraft=use_overdraft)
         try:
             self._repository.save_transaction(
@@ -1032,7 +1035,9 @@ class Bank:
                 "Account closure can only be performed at the home branch"
             )
 
-        account_obj = self._get_account(access_token)
+        account_obj = self._get_account(
+            access_token.branch_code, access_token.account_num
+        )
 
         if account_obj.balance != 0:
             raise NotEmptyAccountError("Account has a non-zero balance")

@@ -21,6 +21,7 @@ from shared.exceptions import (
     InvalidWithdrawError,
     OverdraftRequiredError,
 )
+from shared.types import TransactionType
 
 
 class Account(ABC):
@@ -119,17 +120,21 @@ class Account(ABC):
         return self._balance
 
     @abstractmethod
-    def withdraw(self, amount: Decimal, use_overdraft: bool = False) -> None:
+    def withdraw(self, amount: Decimal, use_overdraft: bool = False) -> TransactionType:
         """
         Abstract method for withdrawing an amount from the account.
 
         Concrete implementations handle specific withdrawal logic, such as
-        checking available limits or minimum balances.
+        checking available limits or minimum balances, and returning the
+        appropriate business event type.
 
         Args:
             amount (Decimal): The amount to withdraw.
             use_overdraft (bool, optional): Explicit authorization to dip into
                 credit limits, if applicable to the account type. Defaults to False.
+
+        Returns:
+            TransactionType: A Value Object representing the semantic nature of the withdrawal.
         """
         raise NotImplementedError()
 
@@ -310,7 +315,7 @@ class Account(ABC):
         )
         return instance
 
-    def deposit(self, value: Decimal) -> None:
+    def deposit(self, value: Decimal) -> TransactionType:
         """
         Performs a standard deposit operation.
 
@@ -321,11 +326,16 @@ class Account(ABC):
         Args:
             value (Decimal): The amount to deposit.
 
+        Returns:
+            TransactionType: A Value Object indicating the operation was a standard deposit.
+
         Raises:
-            InvalidDepositError: If the value is not a Decimal or is less than 0.5.
+            InvalidDepositError: If the value is not a Decimal or is less than 2.00.
         """
         Account.validate_account_deposit(value)
         self._balance += value
+
+        return TransactionType.DEPOSIT
 
 
 class SavingsAccount(Account):
@@ -336,7 +346,7 @@ class SavingsAccount(Account):
     It does not support overdraft or credit limits.
     """
 
-    def withdraw(self, amount: Decimal, use_overdraft: bool = False) -> None:
+    def withdraw(self, amount: Decimal, use_overdraft: bool = False) -> TransactionType:
         """
         Withdraws a given amount from the account balance.
 
@@ -347,6 +357,9 @@ class SavingsAccount(Account):
             amount (Decimal): The amount to withdraw.
             use_overdraft (bool, optional): Must remain False for Savings Accounts.
 
+        Returns:
+            TransactionType: A Value Object indicating a standard withdrawal event.
+
         Raises:
             RuntimeError: If explicit overdraft usage is requested (use_overdraft=True).
             InvalidWithdrawError: If the withdrawal amount is invalid or exceeds the current balance.
@@ -356,6 +369,7 @@ class SavingsAccount(Account):
 
         Account._validate_account_withdraw(val=amount, available_val=self._balance)
         self._balance -= amount
+        return TransactionType.WITHDRAWAL
 
 
 class CheckingAccount(Account):
@@ -420,7 +434,7 @@ class CheckingAccount(Account):
 
         return instance
 
-    def deposit(self, value: Decimal) -> None:
+    def deposit(self, value: Decimal) -> TransactionType:
         """
         Deposits an amount and adjusts the used overdraft.
 
@@ -431,6 +445,9 @@ class CheckingAccount(Account):
         Args:
             value (Decimal): The amount to deposit.
 
+        Returns:
+            TransactionType: A Value Object indicating the operation was a standard deposit.
+
         Raises:
             InvalidDepositError: If the deposit amount is invalid (propagated from base).
         """
@@ -440,18 +457,24 @@ class CheckingAccount(Account):
         self._used_overdraft = (
             abs(self._balance) if self._balance < 0 else Decimal("0.00")
         )
+        return TransactionType.DEPOSIT
 
-    def withdraw(self, amount: Decimal, use_overdraft: bool = False) -> None:
+    def withdraw(self, amount: Decimal, use_overdraft: bool = False) -> TransactionType:
         """
         Withdraws an amount, utilizing the overdraft limit if authorized and necessary.
 
         The total available funds are calculated as `balance + OVERDRAFT_LIMIT`.
-        If the withdrawal drives the balance below zero, `_used_overdraft` is updated.
+        If the withdrawal drives the balance below zero, `_used_overdraft` is updated
+        and the semantic type of the event changes to reflect the limit usage.
 
         Args:
             amount (Decimal): The amount to withdraw.
             use_overdraft (bool, optional): Explicit authorization to dip into the
                 overdraft limit if the requested amount exceeds the standard balance. Defaults to False.
+
+        Returns:
+            TransactionType: A Value Object indicating either a standard withdrawal
+                             (WITHDRAWAL) or a credit limit usage event (OVERDRAFT_WITHDRAWAL).
 
         Raises:
             OverdraftRequiredError: If the requested amount exceeds the current balance
@@ -472,3 +495,6 @@ class CheckingAccount(Account):
         # Update used overdraft if we enter or remain in overdraft
         if self._balance < 0:
             self._used_overdraft = abs(self._balance)
+            return TransactionType.OVERDRAFT_WITHDRAWAL
+
+        return TransactionType.WITHDRAWAL

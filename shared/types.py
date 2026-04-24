@@ -10,7 +10,20 @@ eliminating the use of magic numbers in the user interface menus.
 from enum import IntEnum, StrEnum
 
 
-class MainMenuType(IntEnum):
+class MenuType(IntEnum):
+    """
+    Base enumeration for all UI navigation menus.
+
+    Acts as a polymorphic marker class, allowing functions in the Presentation
+    and Controller layers to strictly type hint against any valid navigation
+    menu (e.g., accepting MainMenuType or TransactionMenuType interchangeably)
+    while rejecting arbitrary integers or unrelated enums.
+    """
+
+    pass
+
+
+class MainMenuType(MenuType):
     """
     Enumeration representing the root navigation menu of the banking system.
 
@@ -26,7 +39,7 @@ class MainMenuType(IntEnum):
     ONBOARDING = 2
 
 
-class OperationMenuType(IntEnum):
+class OperationMenuType(MenuType):
     """
     Enumeration representing the internal operations hub (Layer 2 navigation).
 
@@ -42,9 +55,9 @@ class OperationMenuType(IntEnum):
     MANAGEMENT = 2
 
 
-class TransactionType(IntEnum):
+class TransactionMenuType(MenuType):
     """
-    Enumeration representing the supported types of financial transactions.
+    Enumeration representing the UI menu choices for financial transactions.
 
     Attributes:
         DEPOSIT (1): Represents a money deposit operation.
@@ -57,12 +70,12 @@ class TransactionType(IntEnum):
     STATEMENT = 3
 
 
-class ManagementType(IntEnum):
+class ManagementMenuType(MenuType):
     """
     Enumeration representing the account administration and security operations.
 
-    Unlike 'TransactionType', which handles monetary flow, this enum controls
-    the lifecycle and access parameters of an existing account.
+    Unlike 'TransactionMenuType', which handles monetary flow routing, this
+    enum controls the lifecycle and access parameters of an existing account.
 
     Attributes:
         PASSWORD (1): Triggers the secure workflow to change the account password.
@@ -74,6 +87,21 @@ class ManagementType(IntEnum):
     PASSWORD = 1
     UNFREEZE = 2
     CLOSE = 3
+
+
+class TransactionType(StrEnum):
+    """
+    Value Object representing the semantic business event of a financial operation.
+
+    Unlike 'TransactionMenuType' (which routes UI logic), this enumeration acts
+    as the official ledger entry type, ensuring the database records the exact
+    nature of the movement (e.g., distinguishing a standard withdrawal from
+    an overdraft usage).
+    """
+
+    DEPOSIT = "DEPOSIT"
+    WITHDRAWAL = "WITHDRAWAL"
+    OVERDRAFT_WITHDRAWAL = "OVERDRAFT_WITHDRAWAL"
 
 
 class ErrorContext(StrEnum):
