@@ -72,12 +72,6 @@ new_account_config: ConfigMap = {
         "value_type": str,
         "error_msg": "Formato de conta inválido. O número da conta deve ser um inteiro positivo de 8 dígitos",
     },
-    "balance": {
-        "info": "Conta - Saldo inicial",
-        "prompt": "Informe um valor inicial para o saldo da conta: ",
-        "value_type": Decimal,
-        "error_msg": "Valor inválido. O saldo deve ser um número real não negativo",
-    },
 }
 
 auth_config: ConfigMap = {

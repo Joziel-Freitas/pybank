@@ -22,9 +22,9 @@ CREATE TABLE accounts (
 
 CREATE TABLE transactions (
     id INT PRIMARY KEY AUTO_INCREMENT NOT NULL,
-    transaction_type VARCHAR(20) NOT NULL,
-    initial_balance DECIMAL (10, 2) NOT NULL,
+    previous_balance DECIMAL (10, 2) NOT NULL,
     amount DECIMAL(10, 2) NOT NULL,
+    transaction_type VARCHAR(20) NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     account_id INT NOT NULL,
     FOREIGN KEY (account_id) REFERENCES accounts(id)

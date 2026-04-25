@@ -47,13 +47,11 @@ class NewAccountDTO:
         account_type (int): An integer flag mapping to the account type (e.g., 1 or 2).
         branch_code (str): The validated 4-digit branch code.
         account_num (str): The validated 8-digit account number.
-        balance (Decimal): The initial financial deposit (must be >= 0).
     """
 
     account_type: int
     branch_code: str
     account_num: str
-    balance: Decimal
 
 
 @dataclass(frozen=True)

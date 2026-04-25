@@ -341,7 +341,8 @@ class Bank:
 
         acc_type = type_mapper[account_dto.account_type]
         account_obj = acc_type(
-            account_dto.branch_code, account_dto.account_num, account_dto.balance
+            account_dto.branch_code,
+            account_dto.account_num,
         )
 
         return account_obj
@@ -817,9 +818,10 @@ class Bank:
         acc_credentials = self._get_account_credentials(branch_code, account_num)
         self._ensure_account_is_active(acc_credentials)
         account = self._get_account(branch_code, account_num)
-        transaction = account.deposit(amount)
+        transaction_type = account.deposit(amount)
+
         try:
-            self._repository.save_transaction(branch_code, account_num, amount)
+            self._repository.save_transaction(account, amount, transaction_type)
         except DataNotFoundError as e:
             raise AccountNotFoundError from e
         except RepositoryError as e:
@@ -857,8 +859,9 @@ class Bank:
             BankUnavailableError: If the transaction could not be persisted due to an
                 internal database error.
         """
-        self._validate_token(access_token)
         verify.verify_instance(amount, Decimal)
+        verify.verify_instance(use_overdraft, bool)
+        self._validate_token(access_token)
 
         account_obj = self._get_account(
             access_token.branch_code, access_token.account_num
@@ -897,9 +900,8 @@ class Bank:
             BankSecurityError: If the AccessToken is tampered with, invalid, or if the
                 account was deleted during the active session (race condition).
         """
-        self._validate_token(access_token)
-
         verify.verify_instance(start_date, datetime)
+        self._validate_token(access_token)
 
         try:
             transactions = self._repository.get_transactions(
@@ -971,9 +973,9 @@ class Bank:
             AuthenticationError: If the provided birth date does not match.
             BankUnavailableError: If the operation could not be persisted due to an internal error.
         """
-        self._validate_token(auth_token)
         Bank.validate_password(new_password)
         verify.verify_instance(birth_date, date)
+        self._validate_token(auth_token)
 
         try:
             acc_credentials = self._get_account_credentials(

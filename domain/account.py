@@ -45,26 +45,21 @@ class Account(ABC):
     _account_num: str
     _balance: Decimal
 
-    def __init__(
-        self, branch_code: str, account_num: str, balance: Decimal = Decimal("0.00")
-    ):
+    def __init__(self, branch_code: str, account_num: str):
         """
         Initializes a new Account instance with validated attributes.
 
         Args:
             branch_code (str): The code of the bank branch (validated for format).
             account_num (str): The unique account number (validated for format).
-            balance (Decimal, optional): The initial balance. Must be non-negative.
-                                         Defaults to Decimal("0.00").
 
         Raises:
             InvalidBranchError: If `branch_code` fails validation.
             InvalidAccountError: If `account_num` fails validation.
-            InvalidBalanceError: If `balance` fails validation (e.g., negative).
         """
         self._branch_code = Account.validate_branch_code(branch_code)
         self._account_num = Account.validate_account_number(account_num)
-        self._balance = Account.validate_account_initial_balance(balance)
+        self._balance = Decimal("0.00")
 
     def __repr__(self) -> str:
         """Returns the canonical string representation of the Account instance."""
@@ -187,30 +182,6 @@ class Account(ABC):
             raise InvalidAccountError(f"Invalid account number. Cause: {e}") from e
 
     @staticmethod
-    def validate_account_initial_balance(bal: Decimal) -> Decimal:
-        """
-        Validates the initial balance value.
-
-        The balance must be a non-negative Decimal.
-
-        Args:
-            bal (Decimal): The initial balance value.
-
-        Returns:
-            Decimal: The validated balance.
-
-        Raises:
-            TypeError: If the value is not a Decimal instance.
-            InvalidBalanceError: If the balance is negative.
-        """
-        verify.verify_instance(bal, Decimal)
-        try:
-            verify.verify_interval(bal, min_val=Decimal("0"))
-            return bal
-        except ValueError as e:
-            raise InvalidBalanceError(f"Invalid balance value. Cause: {e}") from e
-
-    @staticmethod
     def validate_account_deposit(val: Decimal) -> None:
         """
         Validates the deposit value.
@@ -306,13 +277,14 @@ class Account(ABC):
 
                 if target_class:
                     return target_class.from_dict(data)
+
             raise ValueError(f"Unknown account type: {obj_type}")
 
         instance = cls(
             branch_code=data["branch_code"],
             account_num=data["account_num"],
-            balance=Decimal(data["balance"]),
         )
+        instance._balance = data["balance"]
         return instance
 
     def deposit(self, value: Decimal) -> TransactionType:
@@ -345,6 +317,13 @@ class SavingsAccount(Account):
     A Savings Account only allows withdrawals up to the current balance.
     It does not support overdraft or credit limits.
     """
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SavingsAccount:
+        if data["balance"] < 0:
+            raise InvalidBalanceError("SavingsAccount do not allow negative balance")
+
+        return cast(SavingsAccount, super().from_dict(data))
 
     def withdraw(self, amount: Decimal, use_overdraft: bool = False) -> TransactionType:
         """
@@ -383,15 +362,13 @@ class CheckingAccount(Account):
     OVERDRAFT_LIMIT: ClassVar[Decimal] = Decimal("3000.00")
     _used_overdraft: Decimal
 
-    def __init__(
-        self, branch_code: str, account_num: str, balance: Decimal = Decimal("0.00")
-    ):
+    def __init__(self, branch_code: str, account_num: str):
         """
         Initializes a CheckingAccount.
 
         Sets `_used_overdraft` to 0.0.
         """
-        super().__init__(branch_code, account_num, balance)
+        super().__init__(branch_code, account_num)
         self._used_overdraft = Decimal("0.00")
 
     @property

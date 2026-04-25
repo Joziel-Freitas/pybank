@@ -13,6 +13,7 @@ from decimal import Decimal
 from os import environ
 from typing import Any
 
+import verify
 from domain.account import Account
 from domain.person import Client
 from dotenv import load_dotenv
@@ -22,8 +23,7 @@ from shared.exceptions import (
     DuplicatedDataError,
     RepositoryError,
 )
-
-from .verify import verify_instance
+from shared.types import TransactionType
 
 load_dotenv()
 
@@ -81,25 +81,36 @@ class MySQLRepository:
             raise DuplicatedDataError("client") from e
 
     def _insert_transaction_record(
-        self, cursor, account_id: int, balance: Decimal, amount: Decimal
+        self,
+        cursor,
+        account_id: int,
+        previous_balance: Decimal,
+        amount: Decimal,
+        transaction_type: TransactionType,
     ) -> None:
         """
         Helper method to insert a transaction record for auditing purposes.
 
         Records the exact balance prior to the operation alongside the transaction
-        amount to ensure chronological consistency. Does NOT manage commits.
+        amount and its semantic business type to ensure chronological consistency.
+        Does NOT manage commits.
 
         Args:
             cursor: The active database cursor.
             account_id (int): The primary key of the account.
-            balance (Decimal): The account balance strictly BEFORE the transaction.
-            amount (Decimal): The transaction amount (positive for deposit, negative for withdraw).
+            previous_balance (Decimal): The account balance strictly BEFORE the transaction.
+            amount (Decimal): The transaction amount.
+            transaction_type (TransactionType): The semantic business event type.
         """
 
-        sql = """INSERT INTO transactions (account_id, initial_balance, amount)
-        VALUES (%s, %s, %s)"""
+        sql = """INSERT INTO transactions (account_id, previous_balance, amount, transaction_type)
+        VALUES (%s, %s, %s, %s)"""
 
-        cursor.execute(sql, (account_id, balance, amount))
+        transaction_type_str = transaction_type.value
+
+        cursor.execute(
+            sql, (account_id, previous_balance, amount, transaction_type_str)
+        )
 
     def _insert_account_record(
         self,
@@ -109,11 +120,10 @@ class MySQLRepository:
         password_hash: str,
     ) -> None:
         """
-        Internal helper to persist a new Account and its opening deposit.
+        Internal helper to persist a newly created Account.
 
-        If the account is opened with an initial balance greater than zero, it
-        automatically generates a corresponding transaction record with an
-        initial balance of 0.00 to satisfy auditing rules.
+        This method is solely responsible for inserting
+        the base account entity into the database.
 
         Args:
             cursor (cursors.DictCursor): The active database cursor.
@@ -151,11 +161,6 @@ class MySQLRepository:
         )
         try:
             cursor.execute(sql, values)
-            if acc_dict["balance"] > 0:
-                new_acc_id = cursor.lastrowid
-                self._insert_transaction_record(
-                    cursor, new_acc_id, Decimal("0.00"), acc_dict["balance"]
-                )
         except err.IntegrityError as e:
             raise DuplicatedDataError("account") from e
 
@@ -205,9 +210,9 @@ class MySQLRepository:
             DuplicatedDataError: If a unique constraint (CPF or Account Num) is violated.
             RepositoryError: If a generic database or connection error occurs.
         """
-        verify_instance(account, Account)
-        verify_instance(client_or_cpf, (Client, str))
-        verify_instance(password_hash, str)
+        verify.verify_instance(account, Account)
+        verify.verify_instance(client_or_cpf, (Client, str))
+        verify.verify_instance(password_hash, str)
 
         try:
             with self._connection.cursor() as cursor:
@@ -227,7 +232,7 @@ class MySQLRepository:
             raise RepositoryError(f"Object's register failed due to DB error: {e}")
 
     def save_transaction(
-        self, branch_code: str, account_num: str, amount: Decimal
+        self, account: Account, amount: Decimal, transaction_type: TransactionType
     ) -> None:
         """
         Executes an atomic transaction to update the account balance and
@@ -248,13 +253,20 @@ class MySQLRepository:
             DataNotFoundError: If the account does not exist in the database.
             RepositoryError: If a database error occurs during the operation, triggering a rollback.
         """
-        verify_instance(branch_code, str)
-        verify_instance(account_num, str)
-        verify_instance(amount, Decimal)
+        verify.verify_instance(account, Account)
+        verify.verify_instance(amount, Decimal)
+        verify.verify_instance(transaction_type, TransactionType)
 
         select_sql = "SELECT id, balance FROM accounts WHERE branch_code = %s AND account_num = %s"
+        update_sql = (
+            "UPDATE accounts SET balance = %s, used_overdraft = %s WHERE id = %s"
+        )
 
-        update_sql = "UPDATE accounts SET balance = balance + %s WHERE id = %s"
+        account_dict = account.to_dict()
+        branch_code = account_dict["branch_code"]
+        account_num = account_dict["account_num"]
+        balance = account_dict["balance"]
+        used_overdraft = account_dict.get("used_overdraft", None)
 
         try:
             with self._connection.cursor() as cursor:
@@ -271,10 +283,12 @@ class MySQLRepository:
                     raise DataNotFoundError("Account not found in the database")
 
                 account_id = result["id"]
-                balance = result["balance"]
+                previous_balance = result["balance"]
 
-                self._insert_transaction_record(cursor, account_id, balance, amount)
-                cursor.execute(update_sql, (amount, account_id))
+                self._insert_transaction_record(
+                    cursor, account_id, previous_balance, amount, transaction_type
+                )
+                cursor.execute(update_sql, (balance, used_overdraft, account_id))
                 self._connection.commit()
         except DataNotFoundError:
             self._connection.rollback()
@@ -299,7 +313,7 @@ class MySQLRepository:
         Returns:
             bool: True if the client is registered, False otherwise.
         """
-        verify_instance(cpf, str)
+        verify.verify_instance(cpf, str)
 
         sql = "SELECT 1 FROM clients WHERE cpf = %s LIMIT 1"
 
@@ -324,8 +338,8 @@ class MySQLRepository:
         Returns:
             bool: True if the account exists, False otherwise.
         """
-        verify_instance(branch_code, str)
-        verify_instance(account_num, str)
+        verify.verify_instance(branch_code, str)
+        verify.verify_instance(account_num, str)
         sql = (
             "SELECT 1 FROM accounts "
             "WHERE branch_code = %s AND account_num = %s "
@@ -358,7 +372,7 @@ class MySQLRepository:
             TypeError: If the provided CPF is not a string.
             DataNotFoundError: If no client matches the provided CPF.
         """
-        verify_instance(cpf, str)
+        verify.verify_instance(cpf, str)
 
         client_sql = "SELECT * FROM clients WHERE cpf = %s"
         account_sql = (
@@ -406,8 +420,8 @@ class MySQLRepository:
             TypeError: If the provided branch_code or account_num are not strings.
             DataNotFoundError: If the requested account does not exist in the database.
         """
-        verify_instance(branch_code, str)
-        verify_instance(account_num, str)
+        verify.verify_instance(branch_code, str)
+        verify.verify_instance(account_num, str)
 
         sql = (
             "SELECT is_active, password_hash, failed_login_attempts "
@@ -444,8 +458,8 @@ class MySQLRepository:
             TypeError: If the provided arguments are not strings.
             DataNotFoundError: If the account does not exist in the database.
         """
-        verify_instance(branch_code, str)
-        verify_instance(account_num, str)
+        verify.verify_instance(branch_code, str)
+        verify.verify_instance(account_num, str)
 
         acc_keys_mapper = {
             "branch_code": "branch_code",
@@ -506,15 +520,15 @@ class MySQLRepository:
             TypeError: If the provided arguments are not of the expected types.
             DataNotFoundError: If the requested account does not exist in the database.
         """
-        verify_instance(branch_code, str)
-        verify_instance(account_num, str)
-        verify_instance(start_date, datetime)
+        verify.verify_instance(branch_code, str)
+        verify.verify_instance(account_num, str)
+        verify.verify_instance(start_date, datetime)
 
         if not self.account_exists(branch_code, account_num):
             raise DataNotFoundError("Account not found in the database")
 
         sql = (
-            "SELECT t.initial_balance, t.amount, t.created_at "
+            "SELECT t.previous_balance, t.amount, t.created_at "
             "FROM transactions AS t "
             "JOIN accounts AS a "
             "ON t.account_id = a.id "
@@ -542,8 +556,8 @@ class MySQLRepository:
             TypeError: If the provided arguments are not strings.
             RepositoryError: If a database error occurs, triggering a transaction rollback.
         """
-        verify_instance(branch_code, str)
-        verify_instance(account_num, str)
+        verify.verify_instance(branch_code, str)
+        verify.verify_instance(account_num, str)
 
         sql = (
             "UPDATE accounts "
@@ -574,8 +588,8 @@ class MySQLRepository:
             TypeError: If the provided arguments are not strings.
             RepositoryError: If a database error occurs, triggering a transaction rollback.
         """
-        verify_instance(branch_code, str)
-        verify_instance(account_num, str)
+        verify.verify_instance(branch_code, str)
+        verify.verify_instance(account_num, str)
 
         sql = (
             "UPDATE accounts "
@@ -611,9 +625,9 @@ class MySQLRepository:
             TypeError: If the provided arguments have incorrect types.
             RepositoryError: If a database error occurs, triggering a transaction rollback.
         """
-        verify_instance(branch_code, str)
-        verify_instance(account_num, str)
-        verify_instance(is_active, bool)
+        verify.verify_instance(branch_code, str)
+        verify.verify_instance(account_num, str)
+        verify.verify_instance(is_active, bool)
 
         sql = (
             "UPDATE accounts "
@@ -650,7 +664,7 @@ class MySQLRepository:
         """
         parameters = (branch_code, account_num, new_password_hash)
         for p in parameters:
-            verify_instance(p, str)
+            verify.verify_instance(p, str)
 
         sql = (
             "UPDATE accounts "
@@ -690,11 +704,11 @@ class MySQLRepository:
             TypeError: If any of the provided arguments have incorrect types.
             RepositoryError: If a database error occurs, triggering a transaction rollback.
         """
-        verify_instance(is_active, bool)
+        verify.verify_instance(is_active, bool)
         str_parameters = (branch_code, account_num, new_password_hash)
 
         for p in str_parameters:
-            verify_instance(p, str)
+            verify.verify_instance(p, str)
 
         sql = (
             "UPDATE accounts "
