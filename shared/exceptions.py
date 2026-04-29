@@ -53,13 +53,6 @@ class ExpiredTokenError(SecurityError):
     """Raised when a token's Time-To-Live (TTL) has passed."""
 
 
-# --- Domain Layer Exceptions ---
-
-
-class DomainError(Exception):
-    """Base exception for all domain-specific business rule violations."""
-
-
 # --- Application Layer Exceptions ---
 
 
@@ -70,10 +63,6 @@ class ControllerError(Exception):
     """
 
 
-class ControllerRegisterError(ControllerError):
-    """Raised when an onboarding or entity creation process fails."""
-
-
 class ControllerCredentialsError(ControllerError):
     """Raised when authentication fails or access is denied during operational flow."""
 
@@ -82,8 +71,19 @@ class ControllerOperationError(ControllerError):
     """Raised when a high-level banking workflow (e.g., Transaction) is interrupted."""
 
 
+class ControllerRegisterError(ControllerError):
+    """Raised when an onboarding or entity creation process fails."""
+
+
 class UserAbortError(Exception):
     """Control flow exception raised when the user manually cancels an operation."""
+
+
+# --- Domain Layer Exceptions ---
+
+
+class DomainError(Exception):
+    """Base exception for all domain-specific business rule violations."""
 
 
 # --- Bank Domain Exceptions ---
@@ -93,48 +93,52 @@ class BankError(DomainError):
     """Base exception for errors related to the Bank service layer."""
 
 
-class BankNameError(BankError):
-    """Raised when the Bank's name is invalid."""
-
-
-class DuplicatedClientError(BankError):
-    """Raised when a Client is already registered in Bank."""
-
-
-class DuplicatedAccountError(BankError):
-    """Raised when an Account is already registered in the Bank."""
-
-
-class BankPasswordError(BankError):
-    """Raised when a Bank password validation fails."""
-
-
-class ClientNotFoundError(BankError):
-    """Raised when a client is not found in the Bank's registry."""
+class AccountAlreadyActiveError(BankError):
+    """Raised when trying to unfreeze an operational account."""
 
 
 class AccountNotFoundError(BankError):
     """Raised when an account is not found in the Bank's registry."""
 
 
+class BankAccessError(BankError):
+    """Raised when the access process fails."""
+
+
 class BankAuthenticationError(BankError):
     """Raised when the authentication process fails."""
 
 
-class NotEmptyAccountError(BankError):
-    """Raised when closing an account with a non-zero balance."""
+class BankNameError(BankError):
+    """Raised when the Bank's name is invalid."""
 
 
-class AccountAlreadyActiveError(BankError):
-    """Raised when trying to unfreeze an operational account."""
+class BankPasswordError(BankError):
+    """Raised when a Bank password validation fails."""
+
+
+class BankUnavailableError(BankError):
+    """Raised when an operation fails due to internal infrastructure issues."""
+
+
+class ClientNotFoundError(BankError):
+    """Raised when a client is not found in the Bank's registry."""
+
+
+class DuplicatedAccountError(BankError):
+    """Raised when an Account is already registered in the Bank."""
+
+
+class DuplicatedClientError(BankError):
+    """Raised when a Client is already registered in Bank."""
 
 
 class HomeBranchRestrictionError(BankError):
     """Raised when an operation is restricted to the account's home branch."""
 
 
-class BankUnavailableError(BankError):
-    """Raised when an operation fails due to internal infrastructure issues."""
+class NotEmptyAccountError(BankError):
+    """Raised when closing an account with a non-zero balance."""
 
 
 # --- Person Domain Exceptions ---
@@ -142,10 +146,6 @@ class BankUnavailableError(BankError):
 
 class PersonError(DomainError):
     """Base exception for errors related to the Person/Client entity."""
-
-
-class InvalidNameError(PersonError):
-    """Raised when a name violates formatting or length rules."""
 
 
 class InvalidBirthDateError(PersonError):
@@ -156,12 +156,16 @@ class InvalidCpfError(PersonError):
     """Raised when a CPF fails mathematical or length validation."""
 
 
-class PersonDuplicatedCardError(PersonError):
-    """Raised when adding a card already associated with the client."""
+class InvalidNameError(PersonError):
+    """Raised when a name violates formatting or length rules."""
 
 
 class PersonCardNotFoundError(PersonError):
     """Raised when accessing a card not found in the client's collection."""
+
+
+class PersonDuplicatedCardError(PersonError):
+    """Raised when adding a card already associated with the client."""
 
 
 # --- Account Domain Exceptions ---
@@ -175,16 +179,16 @@ class BlockedAccountError(AccountError):
     """Raised when an operation is attempted on a frozen/blocked account."""
 
 
-class InvalidBranchError(AccountError):
-    """Raised for an invalid branch code format."""
-
-
 class InvalidAccountError(AccountError):
     """Raised for an invalid account number format."""
 
 
 class InvalidBalanceError(AccountError):
     """Raised for invalid initial balances."""
+
+
+class InvalidBranchError(AccountError):
+    """Raised for an invalid branch code format."""
 
 
 class InvalidDepositError(AccountError):
@@ -204,29 +208,30 @@ class OverdraftRequiredError(AccountError):
 type ErrorMapType = dict[type[DomainError], str]
 
 DOMAIN_ERROR_MAP: ErrorMapType = {
+    AccountAlreadyActiveError: "acc_active",
+    AccountNotFoundError: "acc_not_found",
+    BankAccessError: "access",
+    BankAuthenticationError: "auth",
     BankNameError: "name",
     BankPasswordError: "password",
-    BankAuthenticationError: "auth",
-    DuplicatedClientError: "already_client",
+    BankUnavailableError: "unavailable",
+    BlockedAccountError: "acc_blocked",
     ClientNotFoundError: "not_client",
     DuplicatedAccountError: "acc_duplicated",
-    AccountNotFoundError: "acc_not_found",
-    BlockedAccountError: "acc_blocked",
-    AccountAlreadyActiveError: "acc_active",
-    NotEmptyAccountError: "non_zero_value",
+    DuplicatedClientError: "already_client",
     HomeBranchRestrictionError: "other_branch",
-    InvalidNameError: "name",
-    InvalidBirthDateError: "birth_date",
-    InvalidCpfError: "cpf",
-    PersonDuplicatedCardError: "duplicated_card",
-    PersonCardNotFoundError: "card_not_found",
-    InvalidBranchError: "branch_code",
     InvalidAccountError: "account_num",
     InvalidBalanceError: "balance",
+    InvalidBirthDateError: "birth_date",
+    InvalidBranchError: "branch_code",
+    InvalidCpfError: "cpf",
     InvalidDepositError: "value",
+    InvalidNameError: "name",
     InvalidWithdrawError: "value",
+    NotEmptyAccountError: "non_zero_value",
     OverdraftRequiredError: "use_limit",
-    BankUnavailableError: "unavailable",
+    PersonCardNotFoundError: "card_not_found",
+    PersonDuplicatedCardError: "duplicated_card",
 }
 
 

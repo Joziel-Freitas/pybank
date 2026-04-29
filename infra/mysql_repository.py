@@ -147,6 +147,24 @@ class MySQLRepository:
 
     @contextmanager
     def transaction(self):
+        """
+        Macro Context Manager for orchestrating Units of Work (Unit of Work Pattern).
+
+        Allows the Domain layer (e.g., Bank) to group multiple repository operations
+        into a single, atomic ACID transaction. It explicitly manages the commit/rollback
+        lifecycle and sets an internal state flag to authorize subordinate methods
+        (like `save_transaction`) to execute.
+
+        Yields:
+            None: Yields control back to the caller's context block.
+
+        Raises:
+            DomainError: Propagates domain business rules exceptions, triggering a rollback.
+            DataNotFoundError: Propagates expected missing data errors, triggering a rollback.
+            DuplicatedDataError: Propagates unique constraint violations, triggering a rollback.
+            RepositoryError: Catches any unexpected database infrastructure errors,
+                triggers a rollback to prevent zombie locks, and re-raises as a safe ACL exception.
+        """
         try:
             self._in_transaction = True
             yield None
@@ -357,23 +375,24 @@ class MySQLRepository:
         self, account: Account, amount: Decimal, transaction_type: TransactionType
     ) -> None:
         """
-        Executes an atomic transaction to update the account balance and
+        Executes an atomic sub-operation to update the account balance and
         record the financial transaction in history.
 
-        This method guarantees data consistency by performing both the balance
-        update and the transaction insertion within the same database transaction.
+        This method is a subordinate operation and strictly requires an active
+        Unit of Work. It MUST be executed within a `with self.transaction():` block.
         It explicitly fetches the current balance prior to the update to satisfy
         the snapshotting requirements of the transaction ledger.
 
         Args:
-            branch_code (str): The 4-digit string representing the branch.
-            account_num (str): The unique 8-digit string representing the account.
+            account (Account): The domain Account entity to be updated.
             amount (Decimal): The monetary amount (positive for deposits, negative for withdrawals).
+            transaction_type (TransactionType): The semantic business event type.
 
         Raises:
+            RuntimeError: If called outside an active `transaction()` block, enforcing the Unit of Work.
             TypeError: If the arguments are of incorrect types.
-            DataNotFoundError: If the account does not exist in the database.
-            RepositoryError: If a database error occurs during the operation, triggering a rollback.
+            DataNotFoundError: If the account to be updated does not exist in the database.
+            RepositoryError: If a database error occurs during the operation.
         """
         if not self._in_transaction:
             raise RuntimeError(
@@ -572,13 +591,16 @@ class MySQLRepository:
         Args:
             branch_code (str): The 4-digit string representing the branch.
             account_num (str): The unique 8-digit string representing the account.
+            for_update (bool): If True, applies a pessimistic lock (FOR UPDATE) to the row.
+                Defaults to False.
 
         Returns:
-            Account: A fully hydrated Account domain object (either CheckingAccount
-                or SavingsAccount).
+            Account: A fully hydrated Account domain object.
 
         Raises:
-            TypeError: If the provided arguments are not strings.
+            TypeError: If the provided arguments are not of expected types.
+            RuntimeError: If `for_update` is True but the method is called outside
+                an active `transaction()` block, preventing dangling database locks.
             DataNotFoundError: If the account does not exist in the database.
         """
         verify.verify_instance(branch_code, str)
@@ -747,19 +769,28 @@ class MySQLRepository:
         """
         Updates the active status (frozen/unfrozen) of a specific account.
 
+        This method is a subordinate operation and strictly requires an active
+        Unit of Work. It MUST be executed within a `with self.transaction():` block.
+
         Args:
             account (Account): The domain Account entity containing the target branch,
                 account number, and the new active status.
 
         Raises:
+            RuntimeError: If called outside an active `transaction()` block, enforcing the Unit of Work.
             TypeError: If the provided argument is not an Account instance.
             DataNotFoundError: If the account does not exist in the database,
                 detected by a zero rowcount during the update.
-            RepositoryError: If a database error occurs, triggering a transaction rollback.
+            RepositoryError: If a database error occurs during the operation.
         """
+        if not self._in_transaction:
+            raise RuntimeError(
+                "Invalid method call. Use the context manager MySQLRepository.transaction()"
+            )
+
         verify.verify_instance(account, Account)
 
-        with RepositoryContext(self._connection) as cursor:
+        with self._connection.cursor() as cursor:
             self._update_account_status(cursor, account)
 
             if cursor.rowcount == 0:
@@ -812,20 +843,28 @@ class MySQLRepository:
         """
         Executes an atomic update of the account's security credentials.
 
+        This method is a subordinate operation and strictly requires an active
+        Unit of Work. It MUST be executed within a `with self.transaction():` block.
         Updates the password hash, modifies the active status (frozen/unfrozen),
-        and resets the failed login attempts counter back to zero in a single
-        database query to guarantee atomicity and performance.
+        and resets the failed login attempts counter back to zero.
 
         Args:
-            branch_code (str): The 4-digit string representing the branch.
-            account_num (str): The target 8-digit account number.
+            account (Account): The domain Account entity containing the target branch,
+                account number, and the new active status.
             new_password_hash (str): The new securely hashed password.
-            is_active (bool): The new status of the account (True for active, False for frozen).
 
         Raises:
+            RuntimeError: If called outside an active `transaction()` block, enforcing the Unit of Work.
             TypeError: If any of the provided arguments have incorrect types.
-            RepositoryError: If a database error occurs, triggering a transaction rollback.
+            DataNotFoundError: If the account does not exist in the database,
+                detected by a zero rowcount during the update.
+            RepositoryError: If a database error occurs during the operation.
         """
+        if not self._in_transaction:
+            raise RuntimeError(
+                "Invalid method call. Use the context manager MySQLRepository.transaction()"
+            )
+
         verify.verify_instance(account, Account)
         verify.verify_instance(new_password_hash, str)
 
@@ -835,7 +874,7 @@ class MySQLRepository:
             "WHERE branch_code = %s AND account_num = %s"
         )
 
-        with RepositoryContext(self._connection) as cursor:
+        with self._connection.cursor() as cursor:
             cursor.execute(
                 sql, (new_password_hash, account.branch_code, account.account_num)
             )
@@ -850,18 +889,25 @@ class MySQLRepository:
         """
         Permanently removes an account and its transaction history from the database.
 
-        Executes an ACID-compliant transaction to ensure referential integrity.
-        It first deletes all associated records in the 'transactions' table
-        before deleting the parent record in the 'accounts' table.
+        This method is a subordinate operation and strictly requires an active
+        Unit of Work. It MUST be executed within a `with self.transaction():` block.
+        Executes an ACID-compliant sub-transaction to ensure referential integrity by
+        first deleting all associated records in the 'transactions' table before
+        deleting the parent record in the 'accounts' table.
 
         Args:
             account (Account): The fully hydrated domain Account entity to be deleted.
 
         Raises:
+            RuntimeError: If called outside an active `transaction()` block, enforcing the Unit of Work.
             DataNotFoundError: If the account to be deleted does not exist.
-            RepositoryError: If a database error occurs during the deletion process,
-                triggering a full transaction rollback to prevent orphaned records.
+            RepositoryError: If a database error occurs during the deletion process.
         """
+        if not self._in_transaction:
+            raise RuntimeError(
+                "Invalid method call. Use the context manager MySQLRepository.transaction()"
+            )
+
         branch_code = account.branch_code
         account_num = account.account_num
 
@@ -874,12 +920,11 @@ class MySQLRepository:
 
         del_acc_sql = "DELETE FROM accounts WHERE branch_code = %s AND account_num = %s"
 
-        with RepositoryContext(self._connection) as cursor:
+        with self._connection.cursor() as cursor:
             cursor.execute(del_trans_sql, (branch_code, account_num))
+            cursor.execute(del_acc_sql, (branch_code, account_num))
 
             if cursor.rowcount == 0:
                 raise DataNotFoundError(
                     f"Data not found in the database for {branch_code=}, {account_num=}"
                 )
-
-            cursor.execute(del_acc_sql, (branch_code, account_num))

@@ -32,11 +32,11 @@ from shared.dtos import AccountInfoDTO, NewAccountDTO, NewClientDTO
 from shared.exceptions import (
     AccountAlreadyActiveError,
     AccountNotFoundError,
+    BankAccessError,
     BankAuthenticationError,
     BankPasswordError,
     BankSecurityError,
     BankUnavailableError,
-    BlockedAccountError,
     ClientNotFoundError,
     DataNotFoundError,
     DuplicatedAccountError,
@@ -182,7 +182,7 @@ class Bank:
             pwd_hash_str (str): The bcrypt hash retrieved from the database.
 
         Raises:
-            AuthenticationError: If the password does not match the hash.
+            BankAuthenticationError: If the password does not match the hash.
         """
         pdw_bytes = pwd_str.encode("utf-8")
         hashed_pwd_bytes = pwd_hash_str.encode("utf-8")
@@ -420,24 +420,9 @@ class Bank:
 
         return acc_credentials
 
-    def _ensure_account_is_active(self, credentials_dict: dict[str, Any]) -> None:
-        """
-        Verifies the active status of an account from its credentials payload.
-
-        Acts as a centralized security checkpoint to prevent unauthorized
-        transactions on frozen or blocked accounts.
-
-        Args:
-            credentials_dict (dict[str, Any]): The validated credentials dictionary
-                retrieved from the repository.
-
-        Raises:
-            BlockedAccountError: If the 'is_active' flag is False.
-        """
-        if not credentials_dict["is_active"]:
-            raise BlockedAccountError("Account is unavailable for transactions.")
-
-    def _get_account(self, branch_code: str, account_num: str) -> Account:
+    def _get_account(
+        self, branch_code: str, account_num: str, for_update: bool = False
+    ) -> Account:
         """
         Internal gateway to fetch an active, fully hydrated Account entity.
 
@@ -449,16 +434,21 @@ class Bank:
         Args:
             branch_code (str): The branch code.
             account_num (str): The account number.
+            for_update (bool): If True, signals the persistence mechanism to grant
+                exclusive access to this entity for state mutation, preventing
+                race conditions during an active Unit of Work. Defaults to False.
 
         Returns:
             Account: The fully hydrated Account domain entity.
 
         Raises:
             AccountNotFoundError: If the account does not exist in the repository.
+            RuntimeError: If `for_update` is True but the method is called outside
+                an active repository transaction.
         """
 
         try:
-            return self._repository.get_account(branch_code, account_num)
+            return self._repository.get_account(branch_code, account_num, for_update)
         except DataNotFoundError as e:
             raise AccountNotFoundError(
                 "The requested account does not exist in our records"
@@ -661,34 +651,41 @@ class Bank:
         self, auth_token: AuthToken, password: str
     ) -> AccessToken:
         """
-        The primary security checkpoint and brute-force mitigation mechanism.
+         The primary security checkpoint and brute-force mitigation mechanism.
 
-        This method upgrades 'Lobby' access (AuthToken) to 'Vault' access
-        (AccessToken). Operating under a Zero Trust model, it verifies the
-        token's integrity and prevents Time-of-Check to Time-of-Use (TOCTOU)
-        race conditions by guaranteeing the account still exists.
+         This method upgrades 'Lobby' access (AuthToken) to 'Vault' access
+         (AccessToken). Operating under a Zero Trust model, it verifies the
+         token's integrity and prevents Time-of-Check to Time-of-Use (TOCTOU)
+         race conditions by guaranteeing the account still exists in the database.
 
-        It validates the account's active status and verifies the provided
-        password against the stored Bcrypt hash. To mitigate brute-force
-        attacks, it tracks failed login attempts, automatically freezing the
-        account if the maximum threshold is reached.
+         It verifies the provided password against the stored Bcrypt hash to grant
+         system access. To mitigate brute-force attacks, it tracks failed login
+         attempts, automatically freezing the account and actively denying access
+         if the maximum threshold is reached.
 
-        Args:
-            auth_token (AuthToken): A valid, securely signed authentication token.
-            password (str): The raw 6-digit password provided by the user.
+         Note:
+             This method allows Vault access generation even for pre-frozen accounts,
+             enabling clients to authenticate and view read-only data (e.g., statements).
+             Strict operational blocks (withdrawals/deposits) are enforced internally
+             by the Account entity.
 
-        Returns:
-            AccessToken: The cryptographic key granting full vault access.
+         Args:
+             auth_token (AuthToken): A valid, securely signed authentication token.
+             password (str): The raw 6-digit password provided by the user.
+
+         Returns:
+             AccessToken: The cryptographic key granting full vault access.
 
         Raises:
-            BankPasswordError: If the provided password format is invalid.
-            BankSecurityError: If the AuthToken is tampered with, or if the account
-                no longer exists (TOCTOU mitigation).
-            BlockedAccountError: If the account is already frozen, or if it reaches
-                the maximum allowed failed login attempts during this check.
-            BankAuthenticationError: If the provided password does not match the hash.
-            BankUnavailableError: If the validation or security updates could not
-                be persisted due to an internal database error.
+             ExpiredTokenError: If the provided AuthToken has passed its Time-To-Live (TTL).
+             BankPasswordError: If the provided password format is invalid.
+             BankSecurityError: If the AuthToken is tampered with, or if the account
+                 no longer exists (TOCTOU mitigation).
+             BankAccessError: If the account reaches the maximum allowed
+                 failed login attempts during this authentication check.
+             BankAuthenticationError: If the provided password does not match the hash.
+             BankUnavailableError: If the validation or security updates could not
+                 be persisted due to an internal database error.
         """
         Bank.validate_password(password)
         self._validate_token(auth_token)
@@ -701,12 +698,11 @@ class Bank:
             raise BankSecurityError(
                 "Security breach or race condition: Account no longer exists"
             ) from e
-        self._ensure_account_is_active(acc_credentials)
 
         branch_code = auth_token.branch_code
         account_num = auth_token.account_num
-        hashed_pwd: str = acc_credentials["password_hash"]
-        failed_logins: int = acc_credentials["failed_login_attempts"]
+        hashed_pwd = acc_credentials["password_hash"]
+        failed_logins = acc_credentials["failed_login_attempts"]
 
         try:
             self._check_password(password, hashed_pwd)
@@ -717,21 +713,31 @@ class Bank:
             return self._generate_access_token(
                 auth_token=auth_token, password_hash=hashed_pwd
             )
-        except BankAuthenticationError as e:
+        except BankAuthenticationError:
             try:
                 self._repository.register_failed_login(branch_code, account_num)
+
                 if (failed_logins + 1) >= Bank.MAX_LOGIN_ATTEMPTS:
-                    self._repository.update_account_status(
-                        branch_code, account_num, False
-                    )
-                    raise BlockedAccountError(
+                    account = self._get_account(branch_code, account_num)
+                    account.freeze()
+                    self._repository.update_account_status(account)
+
+                    raise BankAccessError(
                         "The account was frozen due to 3 consecutive failed login attempts"
-                    ) from e
-                raise e
+                    )
+                raise
+            except (AccountNotFoundError, DataNotFoundError) as e:
+                raise BankSecurityError(
+                    "Security breach or race condition: Account no longer exists"
+                ) from e
             except RepositoryError as e:
                 raise BankUnavailableError(
                     "The intended operation could not be persisted due to an internal error"
                 ) from e
+        except DataNotFoundError as e:
+            raise BankSecurityError(
+                "Security breach or race condition: Account no longer exists"
+            ) from e
         except RepositoryError as e:
             raise BankUnavailableError(
                 "The intended operation could not be persisted due to an internal error"
@@ -754,7 +760,7 @@ class Bank:
         Returns:
             AccountInfoDTO: An immutable snapshot containing the client's name, account
                 branch, number, raw account type (e.g., 'CheckingAccount'), balance,
-                and overdraft information (if applicable).
+                active status, and overdraft information (if applicable).
 
         Raises:
             ExpiredTokenError: If the token's TTL has passed.
@@ -780,6 +786,7 @@ class Bank:
             account_num=account.account_num,
             account_type=account_type,
             balance=account.balance,
+            is_active=account.is_active,
             overdraft_limit=overdraft_limit,
             available_overdraft=available_overdraft,
         )
@@ -813,21 +820,20 @@ class Bank:
         verify.verify_instance(branch_code, str)
         verify.verify_instance(branch_code, str)
         verify.verify_instance(amount, Decimal)
-
         Account.validate_account_deposit(amount)
-        acc_credentials = self._get_account_credentials(branch_code, account_num)
-        self._ensure_account_is_active(acc_credentials)
-        account = self._get_account(branch_code, account_num)
-        transaction_type = account.deposit(amount)
 
-        try:
-            self._repository.save_transaction(account, amount, transaction_type)
-        except DataNotFoundError as e:
-            raise AccountNotFoundError from e
-        except RepositoryError as e:
-            raise BankUnavailableError(
-                "The intended operation could not be persisted due to an internal error"
-            ) from e
+        with self._repository.transaction():
+            account = self._get_account(branch_code, account_num)
+            transaction_type = account.deposit(amount)
+
+            try:
+                self._repository.save_transaction(account, amount, transaction_type)
+            except DataNotFoundError as e:
+                raise AccountNotFoundError from e
+            except RepositoryError as e:
+                raise BankUnavailableError(
+                    "The intended operation could not be persisted due to an internal error"
+                ) from e
 
     def execute_withdraw(
         self, access_token: AccessToken, amount: Decimal, use_overdraft: bool = False
@@ -859,6 +865,7 @@ class Bank:
             BankUnavailableError: If the transaction could not be persisted due to an
                 internal database error.
         """
+
         verify.verify_instance(amount, Decimal)
         verify.verify_instance(use_overdraft, bool)
         self._validate_token(access_token)

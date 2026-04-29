@@ -70,6 +70,7 @@ class AccountInfoDTO:
         account_num (str): The 8-digit unique account number.
         account_type (str): The classification of the account (e.g., Checking, Savings).
         balance (Decimal): The current available financial balance.
+        is_active (bool): The operational status of the account (True for active, False for frozen/blocked).
         overdraft_limit (Decimal | None): The maximum overdraft limit. None if the account
             does not support overdraft (e.g., SavingsAccount).
         available_overdraft (Decimal | None): The currently available overdraft amount.
@@ -81,5 +82,6 @@ class AccountInfoDTO:
     account_num: str
     account_type: str
     balance: Decimal
+    is_active: bool
     overdraft_limit: Decimal | None
     available_overdraft: Decimal | None
