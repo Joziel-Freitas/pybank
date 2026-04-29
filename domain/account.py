@@ -14,6 +14,7 @@ from typing import Any, ClassVar, cast
 
 from infra import verify
 from shared.exceptions import (
+    BlockedAccountError,
     InvalidAccountError,
     InvalidBalanceError,
     InvalidBranchError,
@@ -44,6 +45,7 @@ class Account(ABC):
     _branch_code: str
     _account_num: str
     _balance: Decimal
+    _is_active: bool
 
     def __init__(self, branch_code: str, account_num: str):
         """
@@ -60,6 +62,7 @@ class Account(ABC):
         self._branch_code = Account.validate_branch_code(branch_code)
         self._account_num = Account.validate_account_number(account_num)
         self._balance = Decimal("0.00")
+        self._is_active = True
 
     def __repr__(self) -> str:
         """Returns the canonical string representation of the Account instance."""
@@ -113,6 +116,11 @@ class Account(ABC):
     def balance(self) -> Decimal:
         """Returns the current balance of the account."""
         return self._balance
+
+    @property
+    def is_active(self) -> bool:
+        """Returns the current status of the account"""
+        return self._is_active
 
     @abstractmethod
     def withdraw(self, amount: Decimal, use_overdraft: bool = False) -> TransactionType:
@@ -241,6 +249,7 @@ class Account(ABC):
             "branch_code": self._branch_code,
             "account_num": self._account_num,
             "balance": self._balance,
+            "is_active": self._is_active,
             "type": type(self).__name__,
         }
 
@@ -285,12 +294,33 @@ class Account(ABC):
             account_num=data["account_num"],
         )
         instance._balance = data["balance"]
+        instance._is_active = data["is_active"]
         return instance
+
+    def freeze(self) -> None:
+        """
+        Transitions the account into a frozen (inactive) state.
+
+        A frozen account operates in a strict Read-Only mode. It preserves
+        its current balance and history but outright rejects any state-mutating
+        financial operations (like deposits or withdrawals) until explicitly unfrozen.
+        """
+        self._is_active = False
+
+    def unfreeze(self) -> None:
+        """
+        Restores the account to an active, operational state.
+
+        Lifts the Read-Only restriction, allowing standard balance-mutating
+        financial operations to resume.
+        """
+        self._is_active = True
 
     def deposit(self, value: Decimal) -> TransactionType:
         """
         Performs a standard deposit operation.
 
+        Enforces the strict domain rule that an account must be active to receive funds.
         Validates the input value and increments the account balance.
         This implementation serves as the default behavior for SavingsAccount
         and is extended by CheckingAccount.
@@ -302,8 +332,14 @@ class Account(ABC):
             TransactionType: A Value Object indicating the operation was a standard deposit.
 
         Raises:
+            BlockedAccountError: If the account is currently frozen.
             InvalidDepositError: If the value is not a Decimal or is less than 2.00.
         """
+        if not self._is_active:
+            raise BlockedAccountError(
+                "Impossible to perform deposit operation on a frozen account"
+            )
+
         Account.validate_account_deposit(value)
         self._balance += value
 
@@ -329,6 +365,7 @@ class SavingsAccount(Account):
         """
         Withdraws a given amount from the account balance.
 
+        Enforces the strict domain rule that an account must be active to dispense funds.
         For a SavingsAccount, the available value is strictly the current positive balance.
         Overdraft limits are not supported.
 
@@ -340,9 +377,15 @@ class SavingsAccount(Account):
             TransactionType: A Value Object indicating a standard withdrawal event.
 
         Raises:
+            BlockedAccountError: If the account is currently frozen.
             RuntimeError: If explicit overdraft usage is requested (use_overdraft=True).
             InvalidWithdrawError: If the withdrawal amount is invalid or exceeds the current balance.
         """
+        if not self._is_active:
+            raise BlockedAccountError(
+                "Impossible to perform withdraw operation on a frozen account"
+            )
+
         if use_overdraft is True:
             raise RuntimeError("Savings Accounts do not possess an overdraft limit.")
 
@@ -427,6 +470,7 @@ class CheckingAccount(Account):
 
         Raises:
             InvalidDepositError: If the deposit amount is invalid (propagated from base).
+            BlockedAccountError: If the account is currently frozen (propagated from base).
         """
         super().deposit(value)
 
@@ -440,6 +484,7 @@ class CheckingAccount(Account):
         """
         Withdraws an amount, utilizing the overdraft limit if authorized and necessary.
 
+        Enforces the strict domain rule that an account must be active to dispense funds.
         The total available funds are calculated as `balance + OVERDRAFT_LIMIT`.
         If the withdrawal drives the balance below zero, `_used_overdraft` is updated
         and the semantic type of the event changes to reflect the limit usage.
@@ -454,11 +499,17 @@ class CheckingAccount(Account):
                              (WITHDRAWAL) or a credit limit usage event (OVERDRAFT_WITHDRAWAL).
 
         Raises:
+            BlockedAccountError: If the account is currently frozen.
             OverdraftRequiredError: If the requested amount exceeds the current balance
                 but `use_overdraft` was not explicitly set to True.
             InvalidWithdrawError: If the withdrawal amount is invalid or exceeds the total
                 available funds (balance + overdraft limit).
         """
+        if not self._is_active:
+            raise BlockedAccountError(
+                "Impossible to perform withdraw operation on a frozen account"
+            )
+
         available = CheckingAccount.OVERDRAFT_LIMIT + self._balance
         Account._validate_account_withdraw(val=amount, available_val=available)
 

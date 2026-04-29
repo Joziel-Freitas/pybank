@@ -8,6 +8,7 @@ ACID compliance for financial operations, and maps raw database rows back
 into pure Python domain objects.
 """
 
+from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal
 from os import environ
@@ -18,14 +19,97 @@ from domain.account import Account
 from domain.person import Client
 from dotenv import load_dotenv
 from pymysql import connect, cursors, err
+from pymysql.connections import Connection
 from shared.exceptions import (
     DataNotFoundError,
+    DomainError,
     DuplicatedDataError,
     RepositoryError,
 )
 from shared.types import TransactionType
 
 load_dotenv()
+
+
+class RepositoryContext:
+    """
+    Internal Context Manager for managing database transactions, cursor lifecycles,
+    and acting as an Anti-Corruption Layer (ACL) boundary.
+
+    Provides a robust, DRY mechanism for executing atomic database operations.
+    It automatically provisions a cursor upon entering the context and guarantees
+    transaction finalization upon exit (commit on success, rollback on failure).
+
+    Crucially, this context manager intercepts low-level database exceptions and
+    translates them into domain-safe `RepositoryError`s. This ensures that the
+    infrastructure details do not leak into the Application or Domain layers.
+    It also strictly releases cursor resources via a `finally` block to prevent
+    memory leaks.
+
+    Attributes:
+        _connection (Connection[cursors.DictCursor]): The active PyMySQL database connection.
+        _cursor (cursors.DictCursor | None): The database dictionary cursor active during the context.
+    """
+
+    _connection: Connection[cursors.DictCursor]
+    _cursor: cursors.Cursor | None
+
+    def __init__(self, connection: Connection[cursors.DictCursor]):
+        """
+        Initializes the context manager with the active database connection.
+
+        Args:
+            connection (Connection[cursors.DictCursor]): The PyMySQL connection
+                instance configured with a DictCursor.
+        """
+        self._connection = connection
+        self._cursor = None
+
+    def __enter__(self) -> cursors.DictCursor:
+        """
+        Enters the runtime context, instantiating and returning a new database cursor.
+
+        Returns:
+            cursors.DictCursor: A new dictionary cursor instance for executing SQL queries.
+        """
+        self._cursor = self._connection.cursor()
+        return self._cursor
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        """
+        Exits the runtime context, resolving the transaction, cleaning up resources,
+        and translating infrastructure exceptions.
+
+        If an exception occurs, a rollback is issued. If the exception is a low-level
+        database error, it is caught and re-raised as a `RepositoryError` to maintain
+        layer isolation. If execution is successful, a commit is issued.
+
+        Args:
+            exc_type: The exception type if an error occurred, None otherwise.
+            exc: The exception instance if an error occurred, None otherwise.
+            tb: The traceback if an error occurred, None otherwise.
+
+        Raises:
+            RepositoryError: If a non-domain database exception occurs during execution.
+
+        Returns:
+            bool: Always returns False to ensure exceptions propagate up the call stack.
+        """
+        try:
+            if exc_type:
+                self._connection.rollback()
+
+                if not isinstance(exc, RepositoryError):
+                    raise RepositoryError(
+                        f"Data persistence failed due DB error: {exc}"
+                    ) from exc
+            else:
+                self._connection.commit()
+        finally:
+            if self._cursor:
+                self._cursor.close()
+
+        return False
 
 
 class MySQLRepository:
@@ -41,6 +125,9 @@ class MySQLRepository:
             configured with a DictCursor.
     """
 
+    _connection: Connection[cursors.DictCursor]
+    _in_transaction: bool
+
     def __init__(self) -> None:
         """
         Initializes the repository and establishes the database connection.
@@ -55,6 +142,23 @@ class MySQLRepository:
             host=environ["DB_HOST"],
             cursorclass=cursors.DictCursor,
         )
+
+        self._in_transaction = False
+
+    @contextmanager
+    def transaction(self):
+        try:
+            self._in_transaction = True
+            yield None
+            self._connection.commit()
+        except (DomainError, DataNotFoundError, DuplicatedDataError):
+            self._connection.rollback()
+            raise
+        except Exception as e:
+            self._connection.rollback()
+            raise RepositoryError(f"Data persistence failed due DB error: {e}") from e
+        finally:
+            self._in_transaction = False
 
     def _insert_client_record(self, cursor: cursors.DictCursor, client: Client) -> int:
         """
@@ -80,6 +184,31 @@ class MySQLRepository:
         except err.IntegrityError as e:
             raise DuplicatedDataError("client") from e
 
+    def _get_client_id(self, cursor: cursors.DictCursor, cpf: str) -> int:
+        """
+        Internal helper to retrieve a client's primary key ID by their CPF.
+
+        Args:
+            cursor (cursors.DictCursor): The active database cursor.
+            cpf (str): The 11-digit string representing the client's CPF.
+
+        Returns:
+            int: The primary key ID of the client.
+
+        Raises:
+            DataNotFoundError: If the CPF is not found in the database,
+                carrying the 'client' context payload.
+        """
+        sql = "SELECT id FROM clients WHERE cpf = %s"
+
+        cursor.execute(sql, (cpf,))
+        result = cursor.fetchone()
+
+        if result is None:
+            raise DataNotFoundError("client")
+
+        return result["id"]
+
     def _insert_transaction_record(
         self,
         cursor,
@@ -102,7 +231,6 @@ class MySQLRepository:
             amount (Decimal): The transaction amount.
             transaction_type (TransactionType): The semantic business event type.
         """
-
         sql = """INSERT INTO transactions (account_id, previous_balance, amount, transaction_type)
         VALUES (%s, %s, %s, %s)"""
 
@@ -138,7 +266,8 @@ class MySQLRepository:
         acc_dict = account.to_dict()
 
         sql = (
-            "INSERT INTO accounts (branch_code, "
+            "INSERT INTO accounts ( "
+            "branch_code, "
             "account_num, "
             "account_type, "
             "balance, "
@@ -152,9 +281,9 @@ class MySQLRepository:
         values = (
             acc_dict["branch_code"],
             acc_dict["account_num"],
-            acc_dict["account_type"],
+            acc_dict["type"],
             acc_dict["balance"],
-            True,
+            acc_dict["is_active"],
             acc_dict.get("used_overdraft", None),
             password_hash,
             client_id,
@@ -164,30 +293,31 @@ class MySQLRepository:
         except err.IntegrityError as e:
             raise DuplicatedDataError("account") from e
 
-    def _get_client_id(self, cursor: cursors.DictCursor, cpf: str) -> int:
+    def _update_account_status(
+        self, cursor: cursors.DictCursor, account: Account
+    ) -> None:
         """
-        Internal helper to retrieve a client's primary key ID by their CPF.
+        Internal helper to execute the active status update for an account.
+
+        This method maps the domain entity's state to the SQL parameters
+        and executes the statement within the provided cursor's transaction scope.
+        It does not manage commits, rollbacks, or rowcount validations.
 
         Args:
             cursor (cursors.DictCursor): The active database cursor.
-            cpf (str): The 11-digit string representing the client's CPF.
-
-        Returns:
-            int: The primary key ID of the client.
-
-        Raises:
-            DataNotFoundError: If the CPF is not found in the database,
-                carrying the 'client' context payload.
+            account (Account): The domain Account entity containing the updated status.
         """
-        sql = "SELECT id FROM clients WHERE cpf = %s"
+        acc_dict = account.to_dict()
+        branch_code = acc_dict["branch_code"]
+        account_num = acc_dict["account_num"]
+        status = acc_dict["is_active"]
 
-        cursor.execute(sql, (cpf,))
-        result = cursor.fetchone()
+        sql = (
+            "UPDATE accounts SET is_active = %s "
+            "WHERE branch_code = %s AND account_num = %s"
+        )
 
-        if result is None:
-            raise DataNotFoundError("client")
-
-        return result["id"]
+        cursor.execute(sql, (status, branch_code, account_num))
 
     def register_account_bundle(
         self, account: Account, client_or_cpf: Client | str, password_hash: str
@@ -214,22 +344,14 @@ class MySQLRepository:
         verify.verify_instance(client_or_cpf, (Client, str))
         verify.verify_instance(password_hash, str)
 
-        try:
-            with self._connection.cursor() as cursor:
+        with RepositoryContext(self._connection) as cursor:
 
-                if isinstance(client_or_cpf, Client):
-                    client_id = self._insert_client_record(cursor, client_or_cpf)
-                else:
-                    client_id = self._get_client_id(cursor, client_or_cpf)
+            if isinstance(client_or_cpf, Client):
+                client_id = self._insert_client_record(cursor, client_or_cpf)
+            else:
+                client_id = self._get_client_id(cursor, client_or_cpf)
 
-                self._insert_account_record(cursor, account, client_id, password_hash)
-                self._connection.commit()
-        except (DuplicatedDataError, DataNotFoundError):
-            self._connection.rollback()
-            raise
-        except Exception as e:
-            self._connection.rollback()
-            raise RepositoryError(f"Object's register failed due to DB error: {e}")
+            self._insert_account_record(cursor, account, client_id, password_hash)
 
     def save_transaction(
         self, account: Account, amount: Decimal, transaction_type: TransactionType
@@ -253,11 +375,16 @@ class MySQLRepository:
             DataNotFoundError: If the account does not exist in the database.
             RepositoryError: If a database error occurs during the operation, triggering a rollback.
         """
+        if not self._in_transaction:
+            raise RuntimeError(
+                "Invalid method call. Use the context manager MySQLRepository.transaction()"
+            )
+
         verify.verify_instance(account, Account)
         verify.verify_instance(amount, Decimal)
         verify.verify_instance(transaction_type, TransactionType)
 
-        select_sql = "SELECT id, balance FROM accounts WHERE branch_code = %s AND account_num = %s"
+        select_sql = "SELECT id, balance FROM accounts WHERE branch_code = %s AND account_num = %s FOR UPDATE"
         update_sql = (
             "UPDATE accounts SET balance = %s, used_overdraft = %s WHERE id = %s"
         )
@@ -268,35 +395,27 @@ class MySQLRepository:
         balance = account_dict["balance"]
         used_overdraft = account_dict.get("used_overdraft", None)
 
-        try:
-            with self._connection.cursor() as cursor:
-                cursor.execute(
-                    select_sql,
-                    (
-                        branch_code,
-                        account_num,
-                    ),
+        with self._connection.cursor() as cursor:
+            cursor.execute(select_sql, (branch_code, account_num))
+            result = cursor.fetchone()
+
+            if not result:
+                raise DataNotFoundError(
+                    f"Data not found in the database for {branch_code=}, {account_num=}"
                 )
-                result = cursor.fetchone()
 
-                if not result:
-                    raise DataNotFoundError("Account not found in the database")
+            account_id = result["id"]
+            previous_balance = result["balance"]
 
-                account_id = result["id"]
-                previous_balance = result["balance"]
+            cursor.execute(update_sql, (balance, used_overdraft, account_id))
 
-                self._insert_transaction_record(
-                    cursor, account_id, previous_balance, amount, transaction_type
+            if cursor.rowcount == 0:
+                raise DataNotFoundError(
+                    f"Data not found in the database for {branch_code=}, {account_num=}"
                 )
-                cursor.execute(update_sql, (balance, used_overdraft, account_id))
-                self._connection.commit()
-        except DataNotFoundError:
-            self._connection.rollback()
-            raise
-        except Exception as e:
-            self._connection.rollback()
-            raise RepositoryError(
-                f"Failed to update account transactions due to DB error: {e}"
+
+            self._insert_transaction_record(
+                cursor, account_id, previous_balance, amount, transaction_type
             )
 
     def client_exists(self, cpf: str) -> bool:
@@ -384,7 +503,7 @@ class MySQLRepository:
             client_dict = cursor.fetchone()
 
             if not client_dict:
-                raise DataNotFoundError("Client not registered under this CPF")
+                raise DataNotFoundError(f"Data not found in the database for {cpf=}")
 
             client_id = client_dict.pop("id")
             cursor.execute(account_sql, (client_id,))
@@ -433,11 +552,15 @@ class MySQLRepository:
             result = cursor.fetchone()
 
             if not result:
-                raise DataNotFoundError("Account not found in the database")
+                raise DataNotFoundError(
+                    f"Data not found in the database for {branch_code=}, {account_num=}"
+                )
 
             return result
 
-    def get_account(self, branch_code: str, account_num: str) -> Account:
+    def get_account(
+        self, branch_code: str, account_num: str, for_update: bool = False
+    ) -> Account:
         """
         Retrieves an account from the database.
 
@@ -460,22 +583,33 @@ class MySQLRepository:
         """
         verify.verify_instance(branch_code, str)
         verify.verify_instance(account_num, str)
+        verify.verify_instance(for_update, bool)
+
+        if for_update and not self._in_transaction:
+            raise RuntimeError(
+                "Invalid method call. To update account, use the context manager MySQLRepository.transaction()"
+            )
+
+        lock_clause = "FOR UPDATE" if for_update else ""
 
         acc_keys_mapper = {
             "branch_code": "branch_code",
             "account_num": "account_num",
             "account_type": "type",
             "balance": "balance",
+            "is_active": "is_active",
             "used_overdraft": "used_overdraft",
         }
-        sql = "SELECT * FROM accounts WHERE branch_code = %s AND account_num = %s"
+        sql = f"SELECT * FROM accounts WHERE branch_code = %s AND account_num = %s {lock_clause}"
 
         with self._connection.cursor() as cursor:
             cursor.execute(sql, (branch_code, account_num))
             db_acc_dict = cursor.fetchone()
 
             if not db_acc_dict:
-                raise DataNotFoundError("Account not found in the database")
+                raise DataNotFoundError(
+                    f"Data not found in the database for {branch_code=}, {account_num=}"
+                )
 
             acc_dict: dict[str, Any] = {
                 acc_keys_mapper[k]: v
@@ -525,7 +659,9 @@ class MySQLRepository:
         verify.verify_instance(start_date, datetime)
 
         if not self.account_exists(branch_code, account_num):
-            raise DataNotFoundError("Account not found in the database")
+            raise DataNotFoundError(
+                f"Data not found in the database for {branch_code=}, {account_num=}"
+            )
 
         sql = (
             "SELECT t.previous_balance, t.amount, t.created_at "
@@ -554,6 +690,8 @@ class MySQLRepository:
 
         Raises:
             TypeError: If the provided arguments are not strings.
+            DataNotFoundError: If the account does not exist in the database,
+                detected by a zero rowcount during the update.
             RepositoryError: If a database error occurs, triggering a transaction rollback.
         """
         verify.verify_instance(branch_code, str)
@@ -565,14 +703,13 @@ class MySQLRepository:
             "WHERE branch_code = %s AND account_num = %s"
         )
 
-        try:
-            with self._connection.cursor() as cursor:
+        with RepositoryContext(self._connection) as cursor:
+            cursor.execute(sql, (branch_code, account_num))
 
-                cursor.execute(sql, (branch_code, account_num))
-                self._connection.commit()
-        except Exception as e:
-            self._connection.rollback()
-            raise RepositoryError(f"Failed to update data due to DB error: {e}")
+            if cursor.rowcount == 0:
+                raise DataNotFoundError(
+                    f"Data not found in the database for {branch_code=}, {account_num=}"
+                )
 
     def reset_login_attempts(self, branch_code: str, account_num: str) -> None:
         """
@@ -586,6 +723,7 @@ class MySQLRepository:
 
         Raises:
             TypeError: If the provided arguments are not strings.
+            DataNotFoundError: If the account does not exist in the database.
             RepositoryError: If a database error occurs, triggering a transaction rollback.
         """
         verify.verify_instance(branch_code, str)
@@ -596,53 +734,38 @@ class MySQLRepository:
             "SET failed_login_attempts = 0 "
             "WHERE branch_code = %s AND account_num = %s"
         )
-        try:
-            with self._connection.cursor() as cursor:
-                cursor.execute(
-                    sql,
-                    (
-                        branch_code,
-                        account_num,
-                    ),
-                )
-                self._connection.commit()
-        except Exception as e:
-            self._connection.rollback()
-            raise RepositoryError(f"Failed to update data due to DB error: {e}")
 
-    def update_account_status(
-        self, branch_code: str, account_num: str, is_active: bool
-    ) -> None:
+        with RepositoryContext(self._connection) as cursor:
+            cursor.execute(sql, (branch_code, account_num))
+
+            if cursor.rowcount == 0:
+                raise DataNotFoundError(
+                    f"Data not found in the database for {branch_code=}, {account_num=}"
+                )
+
+    def update_account_status(self, account: Account) -> None:
         """
         Updates the active status (frozen/unfrozen) of a specific account.
 
         Args:
-            branch_code (str): The 4-digit string representing the branch.
-            account_num (str): The target 8-digit account number.
-            is_active (bool): True to unfreeze the account, False to freeze it.
+            account (Account): The domain Account entity containing the target branch,
+                account number, and the new active status.
 
         Raises:
-            TypeError: If the provided arguments have incorrect types.
+            TypeError: If the provided argument is not an Account instance.
+            DataNotFoundError: If the account does not exist in the database,
+                detected by a zero rowcount during the update.
             RepositoryError: If a database error occurs, triggering a transaction rollback.
         """
-        verify.verify_instance(branch_code, str)
-        verify.verify_instance(account_num, str)
-        verify.verify_instance(is_active, bool)
+        verify.verify_instance(account, Account)
 
-        sql = (
-            "UPDATE accounts "
-            "SET is_active = %s "
-            "WHERE branch_code = %s AND account_num = %s"
-        )
+        with RepositoryContext(self._connection) as cursor:
+            self._update_account_status(cursor, account)
 
-        try:
-            with self._connection.cursor() as cursor:
-
-                cursor.execute(sql, (is_active, branch_code, account_num))
-                self._connection.commit()
-        except Exception as e:
-            self._connection.rollback()
-            raise RepositoryError(f"Failed to update data due to DB error: {e}")
+            if cursor.rowcount == 0:
+                raise DataNotFoundError(
+                    f"Data not found in the database for {account.branch_code=}, {account.account_num=}"
+                )
 
     def update_password(
         self, branch_code: str, account_num: str, new_password_hash: str
@@ -660,11 +783,12 @@ class MySQLRepository:
 
         Raises:
             TypeError: If the arguments are not strings.
+            DataNotFoundError: If the account does not exist in the database.
             RepositoryError: If a database error occurs, triggering a transaction rollback.
         """
-        parameters = (branch_code, account_num, new_password_hash)
-        for p in parameters:
-            verify.verify_instance(p, str)
+        verify.verify_instance(branch_code, str)
+        verify.verify_instance(account_num, str)
+        verify.verify_instance(new_password_hash, str)
 
         sql = (
             "UPDATE accounts "
@@ -672,20 +796,18 @@ class MySQLRepository:
             "WHERE branch_code = %s AND account_num = %s"
         )
 
-        try:
-            with self._connection.cursor() as cursor:
-                cursor.execute(sql, (new_password_hash, branch_code, account_num))
-                self._connection.commit()
-        except Exception as e:
-            self._connection.rollback()
-            raise RepositoryError(f"Failed to update data due to DB error: {e}")
+        with RepositoryContext(self._connection) as cursor:
+            cursor.execute(sql, (new_password_hash, branch_code, account_num))
+
+            if cursor.rowcount == 0:
+                raise DataNotFoundError(
+                    f"Data not found in the database for {branch_code=}, {account_num=}"
+                )
 
     def update_security_credentials(
         self,
-        branch_code: str,
-        account_num: str,
+        account: Account,
         new_password_hash: str,
-        is_active: bool,
     ) -> None:
         """
         Executes an atomic update of the account's security credentials.
@@ -704,29 +826,25 @@ class MySQLRepository:
             TypeError: If any of the provided arguments have incorrect types.
             RepositoryError: If a database error occurs, triggering a transaction rollback.
         """
-        verify.verify_instance(is_active, bool)
-        str_parameters = (branch_code, account_num, new_password_hash)
-
-        for p in str_parameters:
-            verify.verify_instance(p, str)
+        verify.verify_instance(account, Account)
+        verify.verify_instance(new_password_hash, str)
 
         sql = (
             "UPDATE accounts "
-            "SET password_hash = %s, is_active = %s, failed_login_attempts = 0 "
+            "SET password_hash = %s, failed_login_attempts = 0 "
             "WHERE branch_code = %s AND account_num = %s"
         )
 
-        try:
-            with self._connection.cursor() as cursor:
-                cursor.execute(
-                    sql, (new_password_hash, is_active, branch_code, account_num)
-                )
-                self._connection.commit()
-        except Exception as e:
-            self._connection.rollback()
-            raise RepositoryError(
-                f"Failed to update account credentials due to DB error: {e}"
+        with RepositoryContext(self._connection) as cursor:
+            cursor.execute(
+                sql, (new_password_hash, account.branch_code, account.account_num)
             )
+            if cursor.rowcount == 0:
+                raise DataNotFoundError(
+                    f"Data not found in the database for {account.branch_code=}, {account.account_num=}"
+                )
+
+            self._update_account_status(cursor, account)
 
     def delete_account(self, account: Account) -> None:
         """
@@ -740,6 +858,7 @@ class MySQLRepository:
             account (Account): The fully hydrated domain Account entity to be deleted.
 
         Raises:
+            DataNotFoundError: If the account to be deleted does not exist.
             RepositoryError: If a database error occurs during the deletion process,
                 triggering a full transaction rollback to prevent orphaned records.
         """
@@ -755,11 +874,12 @@ class MySQLRepository:
 
         del_acc_sql = "DELETE FROM accounts WHERE branch_code = %s AND account_num = %s"
 
-        try:
-            with self._connection.cursor() as cursor:
-                cursor.execute(del_trans_sql, (branch_code, account_num))
-                cursor.execute(del_acc_sql, (branch_code, account_num))
-                self._connection.commit()
-        except Exception as e:
-            self._connection.rollback()
-            raise RepositoryError(f"Database error during account deletion: {e}")
+        with RepositoryContext(self._connection) as cursor:
+            cursor.execute(del_trans_sql, (branch_code, account_num))
+
+            if cursor.rowcount == 0:
+                raise DataNotFoundError(
+                    f"Data not found in the database for {branch_code=}, {account_num=}"
+                )
+
+            cursor.execute(del_acc_sql, (branch_code, account_num))
