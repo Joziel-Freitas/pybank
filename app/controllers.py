@@ -7,26 +7,26 @@ from typing import Any, Callable, ClassVar, Generic, TypeVar, cast
 
 from domain.account import Account
 from domain.bank import Bank
-from domain.person import Client, Person
+from domain.person import AccountHolder, Person
 from infra import config, io_utils, ui_messages, verify, views
 from infra.io_utils import CallbackReturn, InputType
 from settings import ADMIN_EXIT_CODE
 from shared import exceptions, validators
 from shared.credentials import AccessToken, AccountCard, AuthToken
-from shared.dtos import NewAccountDTO, NewClientDTO
+from shared.dtos import NewAccountDTO, NewAccountHolderDTO
 from shared.exceptions import (
     AccountAlreadyActiveError,
+    AccountHolderNotFoundError,
     BankAuthenticationError,
     BankError,
     BankPasswordError,
     BankUnavailableError,
     BlockedAccountError,
-    ClientNotFoundError,
     ControllerCredentialsError,
     ControllerOperationError,
     DomainError,
     DuplicatedAccountError,
-    DuplicatedClientError,
+    DuplicatedAccountHolderError,
     HomeBranchRestrictionError,
     InvalidBirthDateError,
     InvalidDepositError,
@@ -45,7 +45,7 @@ from shared.types import (
 from shared.validators import ValidatorCallback
 
 CreatableT = TypeVar("CreatableT", bound=Person | Account)
-ClientDataT = TypeVar("ClientDataT", bound=Client | str)
+ClientDataT = TypeVar("ClientDataT", bound=AccountHolder | str)
 T = TypeVar("T", bound=Bank | Person | Account)
 R = TypeVar("R")
 
@@ -229,9 +229,6 @@ class OnboardingController(BaseController[Bank, None], SharedPromptsMixin):
         "account_num": validators.boolean_validator_dec(
             Account.validate_account_number
         ),
-        "balance": validators.boolean_validator_dec(
-            Account.validate_account_initial_balance
-        ),
         "password": validators.boolean_validator_dec(Bank.validate_password),
     }
 
@@ -259,14 +256,27 @@ class OnboardingController(BaseController[Bank, None], SharedPromptsMixin):
         self._new_account_config = config.new_account_config
         self._ui_message_map = ui_messages.SYSTEM_MESSAGES
 
-    def _handle_client_data(self, cpf: str) -> NewClientDTO | str:
-        is_client = self._bank_instance.check_client_exists(cpf)
+    def _handle_account_holder_data(self, cpf: str) -> NewAccountHolderDTO | str:
+        """
+        Handles the account holder data gathering workflow.
 
-        if is_client:
-            self._handle_info_ui("client", "not_new")
+        Checks if the CPF is already registered. If so, returns the CPF.
+        Otherwise, prompts the user for the remaining registration fields.
+
+        Args:
+            cpf (str): The validated CPF string.
+
+        Returns:
+            NewAccountHolderDTO | str: The DTO containing the new account holder's data,
+                or the CPF string if the account holder already exists.
+        """
+        is_holder = self._bank_instance.check_account_holder_exists(cpf)
+
+        if is_holder:
+            self._handle_info_ui("account_holder", "not_new")
             return cpf
 
-        self._handle_info_ui("client", "new")
+        self._handle_info_ui("account_holder", "new")
         obj_attr = io_utils.config_loop(
             self._identification_config,
             self._controller_validator_cb,
@@ -274,7 +284,7 @@ class OnboardingController(BaseController[Bank, None], SharedPromptsMixin):
         )
         obj_attr["cpf"] = cpf
         obj_attr = cast(dict[str, Any], obj_attr)
-        return NewClientDTO(**obj_attr)
+        return NewAccountHolderDTO(**obj_attr)
 
     def _handle_account_data(self) -> NewAccountDTO:
         obj_attr = io_utils.config_loop(
@@ -285,15 +295,24 @@ class OnboardingController(BaseController[Bank, None], SharedPromptsMixin):
         return NewAccountDTO(**obj_attr)
 
     def run_controller(self) -> None:
+        """
+        Executes the main onboarding workflow.
+
+        Orchestrates data gathering for the account holder and the account,
+        prompts for a secure password, and dispatches the registration to
+        the Bank aggregate. Handles domain and application exceptions by
+        rendering appropriate UI messages.
+        """
         try:
             cpf = self._prompt_cpf()
-            client_dto_or_cpf = self._handle_client_data(cpf)
+            holder_dto_or_cpf = self._handle_account_holder_data(cpf)
             account_dto = self._handle_account_data()
             password = self._prompt_new_password()
+
             self._handle_info_ui("new_password", "created")
             self._bank_instance.register_account(
                 account_dto=account_dto,
-                client_dto_or_cpf=client_dto_or_cpf,
+                holder_dto_or_cpf=holder_dto_or_cpf,
                 password=password,
             )
             self._handle_info_ui("new_account", "success")
@@ -303,7 +322,11 @@ class OnboardingController(BaseController[Bank, None], SharedPromptsMixin):
             self._handle_info_ui("menu", "cancel")
         except BankUnavailableError as e:
             self._handle_exception_ui("menu", e)
-        except (BankPasswordError, DuplicatedClientError, ClientNotFoundError):
+        except (
+            BankPasswordError,
+            DuplicatedAccountHolderError,
+            AccountHolderNotFoundError,
+        ):
             raise RuntimeError(
                 "Critical error in I/O logic in password input or internal method logic"
             )
@@ -430,7 +453,7 @@ class TransactionController(BaseController[Account, None]):
         amount = self._get_transaction_value()
         use_overdraft = False
 
-        for i in range(2):
+        for _ in range(2):
             try:
                 self._bank_instance.execute_withdraw(
                     self._active_access_token, amount, use_overdraft=use_overdraft
@@ -661,22 +684,22 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
                 after repeated attempts.
         """
         cpf = self._prompt_cpf()
-        client_cards = None
+        account_holder = None
         with_card = None
         card = None
 
         try:
-            client_cards = self._bank_instance.get_client_cards(cpf)
+            account_holder = self._bank_instance.get_account_holder_cards(cpf)
 
-            if client_cards:
+            if account_holder:
                 with_card = self._use_card_menu()
 
             if with_card:
-                card = self._select_card(client_cards)
+                card = self._select_card(account_holder)
 
             self._auth_token = self._authenticate_client(cpf, card)
             self._handle_info_ui("authentication", "success")
-        except (ClientNotFoundError, BankAuthenticationError) as e:
+        except (AccountHolderNotFoundError, BankAuthenticationError) as e:
             self._handle_exception_ui("authentication", e)
             raise ControllerCredentialsError
 

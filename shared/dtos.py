@@ -14,18 +14,18 @@ from decimal import Decimal
 
 
 @dataclass(frozen=True)
-class NewClientDTO:
+class NewAccountHolderDTO:
     """
-    Data Transfer Object containing the validated data required to register a new Client.
+    Data Transfer Object containing the validated data required to register a new account holder.
 
     Acts as a secure, immutable payload traveling from the OnboardingController
     to the Bank aggregate. It relies strictly on primitive types to ensure the
     Presentation layer does not need to import or construct Domain Entities.
 
     Attributes:
-        name (str): The validated full name of the client.
+        name (str): The validated full name of the account holder.
         cpf (str): The validated 11-digit CPF string.
-        birth_date (date): The validated birth date of the client.
+        birth_date (date): The validated birth date of the account holder.
     """
 
     name: str
@@ -65,7 +65,7 @@ class AccountInfoDTO:
     Design (DDD) boundaries.
 
     Attributes:
-        client_name (str): The full name of the client who owns the account.
+        holder_name (str): The full name of the account holder.
         branch_code (str): The 4-digit branch code where the account is registered.
         account_num (str): The 8-digit unique account number.
         account_type (str): The classification of the account (e.g., Checking, Savings).
@@ -77,7 +77,7 @@ class AccountInfoDTO:
             None if the account does not support overdraft.
     """
 
-    client_name: str
+    holder_name: str
     branch_code: str
     account_num: str
     account_type: str

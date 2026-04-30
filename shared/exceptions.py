@@ -15,10 +15,44 @@ Includes a mapping utility to translate Domain failures into UI-friendly
 configuration keys for contextual messaging.
 """
 
+
+class SystemBaseException(Exception):
+    """
+    Root exception for all custom errors in the PyBank system.
+
+    Extends the native Python Exception class by introducing an optional
+    `argument` attribute. This allows the system to attach the specific
+    object or data payload that caused the failure directly to the exception.
+    By doing so, higher-level layers (like the Domain) can inspect the
+    error's origin using object identity (`is`) or type checking (`isinstance`),
+    completely eliminating the need to parse raw error strings or use magic strings.
+    """
+
+    def __init__(
+        self, msg: object | None = None, argument: object | None = None
+    ) -> None:
+        """
+        Initializes the base system exception.
+
+        Args:
+            msg (object | None): The descriptive error message for logging and debugging.
+                If omitted, the exception is raised silently without a message payload.
+            argument (object | None): The specific object, entity, or primitive
+                that triggered the exception. Preserves the exact memory identity
+                for structural error handling in upper architectural layers.
+        """
+        if msg is not None:
+            super().__init__(msg)
+        else:
+            super().__init__()
+
+        self.argument = argument
+
+
 # --- Infrastructure Layer Exceptions ---
 
 
-class RepositoryError(Exception):
+class RepositoryError(SystemBaseException):
     """
     Base exception for all errors originating from the Infrastructure/Repository layer.
 
@@ -38,7 +72,7 @@ class DuplicatedDataError(RepositoryError):
 # --- Security Layer Exceptions ---
 
 
-class SecurityError(Exception):
+class SecurityError(SystemBaseException):
     """Base exception for all critical security violations in the system."""
 
 
@@ -56,7 +90,7 @@ class ExpiredTokenError(SecurityError):
 # --- Application Layer Exceptions ---
 
 
-class ControllerError(Exception):
+class ControllerError(SystemBaseException):
     """
     Base exception for orchestration and navigation failures within Controllers.
     Independent from DomainError to separate business logic from UI flow.
@@ -82,7 +116,7 @@ class UserAbortError(Exception):
 # --- Domain Layer Exceptions ---
 
 
-class DomainError(Exception):
+class DomainError(SystemBaseException):
     """Base exception for all domain-specific business rule violations."""
 
 
@@ -121,16 +155,16 @@ class BankUnavailableError(BankError):
     """Raised when an operation fails due to internal infrastructure issues."""
 
 
-class ClientNotFoundError(BankError):
-    """Raised when a client is not found in the Bank's registry."""
+class AccountHolderNotFoundError(BankError):
+    """Raised when an account holder is not found in the Bank's registry."""
 
 
 class DuplicatedAccountError(BankError):
     """Raised when an Account is already registered in the Bank."""
 
 
-class DuplicatedClientError(BankError):
-    """Raised when a Client is already registered in Bank."""
+class DuplicatedAccountHolderError(BankError):
+    """Raised when an AccountHolder is already registered in Bank."""
 
 
 class HomeBranchRestrictionError(BankError):
@@ -145,7 +179,15 @@ class NotEmptyAccountError(BankError):
 
 
 class PersonError(DomainError):
-    """Base exception for errors related to the Person/Client entity."""
+    """Base exception for errors related to the Person/AccountHolder entity."""
+
+
+class AccountHolderCardNotFoundError(PersonError):
+    """Raised when accessing a card not found in the account holder's collection."""
+
+
+class AccountHolderDuplicatedCardError(PersonError):
+    """Raised when adding a card already associated with the account holder."""
 
 
 class InvalidBirthDateError(PersonError):
@@ -158,14 +200,6 @@ class InvalidCpfError(PersonError):
 
 class InvalidNameError(PersonError):
     """Raised when a name violates formatting or length rules."""
-
-
-class PersonCardNotFoundError(PersonError):
-    """Raised when accessing a card not found in the client's collection."""
-
-
-class PersonDuplicatedCardError(PersonError):
-    """Raised when adding a card already associated with the client."""
 
 
 # --- Account Domain Exceptions ---
@@ -209,6 +243,8 @@ type ErrorMapType = dict[type[DomainError], str]
 
 DOMAIN_ERROR_MAP: ErrorMapType = {
     AccountAlreadyActiveError: "acc_active",
+    AccountHolderCardNotFoundError: "card_not_found",
+    AccountHolderDuplicatedCardError: "duplicated_card",
     AccountNotFoundError: "acc_not_found",
     BankAccessError: "access",
     BankAuthenticationError: "auth",
@@ -216,9 +252,9 @@ DOMAIN_ERROR_MAP: ErrorMapType = {
     BankPasswordError: "password",
     BankUnavailableError: "unavailable",
     BlockedAccountError: "acc_blocked",
-    ClientNotFoundError: "not_client",
+    AccountHolderNotFoundError: "not_account_holder",
     DuplicatedAccountError: "acc_duplicated",
-    DuplicatedClientError: "already_client",
+    DuplicatedAccountHolderError: "already_account_holder",
     HomeBranchRestrictionError: "other_branch",
     InvalidAccountError: "account_num",
     InvalidBalanceError: "balance",
@@ -230,8 +266,6 @@ DOMAIN_ERROR_MAP: ErrorMapType = {
     InvalidWithdrawError: "value",
     NotEmptyAccountError: "non_zero_value",
     OverdraftRequiredError: "use_limit",
-    PersonCardNotFoundError: "card_not_found",
-    PersonDuplicatedCardError: "duplicated_card",
 }
 
 

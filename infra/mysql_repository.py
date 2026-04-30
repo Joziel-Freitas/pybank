@@ -16,7 +16,7 @@ from typing import Any
 
 import verify
 from domain.account import Account
-from domain.person import Client
+from domain.person import AccountHolder
 from dotenv import load_dotenv
 from pymysql import connect, cursors, err
 from pymysql.connections import Connection
@@ -118,7 +118,7 @@ class MySQLRepository:
 
     Acts as the Anti-Corruption Layer (ACL) between the PyBank domain and the
     relational database. Manages ACID transactions, data serialization, and
-    state mutations for Clients, Accounts, and Transactions.
+    state mutations for AccountHolders, Accounts, and Transactions.
 
     Attributes:
         _connection (Connection): The active PyMySQL database connection instance
@@ -146,7 +146,7 @@ class MySQLRepository:
         self._in_transaction = False
 
     @contextmanager
-    def transaction(self):
+    def unit_of_work(self):
         """
         Macro Context Manager for orchestrating Units of Work (Unit of Work Pattern).
 
@@ -178,52 +178,54 @@ class MySQLRepository:
         finally:
             self._in_transaction = False
 
-    def _insert_client_record(self, cursor: cursors.DictCursor, client: Client) -> int:
+    def _insert_account_holder_record(
+        self, cursor: cursors.DictCursor, holder: AccountHolder
+    ) -> int:
         """
-        Internal helper to persist a new Client entity within an active transaction.
+        Internal helper to persist a new AccountHolder entity within an active transaction.
 
         Args:
             cursor (cursors.DictCursor): The active database cursor.
-            client (Client): The domain Client instance to be saved.
+            holder (AccountHolder): The domain AccountHolder instance to be saved.
 
         Returns:
-            int: The auto-generated database ID of the newly inserted client.
+            int: The auto-generated database ID of the newly inserted account holder.
 
         Raises:
-            DuplicatedDataError: If a client with the same CPF already exists,
-                carrying the 'client' context payload.
+            DuplicatedDataError: If an account holder with the same CPF already exists.
         """
-        query = "INSERT INTO clients (cpf, name, birth_date) VALUES (%(cpf)s, %(name)s, %(birth_date)s)"
-        data = client.to_dict()
+        query = "INSERT INTO account_holders (cpf, name, birth_date) VALUES (%(cpf)s, %(name)s, %(birth_date)s)"
+        data = holder.to_dict()
 
         try:
             cursor.execute(query, data)
             return cursor.lastrowid
         except err.IntegrityError as e:
-            raise DuplicatedDataError("client") from e
+            raise DuplicatedDataError(
+                f"Duplicated data in the database for {holder.cpf=}", holder
+            ) from e
 
-    def _get_client_id(self, cursor: cursors.DictCursor, cpf: str) -> int:
+    def _get_account_holder_id(self, cursor: cursors.DictCursor, cpf: str) -> int:
         """
-        Internal helper to retrieve a client's primary key ID by their CPF.
+        Internal helper to retrieve an account holder's primary key ID by their CPF.
 
         Args:
             cursor (cursors.DictCursor): The active database cursor.
-            cpf (str): The 11-digit string representing the client's CPF.
+            cpf (str): The 11-digit string representing the account holder's CPF.
 
         Returns:
-            int: The primary key ID of the client.
+            int: The primary key ID of the account holder.
 
         Raises:
-            DataNotFoundError: If the CPF is not found in the database,
-                carrying the 'client' context payload.
+            DataNotFoundError: If the CPF is not found in the database.
         """
-        sql = "SELECT id FROM clients WHERE cpf = %s"
+        sql = "SELECT id FROM account_holders WHERE cpf = %s"
 
         cursor.execute(sql, (cpf,))
         result = cursor.fetchone()
 
         if result is None:
-            raise DataNotFoundError("client")
+            raise DataNotFoundError(f"Data not found in the database for {cpf=}", cpf)
 
         return result["id"]
 
@@ -262,7 +264,7 @@ class MySQLRepository:
         self,
         cursor: cursors.DictCursor,
         account: Account,
-        client_id: int,
+        holder_id: int,
         password_hash: str,
     ) -> None:
         """
@@ -274,12 +276,11 @@ class MySQLRepository:
         Args:
             cursor (cursors.DictCursor): The active database cursor.
             account (Account): The domain Account instance to be saved.
-            client_id (int): The primary key ID of the parent client.
+            holder_id (int): The primary key ID of the parent account holder.
             password_hash (str): The hashed password for account access.
 
         Raises:
-            DuplicatedDataError: If an account with the same branch code and account_num already exists,
-                carrying the 'account' context payload.
+            DuplicatedDataError: If an account with the same branch code and account_num already exists.
         """
         acc_dict = account.to_dict()
 
@@ -292,7 +293,7 @@ class MySQLRepository:
             "is_active, "
             "used_overdraft, "
             "password_hash, "
-            "client_id) "
+            "account_holder_id) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
         )
 
@@ -304,12 +305,15 @@ class MySQLRepository:
             acc_dict["is_active"],
             acc_dict.get("used_overdraft", None),
             password_hash,
-            client_id,
+            holder_id,
         )
         try:
             cursor.execute(sql, values)
         except err.IntegrityError as e:
-            raise DuplicatedDataError("account") from e
+            raise DuplicatedDataError(
+                f"Duplicated data in the database for {account.branch_code}, {account.account_num}",
+                account,
+            ) from e
 
     def _update_account_status(
         self, cursor: cursors.DictCursor, account: Account
@@ -338,38 +342,38 @@ class MySQLRepository:
         cursor.execute(sql, (status, branch_code, account_num))
 
     def register_account_bundle(
-        self, account: Account, client_or_cpf: Client | str, password_hash: str
+        self, account: Account, holder_or_cpf: AccountHolder | str, password_hash: str
     ) -> None:
         """
-        Executes an ACID-compliant transaction to register an account and its client.
+        Executes an ACID-compliant transaction to register an account and its holder.
 
-        Acts as a Facade that unifies the creation of a new client (if provided as
-        a Domain object) or resolves an existing client (if provided as a CPF string),
+        Acts as a Facade that unifies the creation of a new account holder (if provided as
+        a Domain object) or resolves an existing holder (if provided as a CPF string),
         ensuring that the Account is safely linked and committed indivisibly.
 
         Args:
             account (Account): The new domain Account entity to be saved.
-            client_or_cpf (Client | str): The owner Client object, or their CPF.
+            holder_or_cpf (AccountHolder | str): The owner AccountHolder object, or their CPF.
             password_hash (str): The hashed password for account access.
 
         Raises:
             TypeError: If any of the arguments do not match the expected types.
-            DataNotFoundError: If a CPF string is provided but the client does not exist.
+            DataNotFoundError: If a CPF string is provided but the holder does not exist.
             DuplicatedDataError: If a unique constraint (CPF or Account Num) is violated.
             RepositoryError: If a generic database or connection error occurs.
         """
         verify.verify_instance(account, Account)
-        verify.verify_instance(client_or_cpf, (Client, str))
+        verify.verify_instance(holder_or_cpf, (AccountHolder, str))
         verify.verify_instance(password_hash, str)
 
         with RepositoryContext(self._connection) as cursor:
 
-            if isinstance(client_or_cpf, Client):
-                client_id = self._insert_client_record(cursor, client_or_cpf)
+            if isinstance(holder_or_cpf, AccountHolder):
+                holder_id = self._insert_account_holder_record(cursor, holder_or_cpf)
             else:
-                client_id = self._get_client_id(cursor, client_or_cpf)
+                holder_id = self._get_account_holder_id(cursor, holder_or_cpf)
 
-            self._insert_account_record(cursor, account, client_id, password_hash)
+            self._insert_account_record(cursor, account, holder_id, password_hash)
 
     def save_transaction(
         self, account: Account, amount: Decimal, transaction_type: TransactionType
@@ -396,7 +400,7 @@ class MySQLRepository:
         """
         if not self._in_transaction:
             raise RuntimeError(
-                "Invalid method call. Use the context manager MySQLRepository.transaction()"
+                "Invalid method call. Use the context manager MySQLRepository.unit_of_work()"
             )
 
         verify.verify_instance(account, Account)
@@ -420,7 +424,7 @@ class MySQLRepository:
 
             if not result:
                 raise DataNotFoundError(
-                    f"Data not found in the database for {branch_code=}, {account_num=}"
+                    f"Data not found in the database for {account.branch_code=}, {account.account_num=}"
                 )
 
             account_id = result["id"]
@@ -437,23 +441,23 @@ class MySQLRepository:
                 cursor, account_id, previous_balance, amount, transaction_type
             )
 
-    def client_exists(self, cpf: str) -> bool:
+    def account_holder_exists(self, cpf: str) -> bool:
         """
-        Performs a highly optimized existence check for a client by CPF.
+        Performs a highly optimized existence check for an account holder by CPF.
 
-        Executes a lightweight database query (SELECT 1) to determine if a
-        client record exists without hydrating the full domain entity or
+        Executes a lightweight database query (SELECT 1) to determine if an
+        account holder record exists without hydrating the full domain entity or
         fetching related account cards.
 
         Args:
-            cpf (str): The 11-digit string representing the client's CPF.
+            cpf (str): The 11-digit string representing the account holder's CPF.
 
         Returns:
-            bool: True if the client is registered, False otherwise.
+            bool: True if the account holder is registered, False otherwise.
         """
         verify.verify_instance(cpf, str)
 
-        sql = "SELECT 1 FROM clients WHERE cpf = %s LIMIT 1"
+        sql = "SELECT 1 FROM account_holders WHERE cpf = %s LIMIT 1"
 
         with self._connection.cursor() as cursor:
             cursor.execute(sql, (cpf,))
@@ -490,42 +494,42 @@ class MySQLRepository:
 
         return bool(result)
 
-    def get_client(self, cpf: str) -> Client:
+    def get_account_holder(self, cpf: str) -> AccountHolder:
         """
-        Retrieves a fully hydrated Client domain entity and their associated account cards.
+        Retrieves a fully hydrated AccountHolder domain entity and their associated account cards.
 
-        Executes two sequential, lightweight queries to fetch the core client
+        Executes two sequential, lightweight queries to fetch the core holder
         data and their account credentials. This KISS approach prevents cartesian
         products (JOINs) and simplifies the data reconstruction process.
         The raw database records are mapped directly into a domain object before returning.
 
         Args:
-            cpf (str): The 11-digit string representing the client's CPF.
+            cpf (str): The 11-digit string representing the account holder's CPF.
 
         Returns:
-            Client: A fully populated Client domain object, including their
+            AccountHolder: A fully populated AccountHolder domain object, including their
                 wallet of AccountCards.
 
         Raises:
             TypeError: If the provided CPF is not a string.
-            DataNotFoundError: If no client matches the provided CPF.
+            DataNotFoundError: If no account holder matches the provided CPF.
         """
         verify.verify_instance(cpf, str)
 
-        client_sql = "SELECT * FROM clients WHERE cpf = %s"
+        holder_sql = "SELECT * FROM account_holders WHERE cpf = %s"
         account_sql = (
-            "SELECT branch_code, account_num FROM accounts WHERE client_id = %s"
+            "SELECT branch_code, account_num FROM accounts WHERE account_holder_id = %s"
         )
 
         with self._connection.cursor() as cursor:
-            cursor.execute(client_sql, (cpf,))
-            client_dict = cursor.fetchone()
+            cursor.execute(holder_sql, (cpf,))
+            holder_dict = cursor.fetchone()
 
-            if not client_dict:
+            if not holder_dict:
                 raise DataNotFoundError(f"Data not found in the database for {cpf=}")
 
-            client_id = client_dict.pop("id")
-            cursor.execute(account_sql, (client_id,))
+            holder_id = holder_dict.pop("id")
+            cursor.execute(account_sql, (holder_id,))
             rows = cursor.fetchall()
 
         cards_list = []
@@ -533,9 +537,9 @@ class MySQLRepository:
             row["cpf"] = cpf
             cards_list.append(row)
 
-        client_dict["account_cards"] = cards_list
-        client_obj = Client.from_dict(client_dict)
-        return client_obj
+        holder_dict["account_cards"] = cards_list
+        holder_obj = AccountHolder.from_dict(holder_dict)
+        return holder_obj
 
     def get_account_credentials(
         self, branch_code: str, account_num: str
@@ -609,7 +613,7 @@ class MySQLRepository:
 
         if for_update and not self._in_transaction:
             raise RuntimeError(
-                "Invalid method call. To update account, use the context manager MySQLRepository.transaction()"
+                "Invalid method call. To update account, use the context manager MySQLRepository.unit_of_work()"
             )
 
         lock_clause = "FOR UPDATE" if for_update else ""
@@ -785,7 +789,7 @@ class MySQLRepository:
         """
         if not self._in_transaction:
             raise RuntimeError(
-                "Invalid method call. Use the context manager MySQLRepository.transaction()"
+                "Invalid method call. Use the context manager MySQLRepository.unit_of_work()"
             )
 
         verify.verify_instance(account, Account)
@@ -862,7 +866,7 @@ class MySQLRepository:
         """
         if not self._in_transaction:
             raise RuntimeError(
-                "Invalid method call. Use the context manager MySQLRepository.transaction()"
+                "Invalid method call. Use the context manager MySQLRepository.unit_of_work()"
             )
 
         verify.verify_instance(account, Account)
@@ -905,7 +909,7 @@ class MySQLRepository:
         """
         if not self._in_transaction:
             raise RuntimeError(
-                "Invalid method call. Use the context manager MySQLRepository.transaction()"
+                "Invalid method call. Use the context manager MySQLRepository.unit_of_work()"
             )
 
         branch_code = account.branch_code
@@ -926,5 +930,5 @@ class MySQLRepository:
 
             if cursor.rowcount == 0:
                 raise DataNotFoundError(
-                    f"Data not found in the database for {branch_code=}, {account_num=}"
+                    f"Data not found in the database for {account.branch_code=}, {account.account_num=}"
                 )

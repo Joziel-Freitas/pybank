@@ -21,7 +21,7 @@ SYSTEM_MESSAGES: dict[str, dict[str, str]] = {
         "security": "Sessão encerrada por questão de segurança. Voltando à tela inicial",
         "unavailable": "O sistema do PyBank está temporariamente indisponível. Tente novamente mais tarde",
     },
-    "client": {
+    "account_holder": {
         "new": "Bem vindo ao PyBank. Faça o seu cadastro",
         "not_new": "Bem vindo de volta ao PyBank",
     },

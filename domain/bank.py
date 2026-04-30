@@ -28,19 +28,19 @@ import bcrypt
 from infra import verify
 from infra.mysql_repository import MySQLRepository
 from shared.credentials import AccessToken, AccountCard, AuthToken
-from shared.dtos import AccountInfoDTO, NewAccountDTO, NewClientDTO
+from shared.dtos import AccountInfoDTO, NewAccountDTO, NewAccountHolderDTO
 from shared.exceptions import (
     AccountAlreadyActiveError,
+    AccountHolderNotFoundError,
     AccountNotFoundError,
     BankAccessError,
     BankAuthenticationError,
     BankPasswordError,
     BankSecurityError,
     BankUnavailableError,
-    ClientNotFoundError,
     DataNotFoundError,
     DuplicatedAccountError,
-    DuplicatedClientError,
+    DuplicatedAccountHolderError,
     DuplicatedDataError,
     ExpiredTokenError,
     HomeBranchRestrictionError,
@@ -50,7 +50,7 @@ from shared.exceptions import (
 from shared.types import BankContext
 
 from .account import Account, CheckingAccount, SavingsAccount
-from .person import Client
+from .person import AccountHolder
 
 
 class Bank:
@@ -347,38 +347,44 @@ class Bank:
 
         return account_obj
 
-    def _client_factory(self, client_dto: NewClientDTO) -> Client:
+    def _account_holder_factory(
+        self, acc_holder_dto: NewAccountHolderDTO
+    ) -> AccountHolder:
         """
-        Internal factory to instantiate a Client entity from a DTO.
+        Internal factory to instantiate an AccountHolder entity from a DTO.
 
         Args:
-            client_dto (NewClientDTO): The immutable payload containing the new client's data.
+            acc_holder_dto (NewAccountHolderDTO): The immutable payload containing the new account holder's data.
 
         Returns:
-            Client: A fully initialized domain Client instance.
+            AccountHolder: A fully initialized domain AccountHolder instance.
         """
-        client_obj = Client(client_dto.name, client_dto.cpf, client_dto.birth_date)
+        holder_obj = AccountHolder(
+            acc_holder_dto.name, acc_holder_dto.cpf, acc_holder_dto.birth_date
+        )
 
-        return client_obj
+        return holder_obj
 
-    def _get_client(self, cpf: str) -> Client:
+    def _get_account_holder(self, cpf: str) -> AccountHolder:
         """
-        Retrieves a fully hydrated client entity from the repository.
+        Retrieves a fully hydrated account holder entity from the repository.
 
         Args:
-            cpf (str): The 11-digit string representing the client's CPF.
+            cpf (str): The 11-digit string representing the account holder's CPF.
 
         Returns:
-            Client: The domain Client object.
+            AccountHolder: The domain AccountHolder object.
 
         Raises:
-            ClientNotFoundError: If the CPF is not registered in the system.
+            AccountHolderNotFoundError: If the CPF is not registered in the system.
         """
         try:
-            client_obj = self._repository.get_client(cpf=cpf)
-            return client_obj
+            holder_obj = self._repository.get_client(cpf=cpf)
+            return holder_obj
         except DataNotFoundError as e:
-            raise ClientNotFoundError("Not client registered under this CPF") from e
+            raise AccountHolderNotFoundError(
+                "No account holder registered under this CPF"
+            ) from e
 
     def _get_account_credentials(
         self, branch_code: str, account_num: str
@@ -457,11 +463,11 @@ class Bank:
     def register_account(
         self,
         account_dto: NewAccountDTO,
-        client_dto_or_cpf: NewClientDTO | str,
+        holder_dto_or_cpf: NewAccountHolderDTO | str,
         password: str,
     ) -> None:
         """
-        Registers a newly created account and links it to a client.
+        Registers a newly created account and links it to an account holder.
 
         Acts as the strict Domain boundary for the onboarding process.
         It accepts immutable Data Transfer Objects (DTOs) from the Presentation
@@ -470,74 +476,76 @@ class Bank:
 
         Args:
             account_dto (NewAccountDTO): The immutable payload containing account setup data.
-            client_dto_or_cpf (NewClientDTO | str): The payload for a new client, or an existing client's CPF.
+            holder_dto_or_cpf (NewAccountHolderDTO | str): The payload for a new account holder, or an existing holder's CPF.
             password (str): The raw 6-digit password for the new account.
 
         Raises:
             TypeError: If any arguments do not match expected types.
             BankPasswordError: If the password format is invalid.
             DuplicatedAccountError: If the account number is already taken.
-            DuplicatedClientError: If a new client CPF is already registered.
-            ClientNotFoundError: If an existing client CPF is not found.
+            DuplicatedAccountHolderError: If a new account holder CPF is already registered.
+            AccountHolderNotFoundError: If an existing account holder CPF is not found.
             BankUnavailableError: If the operation fails due to an internal database error.
         """
         verify.verify_instance(account_dto, NewAccountDTO)
-        verify.verify_instance(client_dto_or_cpf, (str, NewClientDTO))
+        verify.verify_instance(holder_dto_or_cpf, (str, NewAccountHolderDTO))
         verify.verify_instance(password, str)
         Bank.validate_password(password)
 
         new_account = self._account_factory(account_dto)
 
-        if isinstance(client_dto_or_cpf, NewClientDTO):
-            client_or_cpf = self._client_factory(client_dto_or_cpf)
-        elif isinstance(client_dto_or_cpf, str):
-            client_or_cpf = client_dto_or_cpf
+        if isinstance(holder_dto_or_cpf, NewAccountHolderDTO):
+            holder_or_cpf = self._account_holder_factory(holder_dto_or_cpf)
+        elif isinstance(holder_dto_or_cpf, str):
+            holder_or_cpf = holder_dto_or_cpf
 
         pwd_hash = self._generate_password_hash(password_str=password)
 
         try:
             self._repository.register_account_bundle(
-                new_account, client_or_cpf, pwd_hash
+                new_account, holder_or_cpf, pwd_hash
             )
         except DuplicatedDataError as e:
             error_context = BankContext(str(e))
 
             match error_context:
-                case BankContext.CLIENT:
-                    raise DuplicatedClientError(
-                        "Client already registered in the system"
+                case BankContext.ACCOUNT_HOLDER:
+                    raise DuplicatedAccountHolderError(
+                        "Account holder already registered in the system"
                     ) from e
                 case BankContext.ACCOUNT:
                     raise DuplicatedAccountError(
                         "Account already registered in the system"
                     ) from e
         except DataNotFoundError:
-            raise ClientNotFoundError("Not client registered under this CPF")
+            raise AccountHolderNotFoundError(
+                "No account holder registered under this CPF"
+            )
         except RepositoryError:
             raise BankUnavailableError(
                 "The intended operation could not be persisted due to an internal error"
             )
 
-    def check_client_exists(self, cpf: str) -> bool:
+    def check_account_holder_exists(self, cpf: str) -> bool:
         """
-        Verifies if a client is registered in the banking system.
+        Verifies if an account holder is registered in the banking system.
 
         This is a highly optimized, lightweight check that queries the repository
-        without hydrating the full Client domain entity. Ideal for pre-validation
+        without hydrating the full AccountHolder domain entity. Ideal for pre-validation
         during onboarding workflows.
 
         Args:
-            cpf (str): The 11-digit string representing the client's CPF.
+            cpf (str): The 11-digit string representing the account holder's CPF.
 
         Returns:
-            bool: True if the client exists, False otherwise.
+            bool: True if the account holder exists, False otherwise.
 
         Raises:
             TypeError: If the provided CPF is not a string.
         """
         verify.verify_instance(cpf, str)
 
-        return self._repository.client_exists(cpf)
+        return self._repository.account_holder_exists(cpf)
 
     def check_account_exists(self, branch_code: str, account_num: str) -> bool:
         """
@@ -562,42 +570,42 @@ class Bank:
 
         return self._repository.account_exists(branch_code, account_num)
 
-    def get_client_cards(self, cpf: str) -> list[AccountCard]:
+    def get_account_holder_cards(self, cpf: str) -> list[AccountCard]:
         """
-        Safely retrieves the list of registered account cards for a client.
+        Safely retrieves the list of registered account cards for an account holder.
 
         Acts as a secure data gateway, extracting Data Transfer Objects (DTOs)
-        from the rich Client entity. This prevents Domain leakage, ensuring the
+        from the rich AccountHolder entity. This prevents Domain leakage, ensuring the
         Presentation layer can display available cards without gaining direct
-        access to the Client object's internal state or business methods.
+        access to the AccountHolder object's internal state or business methods.
 
         Args:
-            cpf (str): The 11-digit string representing the client's CPF.
+            cpf (str): The 11-digit string representing the account holder's CPF.
 
         Returns:
             list[AccountCard]: A list of lightweight, immutable card representations.
 
         Raises:
             TypeError: If the provided CPF is not a string.
-            ClientNotFoundError: If the provided CPF is not registered in the system.
+            AccountHolderNotFoundError: If the provided CPF is not registered in the system.
         """
         verify.verify_instance(cpf, str)
 
-        client = self._get_client(cpf)
+        holder = self._get_account_holder(cpf)
 
-        return client.cards
+        return holder.cards
 
     def authenticate(self, cpf: str, branch_code: str, account_num: str) -> AuthToken:
         """
-        Authenticates a client's claim to an account and issues a stateless token.
+        Authenticates an account holder's claim to an account and issues a stateless token.
 
         This is the "Lobby" access. It does not open the vault or check if the
         account is frozen. It merely verifies ownership and issues an AuthToken
         that can be used for subsequent secure operations. This method securely
-        hydrates the Client entity internally to prevent domain leakage.
+        hydrates the AccountHolder entity internally to prevent domain leakage.
 
         Args:
-            cpf (str): The 11-digit string representing the client's CPF.
+            cpf (str): The 11-digit string representing the account holder's CPF.
             branch_code (str): The branch code of the target account.
             account_num (str): The target account number.
 
@@ -606,23 +614,23 @@ class Bank:
 
         Raises:
             TypeError: If any of the provided arguments are not strings.
-            ClientNotFoundError: If the provided CPF is not registered in the system.
-            BankAuthenticationError: If the requested account does not belong to the client.
+            AccountHolderNotFoundError: If the provided CPF is not registered in the system.
+            BankAuthenticationError: If the requested account does not belong to the account holder.
         """
         verify.verify_instance(cpf, str)
         verify.verify_instance(branch_code, str)
         verify.verify_instance(account_num, str)
 
-        client = self._get_client(cpf)
-        temp_card = AccountCard(client.cpf, branch_code, account_num)
+        holder = self._get_account_holder(cpf)
+        temp_card = AccountCard(holder.cpf, branch_code, account_num)
 
-        if not client.has_account(temp_card):
+        if not holder.has_account(temp_card):
             raise BankAuthenticationError(
-                "Account card not found between client's cards"
+                "Account card not found between account holder's cards"
             )
 
         return self._generate_auth_token(
-            cpf=client.cpf, branch_code=branch_code, account_num=account_num
+            cpf=holder.cpf, branch_code=branch_code, account_num=account_num
         )
 
     def get_remaining_login_attempts(self, auth_token: AuthToken) -> int:
@@ -705,6 +713,7 @@ class Bank:
         failed_logins = acc_credentials["failed_login_attempts"]
 
         try:
+            # Usar o context manager
             self._check_password(password, hashed_pwd)
 
             if failed_logins > 0:
@@ -748,28 +757,28 @@ class Bank:
         Safely retrieves a read-only snapshot of an authenticated account's current state.
 
         Operates under a strict Zero Trust model. It fetches both the account and the
-        client using the securely validated AccessToken, projecting this cross-entity
+        account holder using the securely validated AccessToken, projecting this cross-entity
         state into an immutable AccountInfoDTO. This acts as a secure read-only facade,
-        preventing full domain entities (Account and Client) from leaking into external
+        preventing full domain entities (Account and AccountHolder) from leaking into external
         layers (Controllers/Views).
 
         Args:
             access_token (AccessToken): A valid, securely signed vault token containing
-                the client's CPF for identity resolution.
+                the account holder's CPF for identity resolution.
 
         Returns:
-            AccountInfoDTO: An immutable snapshot containing the client's name, account
+            AccountInfoDTO: An immutable snapshot containing the holder's name, account
                 branch, number, raw account type (e.g., 'CheckingAccount'), balance,
                 active status, and overdraft information (if applicable).
 
         Raises:
             ExpiredTokenError: If the token's TTL has passed.
             BankSecurityError: If the token is invalid, tampered with, or if the
-                account/client no longer exists during the active session (TOCTOU mitigation).
+                account/holder no longer exists during the active session (TOCTOU mitigation).
         """
         self._validate_token(access_token)
 
-        client = self._get_client(access_token.cpf)
+        holder = self._get_account_holder(access_token.cpf)
         account = self._get_account(access_token.branch_code, access_token.account_num)
         account_type = type(account).__name__
 
@@ -781,7 +790,7 @@ class Bank:
             available_overdraft = account.available_overdraft
 
         return AccountInfoDTO(
-            client_name=client.name,
+            holder_name=holder.name,
             branch_code=account.branch_code,
             account_num=account.account_num,
             account_type=account_type,
@@ -822,7 +831,7 @@ class Bank:
         verify.verify_instance(amount, Decimal)
         Account.validate_account_deposit(amount)
 
-        with self._repository.transaction():
+        with self._repository.unit_of_work():
             account = self._get_account(branch_code, account_num)
             transaction_type = account.deposit(amount)
 

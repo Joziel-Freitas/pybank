@@ -1,9 +1,9 @@
 """
-Person and Client Domain Entities.
+Person and AccountHolder Domain Entities.
 
-Defines the abstract base class Person, the concrete entity Client, and the
+Defines the abstract base class Person, the concrete entity AccountHolder, and the
 AccountCard value object. This module is responsible for validating core
-personal attributes (Name, CPF, Birth Date), managing the client's associated
+personal attributes (Name, CPF, Birth Date), managing the account holder's associated
 bank accounts, and storing access credentials (cards) for quick login.
 """
 
@@ -19,11 +19,11 @@ from infra import verify
 from shared import validators
 from shared.credentials import AccountCard
 from shared.exceptions import (
+    AccountHolderCardNotFoundError,
+    AccountHolderDuplicatedCardError,
     InvalidBirthDateError,
     InvalidCpfError,
     InvalidNameError,
-    PersonCardNotFoundError,
-    PersonDuplicatedCardError,
 )
 
 
@@ -94,7 +94,7 @@ class Person(ABC):
 
     @property
     def birth_date(self) -> date:
-        """Returns the person's birth date"""
+        """Returns the person's birth date."""
         return self._birth_date
 
     @property
@@ -111,7 +111,7 @@ class Person(ABC):
         of the provided account within the person's registry of associated accounts.
 
         Args:
-            acc (Account): The account instance to verify.
+            card (AccountCard): The account card instance to verify.
 
         Returns:
             bool: True if the account is associated with this person, False otherwise.
@@ -276,9 +276,9 @@ class Person(ABC):
         return cls(name=data["name"], birth_date=data["birth_date"], cpf=data["cpf"])
 
 
-class Client(Person):
+class AccountHolder(Person):
     """
-    A concrete implementation of Person, representing a bank client.
+    A concrete implementation of Person, representing a bank account holder.
 
     Manages a unique set of quick-access cards (AccountCard) for streamlined
     authentication. Acts as a credential holder, completely decoupled from
@@ -289,41 +289,41 @@ class Client(Person):
 
     def __init__(self, name: str, cpf: str, birth_date: str | date):
         """
-        Initializes a Client instance.
+        Initializes an AccountHolder instance.
 
-        Initializes the client's wallet of account cards as empty.
+        Initializes the account holder's wallet of account cards as empty.
         """
         super().__init__(name, cpf, birth_date)
         self._account_cards = set()
 
     def __eq__(self, other: object) -> bool:
         """
-        Determines equality between Client instances based on their unique CPF.
+        Determines equality between AccountHolder instances based on their unique CPF.
 
-        Two Client objects are considered equal if they share the same CPF,
+        Two AccountHolder objects are considered equal if they share the same CPF,
         regardless of other attributes. This definition of equality is consistent
-        with the `__hash__` method, ensuring reliable behavior when Client objects
+        with the `__hash__` method, ensuring reliable behavior when AccountHolder objects
         are stored in hash-based collections such as sets or used as dictionary keys.
         """
-        if isinstance(other, Client):
+        if isinstance(other, AccountHolder):
             return self._cpf == other._cpf
         return False
 
     def __hash__(self):
         """
-        Returns a hash value for the Client instance based on its unique CPF.
+        Returns a hash value for the AccountHolder instance based on its unique CPF.
 
-        This ensures that Client objects can be used reliably as keys in
+        This ensures that AccountHolder objects can be used reliably as keys in
         dictionaries or stored in sets. The hash is consistent with the
         `__eq__` method, which also defines equality by CPF, guaranteeing
-        that two Client instances with the same CPF are treated as identical
+        that two AccountHolder instances with the same CPF are treated as identical
         in hash-based collections.
         """
         return hash(self._cpf)
 
     def __contains__(self, card: AccountCard) -> bool:
         """
-        Allows checking if an account is registered to this client using the `in` operator.
+        Allows checking if an account is registered to this account holder using the `in` operator.
 
         The check leverages the O(1) average time complexity of Python's Set
         membership test (Hash Table look-up).
@@ -334,13 +334,13 @@ class Client(Person):
 
     @property
     def cpf(self) -> str:
-        """Returns the client's unique identifier (the CPF)."""
+        """Returns the account holder's unique identifier (the CPF)."""
         return self._cpf
 
     @property
     def cards(self) -> list[AccountCard]:
         """
-        Returns a sorted list of the client's saved account cards.
+        Returns a sorted list of the account holder's saved account cards.
 
         Converts the internal set to a list to facilitate iteration in UI menus.
         """
@@ -348,45 +348,45 @@ class Client(Person):
 
     def to_dict(self) -> dict:
         """
-        Serializes the client data, extending the Person serialization.
+        Serializes the account holder data, extending the Person serialization.
 
         Includes a list of serialized AccountCards ('account_cards') to persist
-        the client's wallet of saved credentials.
+        the account holder's wallet of saved credentials.
 
         Returns:
-            dict: The complete client state dictionary, including personal info and cards.
+            dict: The complete state dictionary, including personal info and cards.
         """
         data_dict = super().to_dict()
         data_dict["account_cards"] = [asdict(card) for card in self._account_cards]
         return data_dict
 
     @classmethod
-    def from_dict(cls, data: dict) -> Client:
+    def from_dict(cls, data: dict) -> AccountHolder:
         """
-        Reconstructs a Client instance and their associated account cards.
+        Reconstructs an AccountHolder instance and their associated account cards.
 
         Uses the parent class logic to restore personal attributes and then
         iteratively deserializes the list of 'account_cards' to repopulate
-        the client's wallet.
+        the account holder's wallet.
 
         Args:
-            data (dict): The dictionary containing client data and the list of cards.
+            data (dict): The dictionary containing account holder data and the list of cards.
 
         Returns:
-            Client: The restored Client object with all its cards.
+            AccountHolder: The restored AccountHolder object with all its cards.
         """
-        instance = cast(Client, super().from_dict(data))
+        instance = cast(AccountHolder, super().from_dict(data))
         cards_list = data.get("account_cards", [])
         instance._account_cards = {AccountCard(**card) for card in cards_list}
         return instance
 
     def has_account(self, card: AccountCard) -> bool:
-        """Checks if a specific card is registered to the client (alias for `__contains__`)."""
+        """Checks if a specific card is registered to the account holder (alias for `__contains__`)."""
         return card in self
 
     def add_card(self, acc_card: AccountCard):
         """
-        Stores a new access card in the client's wallet.
+        Stores a new access card in the account holder's wallet.
 
         Args:
             acc_card (AccountCard): The card object containing credentials.
@@ -400,15 +400,15 @@ class Client(Person):
                 f"Invalid card type. Expected AccountCard, got {type(acc_card).__name__}"
             )
         if acc_card in self._account_cards:
-            raise PersonDuplicatedCardError(
-                " Card already present in the Client's card collection"
+            raise AccountHolderDuplicatedCardError(
+                "Card already present in the account holder's card collection"
             )
 
         self._account_cards.add(acc_card)
 
     def remove_card(self, acc_card: AccountCard):
         """
-        Removes a specific card from the client's wallet.
+        Removes a specific card from the account holder's wallet.
 
         Args:
             acc_card (AccountCard): The card to be removed.
@@ -422,8 +422,8 @@ class Client(Person):
                 f"Invalid card type. Expected AccountCard, got {type(acc_card).__name__}"
             )
         if acc_card not in self._account_cards:
-            raise PersonCardNotFoundError(
-                "Card not found in the Client's card collection"
+            raise AccountHolderCardNotFoundError(
+                "Card not found in the account holder's card collection"
             )
 
         self._account_cards.remove(acc_card)
