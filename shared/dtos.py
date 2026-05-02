@@ -11,6 +11,7 @@ Domain Entity leakage and eliminate circular dependencies between modules.
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -85,3 +86,23 @@ class AccountInfoDTO:
     is_active: bool
     overdraft_limit: Decimal | None
     available_overdraft: Decimal | None
+
+
+@dataclass(frozen=True)
+class StatementDTO:
+    """
+    Data Transfer Object representing a mathematically consistent account statement.
+
+    Acts as an immutable payload combining a read-only representation of the account's
+    current state with its chronological transaction history.
+
+    Attributes:
+        account_info (AccountInfoDTO): The account's details and balance
+            at the exact moment of the statement generation.
+        transactions (tuple[dict[str, Any], ...]): A chronological sequence of
+            transaction records (amount and timestamp) occurring on or after
+            a requested start date.
+    """
+
+    account_info: AccountInfoDTO
+    transactions: tuple[dict[str, Any], ...]

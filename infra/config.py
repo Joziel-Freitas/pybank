@@ -19,7 +19,7 @@ menu_config: ConfigMap = {
     },
     "transactions": {
         "info": "Transações",
-        "prompt": "1 - Depósito\n2 - Saque\n3 - Extrato\nSua opção: ",
+        "prompt": "1 - Depósito\n2 - Saque\n3 - Saldo/Extrato\nSua opção: ",
         "value_type": int,
         "error_msg": "Opção inválida. Escolha entre as opções 1, 2 ou 3",
     },

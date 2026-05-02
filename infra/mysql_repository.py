@@ -20,6 +20,7 @@ from domain.person import AccountHolder
 from dotenv import load_dotenv
 from pymysql import connect, cursors, err
 from pymysql.connections import Connection
+from pymysql.constants import CLIENT
 from shared.exceptions import (
     DataNotFoundError,
     DomainError,
@@ -141,6 +142,7 @@ class MySQLRepository:
             password=environ["MYSQL_PASSWORD"],
             host=environ["DB_HOST"],
             cursorclass=cursors.DictCursor,
+            client_flag=CLIENT.FOUND_ROWS,
         )
 
         self._in_transaction = False
@@ -383,7 +385,7 @@ class MySQLRepository:
         record the financial transaction in history.
 
         This method is a subordinate operation and strictly requires an active
-        Unit of Work. It MUST be executed within a `with self.transaction():` block.
+        Unit of Work. It MUST be executed within a `with self.unit_of_work():` block.
         It explicitly fetches the current balance prior to the update to satisfy
         the snapshotting requirements of the transaction ledger.
 
@@ -393,7 +395,7 @@ class MySQLRepository:
             transaction_type (TransactionType): The semantic business event type.
 
         Raises:
-            RuntimeError: If called outside an active `transaction()` block, enforcing the Unit of Work.
+            RuntimeError: If called outside an active `unit_of_work()` block, enforcing the Unit of Work.
             TypeError: If the arguments are of incorrect types.
             DataNotFoundError: If the account to be updated does not exist in the database.
             RepositoryError: If a database error occurs during the operation.
@@ -774,14 +776,14 @@ class MySQLRepository:
         Updates the active status (frozen/unfrozen) of a specific account.
 
         This method is a subordinate operation and strictly requires an active
-        Unit of Work. It MUST be executed within a `with self.transaction():` block.
+        Unit of Work. It MUST be executed within a `with self.unit_of_work():` block.
 
         Args:
             account (Account): The domain Account entity containing the target branch,
                 account number, and the new active status.
 
         Raises:
-            RuntimeError: If called outside an active `transaction()` block, enforcing the Unit of Work.
+            RuntimeError: If called outside an active `unit_of_work()` block, enforcing the Unit of Work.
             TypeError: If the provided argument is not an Account instance.
             DataNotFoundError: If the account does not exist in the database,
                 detected by a zero rowcount during the update.
@@ -848,7 +850,7 @@ class MySQLRepository:
         Executes an atomic update of the account's security credentials.
 
         This method is a subordinate operation and strictly requires an active
-        Unit of Work. It MUST be executed within a `with self.transaction():` block.
+        Unit of Work. It MUST be executed within a `with self.unit_of_work():` block.
         Updates the password hash, modifies the active status (frozen/unfrozen),
         and resets the failed login attempts counter back to zero.
 
@@ -858,7 +860,7 @@ class MySQLRepository:
             new_password_hash (str): The new securely hashed password.
 
         Raises:
-            RuntimeError: If called outside an active `transaction()` block, enforcing the Unit of Work.
+            RuntimeError: If called outside an active `unit_of_work()` block, enforcing the Unit of Work.
             TypeError: If any of the provided arguments have incorrect types.
             DataNotFoundError: If the account does not exist in the database,
                 detected by a zero rowcount during the update.
@@ -894,7 +896,7 @@ class MySQLRepository:
         Permanently removes an account and its transaction history from the database.
 
         This method is a subordinate operation and strictly requires an active
-        Unit of Work. It MUST be executed within a `with self.transaction():` block.
+        Unit of Work. It MUST be executed within a `with self.unit_of_work():` block.
         Executes an ACID-compliant sub-transaction to ensure referential integrity by
         first deleting all associated records in the 'transactions' table before
         deleting the parent record in the 'accounts' table.
@@ -903,7 +905,7 @@ class MySQLRepository:
             account (Account): The fully hydrated domain Account entity to be deleted.
 
         Raises:
-            RuntimeError: If called outside an active `transaction()` block, enforcing the Unit of Work.
+            RuntimeError: If called outside an active `unit_of_work()` block, enforcing the Unit of Work.
             DataNotFoundError: If the account to be deleted does not exist.
             RepositoryError: If a database error occurs during the deletion process.
         """
