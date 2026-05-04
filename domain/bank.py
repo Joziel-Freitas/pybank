@@ -664,17 +664,15 @@ class Bank:
         (AccessToken). Operating under a Zero Trust model, it verifies the
         token's integrity and validates the password against the stored Bcrypt hash.
 
+        To simulate real-world ATM behavior, it explicitly denies vault access to
+        frozen accounts, preventing any operations (including read-only views) until
+        the account is formally unfrozen via identity verification.
+
         To mitigate brute-force attacks, it tracks failed login attempts. If the
         maximum threshold is reached, it employs a Unit of Work with pessimistic
         concurrency control to safely fetch and freeze the account, preventing
         Time-of-Check to Time-of-Use (TOCTOU) race conditions during the
         status update.
-
-        Note:
-            This method allows Vault access generation even for pre-frozen accounts,
-            enabling clients to authenticate and view read-only data (e.g., statements).
-            Strict operational blocks (withdrawals/deposits) are enforced internally
-            by the Account entity.
 
         Args:
             auth_token (AuthToken): A valid, securely signed authentication token.
@@ -688,8 +686,8 @@ class Bank:
             BankPasswordError: If the provided password format is invalid.
             BankSecurityError: If the AuthToken is tampered with, or if the account
                 no longer exists (TOCTOU mitigation).
-            BankAccessError: If the account reaches the maximum allowed
-                failed login attempts during this authentication check.
+            BankAccessError: If the account is already frozen, or if it reaches
+                the maximum allowed failed login attempts during this check.
             BankAuthenticationError: If the provided password does not match the hash.
             BankUnavailableError: If the validation or security updates could not
                 be persisted due to an internal infrastructure error.
@@ -705,6 +703,9 @@ class Bank:
             raise BankSecurityError(
                 "Security breach or race condition: Account no longer exists"
             ) from e
+
+        if not acc_credentials["is_active"]:
+            raise BankAccessError("This account is blocked and cannot be accessed")
 
         branch_code = auth_token.branch_code
         account_num = auth_token.account_num

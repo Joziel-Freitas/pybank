@@ -1,7 +1,7 @@
 TRANSACTION_MESSAGES: dict[str, dict[str, str]] = {
     "transaction": {
         "success": "Transação realizada com sucesso",
-        "min_value": "Valor mínimo para transação: {min_atm}}",
+        "min_value": "Valor mínimo para transação: {min_atm}",
     },
     "deposit": {
         "acc_not_found": "Conta inexistente no sistema do PyBank",
@@ -18,41 +18,42 @@ SYSTEM_MESSAGES: dict[str, dict[str, str]] = {
     "menu": {
         "cancel": "Operação cancelada. Voltando ao menu anterior",
         "exit": "Sessão encerrada. Voltando à tela inicial",
-        "security": "Sessão encerrada por questão de segurança. Voltando à tela inicial",
+        "security": "Sessão encerrada por falha de segurança. Voltando à tela inicial",
+        "expired": "Sessão expirada por inatividade. Por favor, autentique-se novamente",
         "unavailable": "O sistema do PyBank está temporariamente indisponível. Tente novamente mais tarde",
     },
     "account_holder": {
-        "new": "Bem vindo ao PyBank. Faça o seu cadastro",
-        "not_new": "Bem vindo de volta ao PyBank",
+        "new_account_holder": "Bem vindo ao PyBank. Faça o seu cadastro de titular",
+        "already_account_holder": "Bem-vindo de volta ao PyBank",
     },
     "new_account": {
         "success": "Conta registrada com sucesso",
-        "duplicated": "Essa conta já se encontra registrada no sistema. Crie uma nova conta",
+        "acc_duplicated": "Essa conta já se encontra registrada no sistema. Crie uma nova conta",
         "password": "Falha ao registrar sua senha. Tente novamente",
         "run_time": "Erro ao registrar sua conta. Tente novamente",
     },
     "new_password": {
-        "first": "Insira sua senha",
-        "second": "Insira novamente sua senha",
+        "first": "Insira a sua nova senha (6 dígitos)",
+        "second": "Confirme a sua nova senha",
         "created": "Senha criada com sucesso",
         "updated": "Senha alterada com sucesso",
         "error": "As senhas não conferem. Tente novamente",
     },
     "authentication": {
         "success": "Autenticado com sucesso",
-        "not_client": "Falha na autenticação. Cliente não encontrado",
-        "auth": "Falha na autenticação. Conta não ligada ao cliente",
+        "not_account_holder": "Falha na autenticação. Titular não encontrado no sistema",
+        "auth": "Falha na autenticação. Conta não pertence a este titular",
     },
     "access": {
         "success": "Acesso Concedido",
         "auth": "Senha incorreta. Acesso Negado",
         "last": "Atenção: Última tentativa. Se errar a senha, a conta será bloqueada",
-        "blocked": "Conta BLOQUEADA por segurança. Desbloqueie a conta para usá-la novamente",
+        "access_denied": "Conta BLOQUEADA por segurança. Desbloqueie a conta para usá-la novamente",
     },
     "unfreeze": {
-        "success": "Conta desbloqueada com sucesso",
-        "auth": "Falha na autenticação. A data de nascimento informada não corresponde",
-        "already_active": "Essa conta está ativa. Impossível desbloquear",
+        "success": "Conta desbloqueada com sucesso. Sessão atual invalidada",
+        "auth": "Falha na autenticação. A data de nascimento informada não corresponde ao titular",
+        "acc_active": "Essa conta está ativa. Impossível desbloquear",
     },
     "close_account": {
         "success": "Sua conta foi encerrada corretamente e seus dados removidos do sistema",

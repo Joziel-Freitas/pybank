@@ -499,7 +499,7 @@ class TransactionController(BaseController[Account, None]):
         int_user_in = _assert_input(user_in_raw, int)
         days = days_mapper[int_user_in]
         start_date = datetime.now() - timedelta(days=days)
-        transactions_raw = self._bank_instance.get_statement(
+        transactions_raw = self._bank_instance.generate_statement(
             self._active_access_token, start_date
         )
         account_info_dto = self._bank_instance.get_account_info(
