@@ -17,11 +17,11 @@ from shared.dtos import NewAccountDTO, NewAccountHolderDTO
 from shared.exceptions import (
     AccountAlreadyActiveError,
     AccountHolderNotFoundError,
+    BankAccessError,
     BankAuthenticationError,
     BankError,
     BankPasswordError,
     BankUnavailableError,
-    BlockedAccountError,
     ControllerCredentialsError,
     ControllerOperationError,
     DomainError,
@@ -37,9 +37,10 @@ from shared.exceptions import (
     UserAbortError,
 )
 from shared.types import (
+    AdminCodeType,
     MainMenuType,
-    ManagementMenuType,
     OperationMenuType,
+    RestrictedMenuType,
     TransactionMenuType,
 )
 from shared.validators import ValidatorCallback
@@ -176,6 +177,7 @@ class BaseController(ABC, Generic[T, R]):
             TypeError: If model_class is not a valid Domain Entity subclass.
         """
         verify.verify_instance(model_class, type)
+
         if not issubclass(model_class, (Bank, Person, Account)):
             raise TypeError(
                 f"model_class {model_class} must be a subclass of Bank, Person, or Account."
@@ -226,6 +228,9 @@ class OnboardingController(BaseController[Bank, None], SharedPromptsMixin):
         "name": validators.boolean_validator_dec(Person.validate_name),
         "cpf": validators.boolean_validator_dec(Person.validate_cpf),
         "birth_date": validators.boolean_validator_dec(Person.validate_birth_date),
+        "acc_type": validators.boolean_validator_dec(
+            partial(verify.verify_interval, min_val=1, max_val=2)
+        ),
         "account_num": validators.boolean_validator_dec(
             Account.validate_account_number
         ),
@@ -273,10 +278,10 @@ class OnboardingController(BaseController[Bank, None], SharedPromptsMixin):
         is_holder = self._bank_instance.check_account_holder_exists(cpf)
 
         if is_holder:
-            self._handle_info_ui("account_holder", "not_new")
+            self._handle_info_ui("account_holder", "already_account_holder")
             return cpf
 
-        self._handle_info_ui("account_holder", "new")
+        self._handle_info_ui("account_holder", "new_account_holder")
         obj_attr = io_utils.config_loop(
             self._identification_config,
             self._controller_validator_cb,
@@ -535,20 +540,17 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
     """
 
     _validation_mapper = {
+        "main_menu": validators.boolean_validator_dec(
+            lambda user_in: (
+                AdminCodeType(user_in)
+                if user_in == ADMIN_EXIT_CODE
+                else MainMenuType(user_in)
+            )
+        ),
+        "operations_menu": validators.boolean_validator_dec(OperationMenuType),
+        "restrict_menu": validators.boolean_validator_dec(RestrictedMenuType),
         "cpf": validators.boolean_validator_dec(validators.validate_cpf),
         "password": validators.boolean_validator_dec(Bank.validate_password),
-        "operations": validators.boolean_validator_dec(
-            partial(verify.verify_interval, min_val=1, max_val=2)
-        ),
-        "transactions": validators.boolean_validator_dec(
-            partial(verify.verify_interval, min_val=1, max_val=3)
-        ),
-        "management": validators.boolean_validator_dec(
-            partial(verify.verify_interval, min_val=1, max_val=3)
-        ),
-        "acc_type": validators.boolean_validator_dec(
-            partial(verify.verify_interval, min_val=1, max_val=2)
-        ),
         "birth_date": validators.boolean_validator_dec(Person.validate_birth_date),
         "use_card": validators.boolean_validator_dec(
             partial(verify.verify_interval, min_val=1, max_val=2)
@@ -734,7 +736,7 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
                 break
             except BankAuthenticationError as e:
                 self._handle_exception_ui("access", e)
-            except BlockedAccountError as e:
+            except BankAccessError as e:
                 self._handle_exception_ui("access", e)
                 raise ControllerCredentialsError(
                     "Access process failed due to security issues"
@@ -939,34 +941,22 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
                 self._end_session()
                 return
 
-    def _main_menu(self) -> MainMenuType | None:
+    def _main_menu(self) -> MainMenuType | AdminCodeType:
         """
         Displays the root entry point of the ATM.
         Includes a hidden verification for the ADMIN_EXIT_CODE to safely shut down
         the terminal application.
         """
-        is_admin_code = None
 
-        def _main_menu_validator_cb(
-            field: str, user_input: InputType
-        ) -> CallbackReturn:
-            nonlocal is_admin_code
-
-            int_user_input = _assert_input(user_input, int)
-            is_valid_menu = int_user_input in (1, 2)
-            is_admin_code = user_input == ADMIN_EXIT_CODE
-
-            return {"result": is_valid_menu or is_admin_code}
-
-        main_option = io_utils.get_single_input(
-            "main_menu", self._menu_config, _main_menu_validator_cb
+        user_in = io_utils.get_single_input(
+            "main_menu", self._menu_config, self._controller_validator_cb
         )
+        int_user_in = _assert_input(user_in, int)
 
-        if is_admin_code:
-            views.bye()
-            return None
+        if int_user_in == ADMIN_EXIT_CODE:
+            return AdminCodeType(user_in)
 
-        return MainMenuType(main_option)
+        return MainMenuType(user_in)
 
     def run_controller(self) -> None:
         """
@@ -977,16 +967,24 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
         of successful operations, user cancellations, or handled exceptions.
         """
         while True:
-            menu = self._main_menu()
-
-            if menu is None:
-                break
+            try:
+                menu = self._main_menu()
+            except UserAbortError:
+                continue
+            except ValueError as e:
+                raise RuntimeError(
+                    "Critical error in I/O admin code validation logic"
+                ) from e
 
             match menu:
-                case MainMenuType.OPERATIONS:
-                    self._operation_hub()
+                case AdminCodeType.EXIT_CODE:
+                    break
+                case MainMenuType.DEPOSIT:
+                    self._set_transaction_controller(TransactionMenuType.DEPOSIT)
                 case MainMenuType.ONBOARDING:
                     controller_obj = OnboardingController(self._bank_instance)
                     controller_obj.run_controller()
+                case MainMenuType.OPERATIONS:
+                    self._operation_hub()
                 case _:
-                    raise RuntimeError("Critical error in main menu logic")
+                    raise RuntimeError("Critical error: Unmapped type")

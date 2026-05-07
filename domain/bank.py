@@ -28,7 +28,13 @@ import bcrypt
 from infra import verify
 from infra.mysql_repository import MySQLRepository
 from shared.credentials import AccessToken, AccountCard, AuthToken
-from shared.dtos import AccountInfoDTO, NewAccountDTO, NewAccountHolderDTO, StatementDTO
+from shared.dtos import (
+    AccountInfoDTO,
+    AccountSummaryDTO,
+    NewAccountDTO,
+    NewAccountHolderDTO,
+    StatementDTO,
+)
 from shared.exceptions import (
     AccountAlreadyActiveError,
     AccountHolderNotFoundError,
@@ -754,6 +760,47 @@ class Bank:
                 "The intended operation could not be persisted due to an internal error"
             ) from e
 
+    def get_account_summary(self, auth_token: AuthToken) -> AccountSummaryDTO:
+        """
+        Safely retrieves basic identity and status information for an authenticated session.
+
+        Operates under the Identity-First security model. It uses a validated AuthToken
+        (Lobby access) to fetch non-sensitive data, returning an immutable AccountSummaryDTO.
+        This allows external controllers to greet the user and verify account status
+        (active/frozen) before attempting any high-privilege operations.
+
+        Args:
+            auth_token (AuthToken): A stateless token proving account ownership and identity.
+
+        Returns:
+            AccountSummaryDTO: An immutable snapshot containing basic account routing
+                and status flags.
+
+        Raises:
+            ExpiredTokenError: If the token's TTL has passed.
+            BankSecurityError: If the token is invalid, tampered with, or if the account
+                state has been compromised during the session (TOCTOU mitigation).
+            BankAuthenticationError: If the underlying account or holder no longer exists
+                in the repository, invalidating the session state.
+        """
+        self._validate_token(auth_token)
+
+        try:
+            holder = self._get_account_holder(auth_token.cpf)
+            account = self._get_account(auth_token.branch_code, auth_token.account_num)
+        except (AccountHolderNotFoundError, AccountNotFoundError) as e:
+            raise BankAuthenticationError(
+                "Authentication is no longer valid for this token due to inconsistent data"
+            ) from e
+
+        return AccountSummaryDTO(
+            holder_name=holder.name,
+            branch_code=account.branch_code,
+            account_num=account.account_num,
+            account_type=type(account).__name__,
+            is_active=account.is_active,
+        )
+
     def get_account_info(self, access_token: AccessToken) -> AccountInfoDTO:
         """
         Safely retrieves a read-only snapshot of an authenticated account's current state.
@@ -780,10 +827,17 @@ class Bank:
         """
         self._validate_token(access_token)
 
-        holder = self._get_account_holder(access_token.cpf)
-        account = self._get_account(access_token.branch_code, access_token.account_num)
-        account_type = type(account).__name__
+        try:
+            holder = self._get_account_holder(access_token.cpf)
+            account = self._get_account(
+                access_token.branch_code, access_token.account_num
+            )
+        except (AccountHolderNotFoundError, AccountNotFoundError):
+            raise BankSecurityError(
+                "Security breach or race condition: Account or Holder no longer exists"
+            )
 
+        account_type = type(account).__name__
         overdraft_limit = None
         available_overdraft = None
 

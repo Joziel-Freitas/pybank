@@ -7,29 +7,23 @@ from io_utils import ConfigMap
 menu_config: ConfigMap = {
     "main_menu": {
         "info": "Menu principal",
-        "prompt": "1 - Operações\n2 - Abertura de conta\nSua opção: ",
-        "value_type": int,
-        "error_msg": "Opção inválida. Escolha entre as opções 1 ou 2",
-    },
-    "operations": {
-        "info": "Operações",
-        "prompt": "1 - Transações\n2 - Gerenciamento de conta\nSua opção: ",
-        "value_type": int,
-        "error_msg": "Opção inválida. Escolha entre as opções 1 ou 2",
-    },
-    "transactions": {
-        "info": "Transações",
-        "prompt": "1 - Depósito\n2 - Saque\n3 - Saldo/Extrato\nSua opção: ",
+        "prompt": "1 - Depósito\n2 - Abertura de conta\n3 - Outras operações\nSua opção: ",
         "value_type": int,
         "error_msg": "Opção inválida. Escolha entre as opções 1, 2 ou 3",
     },
-    "management": {
-        "info": "Gerenciamento de conta",
-        "prompt": "1 - Mudança de senha\n2 - Desbloquear conta\n3 - Encerrar conta\nSua opção: ",
+    "operations_menu": {
+        "info": "Operações",
+        "prompt": "1 - Depósito\n2 - Saque\n3 - Saldo/Extrato\n4 - Mudança de senha\n5 - Encerrar conta\nSua opção: ",
         "value_type": int,
-        "error_msg": "Opção inválida. Escolha entre as opções disponíveis no menu",
+        "error_msg": "Opção inválida. Escolha entre as opções de 1 a 5",
     },
-    "use_card": {
+    "restricted_menu": {
+        "info": "Acesso restrito",
+        "prompt": "1 - Desbloquear conta",
+        "value_type": int,
+        "error_msg": "Opção inválida. Escolha 1 para desbloquear a conta ou 'S' para sair",
+    },
+    "use_card_menu": {
         "info": "Formas de acesso",
         "prompt": "1 - Operações com cartão\n2 - Operações sem cartão\nSua opção: ",
         "value_type": int,

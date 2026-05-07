@@ -56,6 +56,31 @@ class NewAccountDTO:
 
 
 @dataclass(frozen=True)
+class AccountSummaryDTO:
+    """
+    A read-only, non-sensitive snapshot of an account's basic state.
+
+    Used primarily in the 'Lobby' (Identity-First) phase of the presentation layer.
+    It deliberately excludes financial data (like balance or overdraft limits)
+    to allow safe routing and dynamic menu rendering (e.g., blocking access to
+    frozen accounts) without requiring full Vault authorization (AccessToken).
+
+    Attributes:
+        holder_name (str): The full name of the account holder.
+        branch_code (str): The branch code where the account is registered.
+        account_num (str): The unique account identifier.
+        account_type (str): The class name representing the account type (e.g., 'CheckingAccount').
+        is_active (bool): Flag indicating if the account is active or frozen.
+    """
+
+    holder_name: str
+    branch_code: str
+    account_num: str
+    account_type: str
+    is_active: bool
+
+
+@dataclass(frozen=True)
 class AccountInfoDTO:
     """
     Data Transfer Object representing a read-only snapshot of an Account's current state.

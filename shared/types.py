@@ -9,6 +9,24 @@ eliminating the use of magic numbers in the user interface menus.
 
 from enum import IntEnum, StrEnum
 
+from settings import ADMIN_EXIT_CODE
+
+
+class AdminCodeType(IntEnum):
+    """
+    Enumeration representing hidden administrative commands for the PyBank Terminal.
+
+    This enum does not inherit from MenuType as it is not part of the standard
+    user navigation flow. It acts as an out-of-band signaling mechanism for
+    system administrators or maintenance routines (e.g., safely shutting down
+    the infinite Kiosk Loop).
+
+    Attributes:
+        EXIT_CODE: The secure integer code required to gracefully terminate the application.
+    """
+
+    EXIT_CODE = ADMIN_EXIT_CODE
+
 
 class MenuType(IntEnum):
     """
@@ -16,7 +34,7 @@ class MenuType(IntEnum):
 
     Acts as a polymorphic marker class, allowing functions in the Presentation
     and Controller layers to strictly type hint against any valid navigation
-    menu (e.g., accepting MainMenuType or TransactionMenuType interchangeably)
+    menu (e.g., accepting MainMenuType or OperationMenuType interchangeably)
     while rejecting arbitrary integers or unrelated enums.
     """
 
@@ -27,66 +45,69 @@ class MainMenuType(MenuType):
     """
     Enumeration representing the root navigation menu of the banking system.
 
-    Acts as the primary router for the ATM interface (the "External Lobby"),
-    separating existing clients seeking services from new users creating accounts.
+    Acts as the primary router for the ATM interface (the "External Lobby").
+    Adhering to the 'Identity-First' paradigm, it exposes only public or
+    non-authenticated operations at the root level, requiring explicit identity
+    resolution (authentication) for all other account-specific actions.
 
     Attributes:
-        OPERATIONS (1): Routes to the internal operations hub for active clients.
+        DEPOSIT (1): Routes to the public deposit operation (requires only target account info).
         ONBOARDING (2): Routes to the registration workflow for new clients or accounts.
+        OPERATIONS (3): Routes to the internal operations hub, triggering the authentication workflow.
     """
 
-    OPERATIONS = 1
+    DEPOSIT = 1
     ONBOARDING = 2
+    OPERATIONS = 3
 
 
 class OperationMenuType(MenuType):
     """
-    Enumeration representing the internal operations hub (Layer 2 navigation).
+    Enumeration representing the flattened internal operations hub.
 
-    Acts as the central dashboard for users entering the system, segregating
-    day-to-day financial transactions from administrative and security tasks.
-
-    Attributes:
-        TRANSACTIONS (1): Routes to financial operations (Deposit, Withdraw, Statement).
-        MANAGEMENT (2): Routes to account administration and security settings.
-    """
-
-    TRANSACTIONS = 1
-    MANAGEMENT = 2
-
-
-class TransactionMenuType(MenuType):
-    """
-    Enumeration representing the UI menu choices for financial transactions.
+    Acts as the main dashboard for users with a valid identity token, displaying
+    all permitted financial and administrative actions in a single view.
 
     Attributes:
-        DEPOSIT (1): Represents a money deposit operation.
-        WITHDRAW (2): Represents a money withdrawal operation.
-        STATEMENT (3): Represents a bank statement inquiry.
+        DEPOSIT (1): Routes to a logged-in money deposit operation.
+        WITHDRAW (2): Routes to a money withdrawal operation.
+        STATEMENT (3): Routes to a bank statement inquiry.
+        CHANGE_PASSWORD (4): Triggers the secure workflow to change the account password.
+        CLOSE_ACCOUNT (5): Triggers the irreversible process of closing the bank account.
     """
 
     DEPOSIT = 1
     WITHDRAW = 2
     STATEMENT = 3
+    CHANGE_PASSWORD = 4
+    CLOSE_ACCOUNT = 5
 
 
-class ManagementMenuType(MenuType):
+class RestrictedMenuType(MenuType):
     """
-    Enumeration representing the account administration and security operations.
+    Enumeration representing the limited operation hub for blocked accounts.
 
-    Unlike 'TransactionMenuType', which handles monetary flow routing, this
-    enum controls the lifecycle and access parameters of an existing account.
+    Triggered dynamically when the system detects a disabled 'is_active' flag
+    in the user's AccountSummaryDTO, overriding the standard OperationMenuType.
 
     Attributes:
-        PASSWORD (1): Triggers the secure workflow to change the account password.
-        UNFREEZE (2): Triggers the administrative process to reactivate a frozen account.
-        CLOSE (3): Triggers the irreversible process of closing the user's bank account
-                   and removing their data (subject to business rules like zero balance).
+        UNFREEZE_ACCOUNT (1): The only permitted administrative action for a frozen account.
     """
 
-    PASSWORD = 1
-    UNFREEZE = 2
-    CLOSE = 3
+    UNFREEZE_ACCOUNT = 1
+
+
+class TransactionMenuType(MenuType):
+    """
+    Enumeration representing the internal mapping for transaction-specific controllers.
+
+    Used by the MainController to bridge the flattened UI selection (OperationMenuType)
+    into the localized TransactionController context.
+    """
+
+    DEPOSIT = 1
+    WITHDRAW = 2
+    STATEMENT = 3
 
 
 class TransactionType(StrEnum):
