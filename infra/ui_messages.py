@@ -15,12 +15,18 @@ TRANSACTION_MESSAGES: dict[str, dict[str, str]] = {
 }
 
 SYSTEM_MESSAGES: dict[str, dict[str, str]] = {
-    "menu": {
-        "cancel": "Operação cancelada. Voltando ao menu anterior",
-        "exit": "Sessão encerrada. Voltando à tela inicial",
-        "security": "Sessão encerrada por falha de segurança. Voltando à tela inicial",
-        "expired": "Sessão expirada por inatividade. Por favor, autentique-se novamente",
+    "general": {
+        "cancel": "Operação cancelada",
         "unavailable": "O sistema do PyBank está temporariamente indisponível. Tente novamente mais tarde",
+    },
+    "lobby": {
+        "greeting": "Olá, {user_name}! Seja bem-vindo ao PyBank",
+        "restrict": "Sua conta {acc_type} está bloqueada. Seu acesso ao menu está restringido}",
+        "credentials": "Sessão encerrada. Voltando à tela inicial",
+    },
+    "session": {
+        "security": "Sessão encerrada por falha de segurança. Voltando à tela inicial",
+        "expired": "Sessão expirada. Por favor, autentique-se novamente",
     },
     "account_holder": {
         "new_account_holder": "Bem vindo ao PyBank. Faça o seu cadastro de titular",
@@ -41,8 +47,7 @@ SYSTEM_MESSAGES: dict[str, dict[str, str]] = {
     },
     "authentication": {
         "success": "Autenticado com sucesso",
-        "not_account_holder": "Falha na autenticação. Titular não encontrado no sistema",
-        "auth": "Falha na autenticação. Conta não pertence a este titular",
+        "failed": "Falha na autenticação. Retornando à tela inicial",
     },
     "access": {
         "success": "Acesso Concedido",

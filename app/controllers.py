@@ -13,7 +13,7 @@ from infra.io_utils import CallbackReturn, InputType
 from settings import ADMIN_EXIT_CODE
 from shared import exceptions, validators
 from shared.credentials import AccessToken, AccountCard, AuthToken
-from shared.dtos import NewAccountDTO, NewAccountHolderDTO
+from shared.dtos import AccountSummaryDTO, NewAccountDTO, NewAccountHolderDTO
 from shared.exceptions import (
     AccountAlreadyActiveError,
     AccountHolderNotFoundError,
@@ -21,19 +21,20 @@ from shared.exceptions import (
     BankAuthenticationError,
     BankError,
     BankPasswordError,
+    BankSecurityError,
     BankUnavailableError,
     ControllerCredentialsError,
     ControllerOperationError,
     DomainError,
     DuplicatedAccountError,
     DuplicatedAccountHolderError,
+    ExpiredTokenError,
     HomeBranchRestrictionError,
     InvalidBirthDateError,
     InvalidDepositError,
     InvalidWithdrawError,
     NotEmptyAccountError,
     OverdraftRequiredError,
-    SecurityError,
     UserAbortError,
 )
 from shared.types import (
@@ -475,7 +476,7 @@ class TransactionController(BaseController[Account, None]):
                 use_overdraft = True
             except InvalidWithdrawError as e:
                 self._handle_exception_ui("withdraw", e)
-                break
+                raise ControllerOperationError
 
     def _handle_public_deposit(self) -> None:
         user_in_dict = io_utils.get_selected_inputs(
@@ -492,6 +493,7 @@ class TransactionController(BaseController[Account, None]):
             self._handle_info_ui("transaction", "success")
         except BankError as e:
             self._handle_exception_ui("deposit", e)
+            raise ControllerOperationError
         except InvalidDepositError:
             raise RuntimeError("Critical error in I/O deposit value validation logic")
 
@@ -520,7 +522,7 @@ class TransactionController(BaseController[Account, None]):
             case TransactionMenuType.WITHDRAW:
                 self._handle_withdraw()
             case TransactionMenuType.STATEMENT:
-                ...
+                self._handle_statement()
             case _:
                 raise RuntimeError("Unmapped TransactionType")
 
@@ -651,29 +653,7 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
 
         return use_card
 
-    def _authenticate_client(
-        self, cpf: str, card: AccountCard | None = None
-    ) -> AuthToken:
-        """
-        Generates the initial Lobby AuthToken via hardware card or manual input.
-
-        Returns:
-            AuthToken: A stateless token proving account ownership.
-        """
-        if not card:
-            user_inputs = io_utils.get_selected_inputs(
-                ("branch_code", "account_num"),
-                self._auth_config,
-                self._controller_validator_cb,
-            )
-            branch_code = _assert_input(user_inputs["branch_code"], str)
-            account_num = _assert_input(user_inputs["account_num"], str)
-
-            return self._bank_instance.authenticate(cpf, branch_code, account_num)
-
-        return self._bank_instance.authenticate(cpf, card.branch_code, card.account_num)
-
-    def _ensure_authentication(self) -> None:
+    def _ensure_lobby_access(self) -> AuthToken:
         """
         The 'Lobby Door'. Ensures the session holds a valid AuthToken.
 
@@ -686,34 +666,45 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
                 after repeated attempts.
         """
         cpf = self._prompt_cpf()
-        account_holder = None
+        cards = None
         with_card = None
         card = None
 
         try:
-            account_holder = self._bank_instance.get_account_holder_cards(cpf)
+            cards = self._bank_instance.get_account_holder_cards(cpf)
 
-            if account_holder:
+            if cards:
                 with_card = self._use_card_menu()
 
             if with_card:
-                card = self._select_card(account_holder)
+                card = self._select_card(cards)
+                return self._bank_instance.authenticate(
+                    cpf, card.branch_code, card.account_num
+                )
 
-            self._auth_token = self._authenticate_client(cpf, card)
-            self._handle_info_ui("authentication", "success")
-        except (AccountHolderNotFoundError, BankAuthenticationError) as e:
-            self._handle_exception_ui("authentication", e)
-            raise ControllerCredentialsError
-
-        if self._auth_token is None:
-            raise ControllerCredentialsError(
-                "Authentication process failed due to unknown issue"
+            user_inputs = io_utils.get_selected_inputs(
+                ("branch_code", "account_num"),
+                self._auth_config,
+                self._controller_validator_cb,
             )
+            branch_code = _assert_input(user_inputs["branch_code"], str)
+            account_num = _assert_input(user_inputs["account_num"], str)
 
-    def _ensure_access(self) -> None:
+            return self._bank_instance.authenticate(cpf, branch_code, account_num)
+        except (
+            AccountHolderNotFoundError,
+            BankAuthenticationError,
+            UserAbortError,
+        ) as e:
+            self._handle_info_ui("authentication", "failed")
+            raise ControllerCredentialsError from e
+
+    def _ensure_vault_access(self) -> AccessToken:
 
         if not self._auth_token:
-            raise RuntimeError("AuthToken is needed to get vault access")
+            raise RuntimeError(
+                "An authentication token is required to attempt to gain access to the vault"
+            )
 
         attempts_left = self._bank_instance.get_remaining_login_attempts(
             self._auth_token
@@ -723,66 +714,27 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
             if attempt == 1:
                 self._handle_info_ui("access", "last")
 
-            raw_password = io_utils.get_single_input(
-                "password", self._auth_config, self._controller_validator_cb
-            )
-            password = _assert_input(raw_password, str)
-
             try:
-                self._access_token = self._bank_instance.authorize_vault_access(
+                raw_password = io_utils.get_single_input(
+                    "password", self._auth_config, self._controller_validator_cb
+                )
+                password = _assert_input(raw_password, str)
+                return self._bank_instance.authorize_vault_access(
                     self._auth_token, password=password
                 )
-                self._handle_info_ui("access", "success")
-                break
             except BankAuthenticationError as e:
                 self._handle_exception_ui("access", e)
             except BankAccessError as e:
                 self._handle_exception_ui("access", e)
-                raise ControllerCredentialsError(
-                    "Access process failed due to security issues"
-                )
+                raise ControllerCredentialsError from e
+            except UserAbortError as e:
+                raise ControllerCredentialsError from e
             except BankPasswordError:
                 raise RuntimeError("Critical error in I/O password validation logic")
 
-        if self._access_token is None:
-            raise ControllerCredentialsError(
-                "Access process failed due to unknown issue"
-            )
-
-    def _ensure_credentials(
-        self, operation: TransactionMenuType | ManagementMenuType
-    ) -> None:
-        """
-        Security Routing Checkpoint.
-
-        Evaluates the requested operation and enforces the principle of least privilege,
-        triggering either 'Lobby' authentication or 'Vault' authorization depending
-        on the sensitivity of the transaction.
-
-        Args:
-            operation (TransactionType | ManagementType): The intended user action.
-
-        Raises:
-            RuntimeError: If an unknown operation bypasses the security map.
-        """
-        match operation:
-            case TransactionMenuType.DEPOSIT:
-                pass
-            case ManagementMenuType.UNFREEZE:
-                if not self._auth_token:
-                    self._ensure_authentication()
-            case (
-                TransactionMenuType.WITHDRAW
-                | TransactionMenuType.STATEMENT
-                | ManagementMenuType.PASSWORD
-                | ManagementMenuType.CLOSE
-            ):
-                if not self._auth_token:
-                    self._ensure_authentication()
-                if not self._access_token:
-                    self._ensure_access()
-            case _:
-                raise RuntimeError("Critical Security Error: Unmapped operation type.")
+        raise ControllerCredentialsError(
+            "Credentials could not be validated because of an unknown error"
+        )
 
     def _end_session(self) -> None:
         """
@@ -860,86 +812,102 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
             self._handle_exception_ui("close_account", e)
             raise ControllerOperationError
 
-    def _set_transaction_controller(self, transaction_type) -> TransactionController:
+    def _run_transaction_controller(
+        self, transaction_type: TransactionMenuType
+    ) -> None:
         """Instantiates and prepares the TransactionController."""
         controller_obj = TransactionController(
             self._bank_instance,
             transaction_type,
             self._access_token,
         )
-        return controller_obj
+        controller_obj.run_controller()
 
-    def _transactions_menu(self) -> None:
-        """Displays and routes the Transactions sub-menu options."""
-        try:
-            transaction_option = io_utils.get_single_input(
-                "transactions", self._menu_config, self._controller_validator_cb
-            )
-            transaction = TransactionMenuType(transaction_option)
-            self._ensure_credentials(transaction)
-            controller_obj = self._set_transaction_controller(transaction)
-            controller_obj.run_controller()
-        except UserAbortError:
-            self._handle_info_ui("menu", "cancel")
-        except ControllerOperationError:
-            return
+    def _restrict_operations_menu(
+        self, acc_summary: AccountSummaryDTO
+    ) -> RestrictedMenuType:
+        acc_type_map = {
+            "CheckingAccount": "Conta corrente",
+            "SavingsAccount": "Conta poupança",
+        }
+        self._handle_info_ui(
+            "lobby", "restrict", acc_type=acc_type_map[acc_summary.account_type]
+        )
+        user_in_raw = io_utils.get_single_input(
+            "restrict_menu", self._menu_config, self._controller_validator_cb
+        )
+        user_in_int = _assert_input(user_in_raw, int)
 
-    def _management_menu(self) -> None:
-        """Displays and routes the Account Management sub-menu options."""
-        try:
-            management_option = io_utils.get_single_input(
-                "management", self._menu_config, self._controller_validator_cb
-            )
-            management = ManagementMenuType(management_option)
+        return RestrictedMenuType(user_in_int)
 
-            self._ensure_credentials(management)
+    def _operations_menu(self) -> OperationMenuType:
+        user_in_raw = io_utils.get_single_input(
+            "operations", self._menu_config, self._controller_validator_cb
+        )
+        user_in_int = _assert_input(user_in_raw, int)
 
-            match management:
-                case ManagementMenuType.PASSWORD:
-                    self._update_password()
-                case ManagementMenuType.UNFREEZE:
-                    self._unfreeze_account()
-                case ManagementMenuType.CLOSE:
-                    self._close_account()
-                case _:
-                    raise RuntimeError("Unmapped type for ManagementType")
-        except UserAbortError:
-            self._handle_info_ui("menu", "cancel")
-        except ControllerOperationError:
-            return
+        return OperationMenuType(user_in_int)
 
-    def _operation_hub(self) -> None:
-        """
-        The secure hub for all logged-in operations.
-        Catches high-level security breaches (like tampered tokens) and user aborts,
-        ensuring the session is immediately purged before returning to the main menu.
-        """
+    def _vault_hub(self, operation: OperationMenuType) -> None:
+        if not self._access_token:
+            self._access_token = self._ensure_vault_access()
+            self._handle_info_ui("access", "success")
+
+        match operation:
+            case OperationMenuType.WITHDRAW:
+                self._run_transaction_controller(TransactionMenuType.WITHDRAW)
+            case OperationMenuType.STATEMENT:
+                self._run_transaction_controller(TransactionMenuType.STATEMENT)
+            case OperationMenuType.CHANGE_PASSWORD:
+                self._update_password()
+            case OperationMenuType.CLOSE_ACCOUNT:
+                self._close_account()
+            case _:
+                raise RuntimeError("Critical error: Unmapped type")
+
+    def _lobby_hub(self) -> None:
         while True:
             try:
-                raw_operation = io_utils.get_single_input(
-                    "operations", self._menu_config, self._controller_validator_cb
-                )
-                operation = OperationMenuType(_assert_input(raw_operation, int))
+                if not self._auth_token:
+                    self._auth_token = self._ensure_lobby_access()
+                    self._handle_info_ui("authentication", "success")
 
+                account_summary = self._bank_instance.get_account_summary(
+                    self._auth_token
+                )
+                self._handle_info_ui(
+                    "lobby", "greeting", user_name=account_summary.holder_name
+                )
+                operation = (
+                    self._operations_menu()
+                    if account_summary.is_active
+                    else self._restrict_operations_menu(account_summary)
+                )
                 match operation:
-                    case OperationMenuType.TRANSACTIONS:
-                        self._transactions_menu()
-                    case OperationMenuType.MANAGEMENT:
-                        self._management_menu()
+                    case OperationMenuType.DEPOSIT:
+                        self._run_transaction_controller(TransactionMenuType.DEPOSIT)
+                    case RestrictedMenuType.UNFREEZE_ACCOUNT:
+                        self._unfreeze_account()
+                    case OperationMenuType():
+                        self._vault_hub(operation)
                     case _:
-                        raise RuntimeError("Unmapped OperationMenuType")
+                        raise RuntimeError("Critical error: Unmapped type")
+            except ControllerOperationError:
+                continue
             except UserAbortError:
-                self._end_session()
-                self._handle_info_ui("menu", "exit")
-            except SecurityError:
-                self._end_session()
-                self._handle_info_ui("menu", "security")
-            except BankUnavailableError:
-                self._end_session()
-                self._handle_info_ui("menu", "unavailable")
+                self._handle_info_ui("general", "cancel")
             except ControllerCredentialsError:
+                self._handle_info_ui("lobby", "credentials")
                 self._end_session()
-                return
+                break
+            except ExpiredTokenError:
+                self._handle_info_ui("session", "expired")
+                self._end_session()
+                break
+            except BankSecurityError:
+                self._handle_info_ui("session", "security")
+                self._end_session()
+                break
 
     def _main_menu(self) -> MainMenuType | AdminCodeType:
         """
@@ -971,20 +939,16 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
                 menu = self._main_menu()
             except UserAbortError:
                 continue
-            except ValueError as e:
-                raise RuntimeError(
-                    "Critical error in I/O admin code validation logic"
-                ) from e
 
             match menu:
                 case AdminCodeType.EXIT_CODE:
                     break
                 case MainMenuType.DEPOSIT:
-                    self._set_transaction_controller(TransactionMenuType.DEPOSIT)
+                    self._run_transaction_controller(TransactionMenuType.DEPOSIT)
                 case MainMenuType.ONBOARDING:
                     controller_obj = OnboardingController(self._bank_instance)
                     controller_obj.run_controller()
                 case MainMenuType.OPERATIONS:
-                    self._operation_hub()
+                    self._lobby_hub()
                 case _:
                     raise RuntimeError("Critical error: Unmapped type")

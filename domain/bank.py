@@ -619,14 +619,18 @@ class Bank:
 
         Raises:
             TypeError: If any of the provided arguments are not strings.
-            AccountHolderNotFoundError: If the provided CPF is not registered in the system.
-            BankAuthenticationError: If the requested account does not belong to the account holder.
+            BankAuthenticationError: If the provided CPF is not registered, or if the
+                requested account does not belong to the account holder (prevents user enumeration).
         """
         verify.verify_instance(cpf, str)
         verify.verify_instance(branch_code, str)
         verify.verify_instance(account_num, str)
 
-        holder = self._get_account_holder(cpf)
+        try:
+            holder = self._get_account_holder(cpf)
+        except AccountHolderNotFoundError as e:
+            raise BankAuthenticationError("Holder not found in system register") from e
+
         temp_card = AccountCard(holder.cpf, branch_code, account_num)
 
         if not holder.has_account(temp_card):
