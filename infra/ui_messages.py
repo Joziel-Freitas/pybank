@@ -25,6 +25,7 @@ SYSTEM_MESSAGES: dict[str, dict[str, str]] = {
         "credentials": "Sessão encerrada. Voltando à tela inicial",
     },
     "session": {
+        "withdraw_success": "Saque realizado. Por segurança, sua sessão foi encerrada. Por favor, retire o seu cartão e o dinheiro",
         "security": "Sessão encerrada por falha de segurança. Voltando à tela inicial",
         "expired": "Sessão expirada. Por favor, autentique-se novamente",
     },

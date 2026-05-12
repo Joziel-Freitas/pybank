@@ -44,6 +44,7 @@ from shared.exceptions import (
     BankPasswordError,
     BankSecurityError,
     BankUnavailableError,
+    BlockedAccountError,
     DataNotFoundError,
     DuplicatedAccountError,
     DuplicatedAccountHolderError,
@@ -392,18 +393,23 @@ class Bank:
             ) from e
 
     def _get_account_credentials(
-        self, branch_code: str, account_num: str
+        self, branch_code: str, account_num: str, for_update: bool = False
     ) -> dict[str, Any]:
         """
         Retrieves and validates the security credentials dictionary from the repository.
 
         Acts as an internal checkpoint to ensure that all necessary security keys
         (active status, password hash, failed attempts) are properly loaded before
-        any sensitive validation occurs.
+        any sensitive validation occurs. It supports exclusive concurrency control
+        to guarantee data consistency and state isolation during critical mutations
+        (e.g., brute-force mitigation).
 
         Args:
             branch_code (str): The branch code of the target account.
             account_num (str): The target account number.
+            for_update (bool, optional): If True, signals the persistence mechanism
+                to grant exclusive read/write access to these records, preventing
+                concurrent modifications during the active Unit of Work. Defaults to False.
 
         Returns:
             dict[str, Any]: A validated dictionary containing the account credentials.
@@ -412,10 +418,12 @@ class Bank:
             TypeError: If the retrieved data is not a dictionary.
             ValueError: If any strictly required security keys are missing.
             AccountNotFoundError: If the account does not exist in the repository.
+            RuntimeError: If `for_update` is True but the method is called outside
+                an active Unit of Work context.
         """
         try:
             acc_credentials = self._repository.get_account_credentials(
-                branch_code, account_num
+                branch_code, account_num, for_update
             )
         except DataNotFoundError as e:
             raise AccountNotFoundError(
@@ -678,11 +686,11 @@ class Bank:
         frozen accounts, preventing any operations (including read-only views) until
         the account is formally unfrozen via identity verification.
 
-        To mitigate brute-force attacks, it tracks failed login attempts. If the
-        maximum threshold is reached, it employs a Unit of Work with pessimistic
-        concurrency control to safely fetch and freeze the account, preventing
-        Time-of-Check to Time-of-Use (TOCTOU) race conditions during the
-        status update.
+        To mitigate brute-force attacks, it tracks failed login attempts. It employs
+        an isolated state transaction (Unit of Work) with exclusive access control
+        to guarantee that login failures are reliably recorded and the account is
+        frozen if the maximum threshold is reached, seamlessly preventing TOCTOU
+        race conditions during the security update.
 
         Args:
             auth_token (AuthToken): A valid, securely signed authentication token.
@@ -705,48 +713,71 @@ class Bank:
         Bank.validate_password(password)
         self._validate_token(auth_token)
 
-        try:
-            acc_credentials = self._get_account_credentials(
-                auth_token.branch_code, auth_token.account_num
-            )
-        except AccountNotFoundError as e:
-            raise BankSecurityError(
-                "Security breach or race condition: Account no longer exists"
-            ) from e
-
-        if not acc_credentials["is_active"]:
-            raise BankAccessError("This account is blocked and cannot be accessed")
-
-        branch_code = auth_token.branch_code
-        account_num = auth_token.account_num
-        hashed_pwd = acc_credentials["password_hash"]
-        failed_logins = acc_credentials["failed_login_attempts"]
-
-        try:
-            self._check_password(password, hashed_pwd)
-
-            if failed_logins > 0:
-                self._repository.reset_login_attempts(branch_code, account_num)
-
-            return self._generate_access_token(
-                auth_token=auth_token, password_hash=hashed_pwd
-            )
-        except BankAuthenticationError:
+        with self._repository.unit_of_work():
             try:
-                self._repository.register_failed_login(branch_code, account_num)
+                acc_credentials = self._get_account_credentials(
+                    auth_token.branch_code, auth_token.account_num, for_update=True
+                )
+            except AccountNotFoundError as e:
+                raise BankSecurityError(
+                    "Security breach or race condition: Account no longer exists"
+                ) from e
 
-                if (failed_logins + 1) >= Bank.MAX_LOGIN_ATTEMPTS:
-                    with self._repository.unit_of_work():
-                        account = self._get_account(
-                            branch_code, account_num, for_update=True
-                        )
-                        account.freeze()
-                        self._repository.update_account_status(account)
+            is_active = acc_credentials["is_active"]
+            pwd_hash = acc_credentials["password_hash"]
+            failed_attempts = acc_credentials["failed_login_attempts"]
 
-                    raise BankAccessError(
+            if not is_active:
+                raise BankAccessError("This account is blocked and cannot be accessed")
+
+            auth_exception = None
+            access_exception = None
+
+            try:
+                self._check_password(password, pwd_hash)
+            except BankAuthenticationError as e:
+                auth_exception = e
+
+            if not auth_exception:
+                if not failed_attempts:
+                    return self._generate_access_token(
+                        auth_token=auth_token,
+                        password_hash=acc_credentials["password_hash"],
+                    )
+
+                try:
+                    self._repository.reset_login_attempts(
+                        auth_token.branch_code, auth_token.account_num
+                    )
+                    return self._generate_access_token(
+                        auth_token=auth_token,
+                        password_hash=acc_credentials["password_hash"],
+                    )
+                except DataNotFoundError as e:
+                    raise BankSecurityError(
+                        "Security breach or race condition: Account no longer exists"
+                    ) from e
+                except RepositoryError as e:
+                    raise BankUnavailableError(
+                        "The intended operation could not be persisted due to an internal error"
+                    ) from e
+
+            try:
+                self._repository.register_failed_login(
+                    auth_token.branch_code, auth_token.account_num
+                )
+                if (failed_attempts + 1) >= 3:
+                    account = self._get_account(
+                        auth_token.branch_code,
+                        auth_token.account_num,
+                        for_update=True,
+                    )
+                    account.freeze()
+                    self._repository.update_account_status(account)
+
+                    access_exception = BankAccessError(
                         "The account was frozen due to 3 consecutive failed login attempts"
                     )
-                raise
             except (AccountNotFoundError, DataNotFoundError) as e:
                 raise BankSecurityError(
                     "Security breach or race condition: Account no longer exists"
@@ -755,14 +786,8 @@ class Bank:
                 raise BankUnavailableError(
                     "The intended operation could not be persisted due to an internal error"
                 ) from e
-        except DataNotFoundError as e:
-            raise BankSecurityError(
-                "Security breach or race condition: Account no longer exists"
-            ) from e
-        except RepositoryError as e:
-            raise BankUnavailableError(
-                "The intended operation could not be persisted due to an internal error"
-            ) from e
+
+        raise access_exception or auth_exception
 
     def get_account_summary(self, auth_token: AuthToken) -> AccountSummaryDTO:
         """
@@ -870,9 +895,10 @@ class Bank:
         Executes a secure, public-facing deposit operation.
 
         This method bypasses 'Vault' access (no password required) to allow fast
-        deposits from third parties. However, it strictly respects Domain boundaries
-        by hydrating the target Account entity and delegating all mathematical and
-        state-mutating logic to it.
+        deposits from third parties. It operates under a strict Unit of Work with
+        pessimistic locking (FOR UPDATE) to prevent race conditions. It strictly
+        respects Domain boundaries by hydrating the target Account entity and
+        delegating all mathematical and state-mutating logic to it (Tell, Don't Ask).
 
         Args:
             branch_code (str): The branch code of the target account.
@@ -882,7 +908,8 @@ class Bank:
         Raises:
             TypeError: If the arguments are not of the expected types.
             InvalidDepositError: If the deposit amount violates business rules.
-            BlockedAccountError: If the target account is currently frozen.
+            BankAccessError: If the target account is currently frozen, translating
+                the domain-level BlockedAccountError for the presentation layer.
             AccountNotFoundError: If the provided branch or account number does not exist.
             BankUnavailableError: If the deposit could not be persisted due to an internal error.
         """
@@ -896,6 +923,10 @@ class Bank:
                 account = self._get_account(branch_code, account_num, for_update=True)
                 transaction_type = account.deposit(amount)
                 self._repository.save_transaction(account, amount, transaction_type)
+        except BlockedAccountError as e:
+            raise BankAccessError(
+                "Invalid operation for the current Account status"
+            ) from e
         except RepositoryError as e:
             raise BankUnavailableError(
                 "The intended operation could not be persisted due to an internal error"
@@ -910,8 +941,11 @@ class Bank:
         This method operates under a 'Zero Trust' security model. Acting as the
         Aggregate Root, the Bank resolves the target Account strictly from the
         provided AccessToken, ensuring no external layer can inject a tampered
-        Account entity. It delegates the mathematical evaluation and limit usage
-        directly to the Account instance.
+        Account entity.
+
+        It utilizes a Unit of Work with a pessimistic lock to guarantee exclusive
+        access during the transaction. It delegates the mathematical evaluation,
+        status checks, and limit usage directly to the Account instance.
 
         Args:
             access_token (AccessToken): A valid, securely signed vault token.
@@ -925,6 +959,7 @@ class Bank:
             ExpiredTokenError: If the token's TTL has passed.
             BankSecurityError: If the token is invalid, tampered with, or if
                 the account was deleted during the active session (TOCTOU mitigation).
+            BankAccessError: If the target account is frozen during the operation.
             OverdraftRequiredError: If the requested amount exceeds the balance
                 and explicit overdraft consent (`use_overdraft=True`) was not provided.
             InvalidWithdrawError: If the withdrawal amount violates business rules
@@ -946,6 +981,10 @@ class Bank:
         except AccountNotFoundError as e:
             raise BankSecurityError(
                 "Security breach or race condition: Account no longer exists"
+            ) from e
+        except BlockedAccountError as e:
+            raise BankAccessError(
+                "Invalid operation for the current Account status"
             ) from e
         except RepositoryError as e:
             raise BankUnavailableError(
@@ -997,10 +1036,15 @@ class Bank:
         Updates the account's password and forces an immediate session invalidation.
 
         This method operates under a Zero Trust model, requiring full vault access
-        to authorize the change. Due to the architecture of the AccessToken (which
-        embeds the current password hash in its signature), successfully executing
-        this method will immediately invalidate the active token, requiring the
-        client to re-authenticate with the new credentials for future operations.
+        to authorize the change. It explicitly denies password updates for frozen
+        accounts to maintain strict security boundaries.
+
+        It employs an isolated state transaction (Unit of Work) with exclusive
+        access control to prevent concurrent modifications or account deletions
+        (TOCTOU) during the validation and update process. Due to the architecture
+        of the AccessToken (which embeds the current password hash in its signature),
+        successfully executing this method will immediately invalidate the active
+        token, requiring the client to re-authenticate for future operations.
 
         Args:
             access_token (AccessToken): A valid, securely signed vault token.
@@ -1012,25 +1056,34 @@ class Bank:
             ExpiredTokenError: If the token's TTL has passed.
             BankSecurityError: If the token is invalid, tampered with, or if the account
                 no longer exists (TOCTOU mitigation).
+            BankAccessError: If the account is currently frozen, blocking the update.
             BankUnavailableError: If the update could not be persisted due to an internal error.
         """
         Bank.validate_password(new_password)
         self._validate_token(access_token)
 
-        hashed_pwd = self._generate_password_hash(new_password)
+        with self._repository.unit_of_work():
+            try:
+                acc_credentials = self._get_account_credentials(
+                    access_token.branch_code, access_token.account_num, for_update=True
+                )
+                if not acc_credentials["is_active"]:
+                    raise BankAccessError(
+                        "Invalid operation for the current Account status"
+                    )
+                hashed_pwd = self._generate_password_hash(new_password)
 
-        try:
-            self._repository.update_password(
-                access_token.branch_code, access_token.account_num, hashed_pwd
-            )
-        except DataNotFoundError as e:
-            raise BankSecurityError(
-                "Security breach or race condition: Account no longer exists"
-            ) from e
-        except RepositoryError as e:
-            raise BankUnavailableError(
-                "The intended operation could not be persisted due to an internal error"
-            ) from e
+                self._repository.update_password(
+                    access_token.branch_code, access_token.account_num, hashed_pwd
+                )
+            except (AccountNotFoundError, DataNotFoundError) as e:
+                raise BankSecurityError(
+                    "Security breach or race condition: Account no longer exists"
+                ) from e
+            except RepositoryError as e:
+                raise BankUnavailableError(
+                    "The intended operation could not be persisted due to an internal error"
+                ) from e
 
     def unfreeze_account(
         self, auth_token: AuthToken, birth_date: date, new_password: str
@@ -1038,12 +1091,15 @@ class Bank:
         """
         Recovers and unfreezes a blocked account using strict identity verification.
 
-        This method employs a Unit of Work to enforce strict state isolation, ensuring
-        the account cannot be mutated by concurrent processes during the recovery
-        operation. It verifies the provided birth date against the registered
-        account holder's data. Upon success, it delegates the state change to the
-        Account entity, applies a new secure password, resets the login attempts
-        counter, and persists the active status.
+        This method upgrades a standard authentication attempt into a recovery
+        operation. It enforces strict state isolation (Unit of Work with exclusive
+        access control) to ensure the account cannot be mutated or deleted by
+        concurrent processes during the recovery.
+
+        It verifies the provided birth date against the registered account holder's
+        data. Upon success, it delegates the state change to the Account entity,
+        applies a new secure password, resets the login attempts counter, and
+        persists the active status.
 
         Args:
             auth_token (AuthToken): A valid, securely signed authentication token.
@@ -1053,12 +1109,11 @@ class Bank:
         Raises:
             TypeError: If the arguments are not of the expected types.
             ExpiredTokenError: If the token's TTL has passed.
-            BankSecurityError: If the AuthToken is tampered with, invalid, or if the
-                account no longer exists (TOCTOU mitigation).
+            BankAuthenticationError: If the provided birth date is incorrect, or if
+                the account/holder no longer exists (translating infrastructure misses
+                into authentication failures for Lobby access).
             BankPasswordError: If the new password format is invalid.
             AccountAlreadyActiveError: If the account is already operational.
-            BankAuthenticationError: If the provided birth date does not match
-                the registered account holder's data.
             BankUnavailableError: If the operation could not be persisted due to
                 an internal database error.
         """
@@ -1066,36 +1121,44 @@ class Bank:
         verify.verify_instance(birth_date, date)
         self._validate_token(auth_token)
 
-        try:
-            with self._repository.unit_of_work():
+        with self._repository.unit_of_work():
+            try:
+                holder = self._get_account_holder(auth_token.cpf)
                 account = self._get_account(
                     auth_token.branch_code, auth_token.account_num, for_update=True
                 )
+            except AccountHolderNotFoundError as e:
+                raise BankAuthenticationError(
+                    "Holder not found in system register"
+                ) from e
+            except AccountNotFoundError as e:
+                raise BankAuthenticationError(
+                    "The account related to this token no longer exists"
+                ) from e
 
-                if account.is_active:
-                    raise AccountAlreadyActiveError(
-                        "Impossible to unfreeze an operational account"
-                    )
+            if account.is_active:
+                raise AccountAlreadyActiveError(
+                    "Impossible to unfreeze an operational account"
+                )
 
-                holder = self._get_account_holder(auth_token.cpf)
+            if holder.birth_date != birth_date:
+                raise BankAuthenticationError(
+                    "The given birth date doesn't match with registered birth date"
+                )
 
-                if holder.birth_date != birth_date:
-                    raise BankAuthenticationError(
-                        "The given birth date doesn't match with registered birth date"
-                    )
+            pwd_hash = self._generate_password_hash(new_password)
+            account.unfreeze()
 
-                pwd_hash = self._generate_password_hash(new_password)
-                account.unfreeze()
+            try:
                 self._repository.update_security_credentials(account, pwd_hash)
-
-        except AccountNotFoundError as e:
-            raise BankSecurityError(
-                "Security breach or race condition: Account no longer exists"
-            ) from e
-        except RepositoryError as e:
-            raise BankUnavailableError(
-                "The intended operation could not be persisted due to an internal error"
-            ) from e
+            except DataNotFoundError:
+                raise BankAuthenticationError(
+                    "The account related to this token no longer exists"
+                )
+            except RepositoryError as e:
+                raise BankUnavailableError(
+                    "The intended operation could not be persisted due to an internal error"
+                ) from e
 
     def close_account(self, access_token: AccessToken) -> None:
         """
@@ -1104,12 +1167,15 @@ class Bank:
         This method enforces strict business and security rules:
         1. Home Branch Rule: The operation must be executed at the exact
            branch where the account is registered.
-        2. Zero Balance Rule: The account can only be closed if its financial
+        2. Active Status Rule: The account must be fully operational; frozen
+           accounts cannot be closed to prevent evasion of security blocks.
+        3. Zero Balance Rule: The account can only be closed if its financial
            balance is exactly zero.
 
-        It employs a Unit of Work to ensure strict state isolation, preventing
-        concurrent transactions from modifying the balance during the closure
-        process. It relies on the AccessToken to guarantee full vault authorization.
+        It employs a Unit of Work with exclusive read/write access to ensure
+        strict state isolation, preventing concurrent transactions from modifying
+        the balance or status during the closure process. It relies on the
+        AccessToken to guarantee full vault authorization.
 
         Args:
             access_token (AccessToken): A valid, securely signed vault token.
@@ -1118,6 +1184,7 @@ class Bank:
             ExpiredTokenError: If the token's TTL has passed.
             HomeBranchRestrictionError: If the account's branch does not match
                 the current terminal's branch.
+            BankAccessError: If the account is currently frozen, blocking the closure.
             NotEmptyAccountError: If the account has a positive or negative balance.
             BankSecurityError: If the token is invalid, tampered with, or if the
                 account no longer exists (TOCTOU mitigation).
@@ -1131,21 +1198,33 @@ class Bank:
                 "Account closure can only be performed at the home branch"
             )
 
-        try:
-            with self._repository.unit_of_work():
+        with self._repository.unit_of_work():
+            try:
                 account = self._get_account(
                     access_token.branch_code, access_token.account_num, for_update=True
                 )
+            except AccountNotFoundError as e:
+                raise BankSecurityError(
+                    "Security breach or race condition: Account no longer exists"
+                ) from e
 
-                if account.balance != 0:
-                    raise NotEmptyAccountError("Account has a non-zero balance")
+            if not account.is_active:
+                raise BankAccessError(
+                    "Invalid operation for the current Account status"
+                )
 
+            if account.balance != 0:
+                raise NotEmptyAccountError(
+                    "The account cannot be closed because it has a non-zero balance"
+                )
+
+            try:
                 self._repository.delete_account(account)
-        except AccountNotFoundError as e:
-            raise BankSecurityError(
-                "Security breach or race condition: Account no longer exists"
-            ) from e
-        except RepositoryError as e:
-            raise BankUnavailableError(
-                "The intended operation could not be persisted due to an internal error"
-            ) from e
+            except DataNotFoundError as e:
+                raise BankSecurityError(
+                    "Security breach or race condition: Account no longer exists"
+                ) from e
+            except RepositoryError as e:
+                raise BankUnavailableError(
+                    "The intended operation could not be persisted due to an internal error"
+                ) from e

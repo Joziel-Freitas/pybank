@@ -544,7 +544,7 @@ class MySQLRepository:
         return holder_obj
 
     def get_account_credentials(
-        self, branch_code: str, account_num: str
+        self, branch_code: str, account_num: str, for_update: bool = False
     ) -> dict[str, Any]:
         """
         Fetches only the security metadata required for authentication.
@@ -553,24 +553,39 @@ class MySQLRepository:
         strictly the necessary fields ('is_active', 'password_hash', 'failed_login_attempts'),
         avoiding the overhead of hydrating the full Account entity or its transaction history.
 
+        It supports pessimistic locking via the `for_update` flag, which is crucial for
+        preventing Time-of-Check to Time-of-Use (TOCTOU) race conditions during sensitive
+        security operations (e.g., verifying passwords or incrementing failed attempts).
+
         Args:
             branch_code (str): The 4-digit string representing the branch.
             account_num (str): The unique 8-digit string representing the account.
+            for_update (bool, optional): If True, applies a pessimistic lock (FOR UPDATE)
+                to the row, guaranteeing exclusive read/write access. Defaults to False.
 
         Returns:
             dict[str, Any]: A dictionary containing the account's security credentials.
 
         Raises:
-            TypeError: If the provided branch_code or account_num are not strings.
+            TypeError: If the provided arguments are not of the expected types.
+            RuntimeError: If `for_update` is True but the method is called outside
+                an active `unit_of_work()` block, preventing dangling database locks.
             DataNotFoundError: If the requested account does not exist in the database.
         """
         verify.verify_instance(branch_code, str)
         verify.verify_instance(account_num, str)
+        verify.verify_instance(for_update, bool)
 
+        if for_update and not self._in_transaction:
+            raise RuntimeError(
+                "Invalid method call. To update credentials, use the context manager MySQLRepository.unit_of_work()"
+            )
+
+        lock_clause = "FOR UPDATE" if for_update else ""
         sql = (
             "SELECT is_active, password_hash, failed_login_attempts "
             "FROM accounts "
-            "WHERE branch_code = %s AND account_num = %s "
+            f"WHERE branch_code = %s AND account_num = %s {lock_clause}"
         )
         with self._connection.cursor() as cursor:
             cursor.execute(sql, (branch_code, account_num))

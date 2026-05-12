@@ -866,12 +866,16 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
                 raise RuntimeError("Critical error: Unmapped type")
 
     def _lobby_hub(self) -> None:
-        while True:
-            try:
-                if not self._auth_token:
-                    self._auth_token = self._ensure_lobby_access()
-                    self._handle_info_ui("authentication", "success")
+        try:
+            if not self._auth_token:
+                self._auth_token = self._ensure_lobby_access()
+                self._handle_info_ui("authentication", "success")
+        except ControllerCredentialsError:
+            self._handle_info_ui("lobby", "credentials")
+            self._end_session()
 
+        while type(self._auth_token) is AuthToken:
+            try:
                 account_summary = self._bank_instance.get_account_summary(
                     self._auth_token
                 )
@@ -890,24 +894,24 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
                         self._unfreeze_account()
                     case OperationMenuType():
                         self._vault_hub(operation)
+                        if operation == OperationMenuType.WITHDRAW:
+                            self._handle_info_ui("session", "withdraw_success")
+                            self._end_session()
                     case _:
                         raise RuntimeError("Critical error: Unmapped type")
             except ControllerOperationError:
                 continue
             except UserAbortError:
                 self._handle_info_ui("general", "cancel")
+                continue
             except ControllerCredentialsError:
-                self._handle_info_ui("lobby", "credentials")
                 self._end_session()
-                break
             except ExpiredTokenError:
                 self._handle_info_ui("session", "expired")
                 self._end_session()
-                break
             except BankSecurityError:
                 self._handle_info_ui("session", "security")
                 self._end_session()
-                break
 
     def _main_menu(self) -> MainMenuType | AdminCodeType:
         """
