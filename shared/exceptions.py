@@ -69,6 +69,18 @@ class DuplicatedDataError(RepositoryError):
     """Raised when an insertion violates a unique constraint (e.g., duplicate CPF)."""
 
 
+class SystemIOError(SystemBaseException):
+    """Base exceptions for all errors originating from infrastructure I/O layer."""
+
+
+class UserAbortError(SystemIOError):
+    """Control flow exception raised when the user manually cancels an operation."""
+
+
+class InactiveUserError(SystemIOError):
+    """Raised when the user's inactivity reaches the Bank System timeout limit."""
+
+
 # --- Security Layer Exceptions ---
 
 
@@ -107,10 +119,6 @@ class ControllerOperationError(ControllerError):
 
 class ControllerRegisterError(ControllerError):
     """Raised when an onboarding or entity creation process fails."""
-
-
-class UserAbortError(Exception):
-    """Control flow exception raised when the user manually cancels an operation."""
 
 
 # --- Domain Layer Exceptions ---
@@ -238,17 +246,20 @@ class OverdraftRequiredError(AccountError):
 
 
 # --- Error Metadata Mappers ---
+CONTROLLER_ERROR_MAP = {
+    ControllerCredentialsError: "ctrl_credentials",
+    ControllerOperationError: "ctrl_operation",
+    ControllerRegisterError: "ctrl_register",
+}
 
-type ErrorMapType = dict[type[DomainError], str]
-
-DOMAIN_ERROR_MAP: ErrorMapType = {
+DOMAIN_ERROR_MAP = {
     AccountAlreadyActiveError: "acc_active",
     AccountHolderCardNotFoundError: "card_not_found",
     AccountHolderDuplicatedCardError: "duplicated_card",
     AccountHolderNotFoundError: "not_account_holder",
     AccountNotFoundError: "acc_not_found",
     BankAccessError: "access_denied",
-    BankAuthenticationError: "auth",
+    BankAuthenticationError: "auth_failed",
     BankNameError: "name",
     BankPasswordError: "password",
     BankUnavailableError: "unavailable",
@@ -268,33 +279,54 @@ DOMAIN_ERROR_MAP: ErrorMapType = {
     OverdraftRequiredError: "use_limit",
 }
 
+SECURITY_ERROR_MAP = {
+    ExpiredTokenError: "exp_token",
+    BankSecurityError: "bank_security",
+}
 
-def map_exceptions(error: DomainError) -> str:
+
+def map_exceptions(error: ControllerError | DomainError | SecurityError) -> str:
     """
-    Maps a DomainError to a standardized context code.
+    Maps system exceptions to standardized UI context codes.
 
-    Provides a flat, O(1) lookup to identify the specific reason for a domain
-    failure without requiring direct type evaluation of the exception.
+    Acts as an architectural router, evaluating the base type of the exception
+    (Domain, Controller, or Security) and delegating the lookup to the appropriate
+    metadata mapping dictionary. This provides a flat, O(1) lookup to identify
+    the specific reason for a failure without hardcoding error strings in the logic.
 
     Args:
-        error (DomainError): The caught domain exception instance.
+        error (ControllerError | DomainError | SecurityError): The caught exception instance.
 
     Returns:
-        str: A standardized string identifier representing the error's context.
+        str: A standardized string identifier representing the error's context,
+            ready to be consumed by the UI message mappers.
 
     Raises:
-        TypeError: If the provided argument is not a subclass of DomainError.
+        TypeError: If the provided argument is not a subclass of the supported error layers.
         NotImplementedError: If the exception type is valid but missing from
-            the DOMAIN_ERROR_MAP dictionary.
+            the corresponding metadata mapping dictionary.
     """
-    if not isinstance(error, DomainError):
-        raise TypeError(f"Function expects DomainError, got {type(error).__name__}")
+    if not isinstance(error, (ControllerError, DomainError, SecurityError)):
+        raise TypeError(
+            f"Function expects DomainError, ControllerError, or SecurityError. "
+            f"Got {type(error).__name__}"
+        )
 
-    error_context = DOMAIN_ERROR_MAP.get(type(error))
+    match error:
+        case ControllerError():
+            context_map = CONTROLLER_ERROR_MAP
+        case DomainError():
+            context_map = DOMAIN_ERROR_MAP
+        case SecurityError():
+            context_map = SECURITY_ERROR_MAP
+        case _:
+            context_map = {}
+
+    error_context = context_map.get(type(error))
 
     if error_context is None:
         raise NotImplementedError(
-            f"Exception {type(error).__name__} is missing from DOMAIN_ERROR_MAP"
+            f"Exception {type(error).__name__} is missing from exceptions metadata mappers"
         )
 
     return error_context

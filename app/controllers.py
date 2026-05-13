@@ -21,20 +21,21 @@ from shared.exceptions import (
     BankAuthenticationError,
     BankError,
     BankPasswordError,
-    BankSecurityError,
     BankUnavailableError,
     ControllerCredentialsError,
+    ControllerError,
     ControllerOperationError,
     DomainError,
     DuplicatedAccountError,
     DuplicatedAccountHolderError,
-    ExpiredTokenError,
     HomeBranchRestrictionError,
+    InactiveUserError,
     InvalidBirthDateError,
     InvalidDepositError,
     InvalidWithdrawError,
     NotEmptyAccountError,
     OverdraftRequiredError,
+    SecurityError,
     UserAbortError,
 )
 from shared.types import (
@@ -162,6 +163,8 @@ class BaseController(ABC, Generic[T, R]):
             validation mapper, ready to be passed to IO utility functions.
     """
 
+    SYSTEM_TIMEOUT: ClassVar[float] = 90
+
     _model_class: type[T]
     _validation_mapper: ClassVar[dict[str, ValidatorCallback]]
     _controller_validator_cb: Callable[[str, InputType], CallbackReturn]
@@ -205,7 +208,10 @@ class BaseController(ABC, Generic[T, R]):
         raise NotImplementedError()
 
     def _handle_exception_ui(
-        self, context_key: str, error: DomainError, **kwargs
+        self,
+        context_key: str,
+        error: ControllerError | DomainError | SecurityError,
+        **kwargs,
     ) -> None:
         error_key = exceptions.map_exceptions(error)
         error_msg = self._ui_message_map[context_key][error_key]
@@ -254,13 +260,13 @@ class OnboardingController(BaseController[Bank, None], SharedPromptsMixin):
         io_utils.verify_config_map(config.identification_config)
         io_utils.verify_config_map(config.new_account_config)
 
-        _verify_message_map(ui_messages.SYSTEM_MESSAGES)
+        _verify_message_map(ui_messages.ONBOARDING_MESSAGES)
 
         self._bank_instance = bank_instance
         self._auth_config = config.auth_config
         self._identification_config = config.identification_config
         self._new_account_config = config.new_account_config
-        self._ui_message_map = ui_messages.SYSTEM_MESSAGES
+        self._ui_message_map = ui_messages.ONBOARDING_MESSAGES
 
     def _handle_account_holder_data(self, cpf: str) -> NewAccountHolderDTO | str:
         """
@@ -586,6 +592,7 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
         io_utils.verify_config_map(config.auth_config)
         io_utils.verify_config_map(config.identification_config)
         io_utils.verify_config_map(config.menu_config)
+        _verify_message_map(ui_messages.SYSTEM_MESSAGES)
 
         self._bank_instance = bank_instance
         self._auth_config = config.auth_config
@@ -593,6 +600,7 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
         self._menu_config = config.menu_config
         self._auth_token = None
         self._access_token = None
+        self._ui_message_map = ui_messages.SYSTEM_MESSAGES
 
     def __repr__(self) -> str:
         """
@@ -831,7 +839,7 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
             "SavingsAccount": "Conta poupança",
         }
         self._handle_info_ui(
-            "lobby", "restrict", acc_type=acc_type_map[acc_summary.account_type]
+            "info", "lobby_restrict", acc_type=acc_type_map[acc_summary.account_type]
         )
         user_in_raw = io_utils.get_single_input(
             "restrict_menu", self._menu_config, self._controller_validator_cb
@@ -869,9 +877,9 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
         try:
             if not self._auth_token:
                 self._auth_token = self._ensure_lobby_access()
-                self._handle_info_ui("authentication", "success")
-        except ControllerCredentialsError:
-            self._handle_info_ui("lobby", "credentials")
+                self._handle_info_ui("info", "auth_ok")
+        except ControllerCredentialsError as e:
+            self._handle_exception_ui("errors", e)
             self._end_session()
 
         while type(self._auth_token) is AuthToken:
@@ -880,7 +888,7 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
                     self._auth_token
                 )
                 self._handle_info_ui(
-                    "lobby", "greeting", user_name=account_summary.holder_name
+                    "info", "lobby_hello", user_name=account_summary.holder_name
                 )
                 operation = (
                     self._operations_menu()
@@ -895,23 +903,20 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
                     case OperationMenuType():
                         self._vault_hub(operation)
                         if operation == OperationMenuType.WITHDRAW:
-                            self._handle_info_ui("session", "withdraw_success")
                             self._end_session()
                     case _:
                         raise RuntimeError("Critical error: Unmapped type")
-            except ControllerOperationError:
-                continue
             except UserAbortError:
-                self._handle_info_ui("general", "cancel")
+                self._handle_info_ui("info", "user_cancel")
                 continue
-            except ControllerCredentialsError:
+            except InactiveUserError:
                 self._end_session()
-            except ExpiredTokenError:
-                self._handle_info_ui("session", "expired")
+            except ControllerOperationError as e:
+                self._handle_exception_ui("errors", e)
+                continue
+            except (ControllerError, DomainError, SecurityError) as e:
                 self._end_session()
-            except BankSecurityError:
-                self._handle_info_ui("session", "security")
-                self._end_session()
+                self._handle_exception_ui("errors", e)
 
     def _main_menu(self) -> MainMenuType | AdminCodeType:
         """

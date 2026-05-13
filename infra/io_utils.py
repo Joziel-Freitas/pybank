@@ -3,14 +3,17 @@ Input/Output Utilities Module.
 
 This module provides generic tools for interacting with the user via the terminal.
 It handles data collection, type conversion, and orchestration of input loops
-based on configuration maps. It is agnostic to domain rules.
+based on configuration maps. It is agnostic to domain rules and relies on the
+`verify` module for strict type safety at the public boundaries.
 """
 
 from decimal import Decimal, InvalidOperation
 from typing import Callable, NotRequired, TypedDict
 
 import verify
-from shared.exceptions import UserAbortError
+from inputimeout import TimeoutOccurred, inputimeout
+from settings import SYSTEM_TIMEOUT
+from shared.exceptions import InactiveUserError, UserAbortError
 from shared.validators import ValidatorCallback
 
 
@@ -112,74 +115,68 @@ def validate_entry(
     by the configuration loop.
 
     Args:
-        attr_field (str):
-            The name of the field currently being processed.
-        attr_value (InputType):
-            The value entered by the user.
-        validation_mapper (dict[str, ValidatorCallback]):
-            A dictionary mapping field names to their corresponding validation functions.
+        attr_field (str): The name of the field currently being processed.
+        attr_value (InputType): The value entered by the user.
+        validation_mapper (dict[str, ValidatorCallback]): A dictionary mapping field
+            names to their corresponding validation functions.
 
     Returns:
-        CallbackReturn:
-            A dictionary containing the validation result ('result': bool).
+        CallbackReturn: A dictionary containing the validation result ('result': bool).
             If the field is not found in the mapper, returns {'result': True} by default.
+
+    Raises:
+        TypeError: If any of the arguments fail strict type verification.
+        KeyError: If the field is not found within the provided validation mapper.
     """
-    if not isinstance(validation_mapper, dict):
-        raise TypeError(
-            f"validation_mapper must be a dict, got {type(validation_mapper).__name__}"
-        )
-
-    if not isinstance(attr_field, str):
-        raise TypeError(f"attr_field must be a string, got {type(attr_field).__name__}")
-
-    if not isinstance(attr_value, (str, int, float, Decimal)):
-        raise TypeError(
-            f"attr_value must be a string, int, float or Decimal, got {type(attr_value).__name__}"
-        )
+    verify.verify_instance(attr_field, str)
+    verify.verify_instance(attr_value, (str, int, float, Decimal))
+    verify.verify_instance(validation_mapper, dict)
 
     if attr_field not in validation_mapper:
-        return {"result": True}
+        raise KeyError(
+            f"{attr_field} not found in validation mapper: {validation_mapper}"
+        )
 
     validation_func = validation_mapper[attr_field]
     result = validation_func(attr_value)
     return {"result": result}
 
 
-def get_user_input(field_config: InnerConfig) -> InputType:
+def _get_user_input(field_config: InnerConfig, use_timeout: bool) -> InputType:
     """
-    Collects user input, handles type conversion, and checks for exit commands.
+    Collects user input, handles type conversion, and optionally checks for exit/timeout conditions.
+
+    Acts as a secure, private worker method for input collection. It relies on the
+    public orchestrator methods to have pre-validated the 'field_config' structure.
+    If 'use_timeout' is active, it enforces the global SYSTEM_TIMEOUT inactivity limit.
 
     Args:
-        field_config (InnerConfig):
-            Dictionary containing 'prompt', 'value_type', etc., for a single field.
+        field_config (InnerConfig): The validated dictionary configuration for a single field.
+        use_timeout (bool): Flag indicating if the Kiosk inactivity timeout should be enforced.
 
     Returns:
-        InputType:
-            The user input value cast to the specified type.
+        InputType: The user input value cast to the specified type.
 
     Raises:
-        UserAbortError:
-            If the user enters the EXIT_CMD (e.g., 'S') to abort the operation.
-        ValueError:
-            If the configuration is missing 'prompt' or 'value_type'.
-        TypeError:
-            If the specified 'value_type' is not supported (must be str, int, float, or Decimal).
+        UserAbortError: If the user enters the EXIT_CMD (e.g., 'S') to abort the operation.
+        InactiveUserError: If 'use_timeout' is True and the user exceeds the system time limit.
+        TypeError: If the specified 'value_type' is not a supported target cast type.
     """
-    info = field_config.get("info", "Coletando dados...")
-    prompt = field_config.get("prompt")
-    value_type = field_config.get("value_type", str)
-    error_msg = field_config.get("error_msg", "Ocorreu um erro. Tente novamente")
-
-    if not prompt or not value_type:
-        raise ValueError("I/O configuration has no value_type or prompt")
+    info = field_config["info"]
+    prompt = field_config["prompt"]
+    value_type = field_config["value_type"]
+    error_msg = field_config["error_msg"]
 
     if value_type not in (str, int, float, Decimal):
-        raise TypeError("Invalid type specified for I/O utils methods")
+        raise TypeError("Invalid type provided for I/O value casting")
 
     print(f"\n--- {info} ---\t>> 'S' para sair <<")
     while True:
         try:
-            value = input(prompt).strip()
+            if use_timeout:
+                value = inputimeout(prompt=prompt, timeout=SYSTEM_TIMEOUT).strip()
+            else:
+                value = input(prompt).strip()
 
             if value.upper() == EXIT_CMD:
                 raise UserAbortError("Input aborted by user")
@@ -189,51 +186,39 @@ def get_user_input(field_config: InnerConfig) -> InputType:
             print()
             print(error_msg)
             print(f"\nTente novamente ou digite {EXIT_CMD} para sair")
+        except TimeoutOccurred as e:
+            raise InactiveUserError from e
 
 
 def config_loop(
     config_map: ConfigMap,
     callback_fn: Callable[[str, InputType], CallbackReturn],
     skip_fields: list[str | None] | None = None,
+    use_timeout: bool = True,
 ) -> dict[str, InputType]:
     """
     Iterates over a configuration dictionary, collecting and validating data using a contextual callback.
 
     Args:
-        config_map (ConfigMap):
-            The configuration map containing the keys and the InnerConfig for the required data fields.
-
-        callback_fn (Callable[[str, InputType], CallbackReturn]):
-            A validation function called for each collected input.
-            It receives two arguments:
-                1. field_key (str): The key of the field being processed (e.g., 'cpf', 'password').
-                2. user_input (InputType): The value collected from the user.
-
-            It MUST return a dictionary (CallbackReturn) with:
-            - 'result' (bool):
-                - True: Data is valid, store it, and proceed to the next field.
-                - False: Data is invalid, print error_msg, and prompt again for the same field.
-
-            - 'skip_fields' (tuple[str | None], optional):
-                - An immutable tuple of keys to skip for the current and future iterations.
-                - If the tuple contains None, the loop will terminate immediately.
-
-        skip_fields (list[str | None], optional):
-            A mutable list of accumulated skip keys. This list is extended with the values
-            returned by the callback's 'skip_fields' tuple. Defaults to an empty list.
+        config_map (ConfigMap): The configuration map containing the required fields.
+        callback_fn (Callable[[str, InputType], CallbackReturn]): A validation function
+            called for each collected input.
+        skip_fields (list[str | None], optional): A mutable list of accumulated skip keys.
+            Defaults to an empty list.
+        use_timeout (bool, optional): Flag to activate inactivity tracking. Defaults to True.
 
     Returns:
-        dict[str, InputType]:
-            A dictionary with the validated input fields and their values.
+        dict[str, InputType]: A dictionary with the validated input fields and their values.
 
     Raises:
-        UserAbortError:
-            Propagated from 'get_user_input' if the user chooses to abort.
-        ValueError:
-            If any key in 'skip_fields' is provided but not found in 'config_map'.
-        TypeError:
-            If 'callback_fn' is not callable or 'skip_fields' is not a list.
+        UserAbortError: Propagated if the user chooses to abort.
+        InactiveUserError: Propagated if the session times out.
+        ValueError: If skip keys are invalid or missing from the map.
+        TypeError: If structural verification of the config map or arguments fails.
     """
+    verify.verify_instance(use_timeout, bool)
+    verify_config_map(config_map)
+
     if skip_fields is None:
         skip_fields = []
     elif not isinstance(skip_fields, list):
@@ -260,7 +245,7 @@ def config_loop(
         if None in skip_fields:
             break
         while True:
-            user_in = get_user_input(config_dict)
+            user_in = _get_user_input(config_dict, use_timeout)
 
             callback_return = callback_fn(field, user_in)
             result = callback_return.get("result")
@@ -285,41 +270,32 @@ def get_single_input(
     field_key: str,
     config_map: ConfigMap,
     callback_fn: Callable[[str, InputType], CallbackReturn],
+    use_timeout: bool = True,
 ) -> InputType:
     """
     Retrieves and validates a single input field based on a configuration map.
 
     This function acts as a convenience wrapper around 'config_loop', isolating
     a specific field configuration to prompt the user for a single value.
-    It simplifies the process when only one piece of data is needed, avoiding
-    the need to manually construct single-item dictionaries.
 
     Args:
-        field_key (str):
-            The key of the specific field within the config_map to be retrieved.
-        config_map (ConfigMap):
-            The full configuration dictionary containing the field's settings.
-        callback_fn (Callable[[str, InputType], CallbackReturn]):
-            The validation callback function (usually a partial) to be used by the loop.
+        field_key (str): The key of the specific field within the config_map to be retrieved.
+        config_map (ConfigMap): The full configuration dictionary containing the field's settings.
+        callback_fn (Callable[[str, InputType], CallbackReturn]): The validation callback function.
+        use_timeout (bool, optional): Flag to activate inactivity tracking. Defaults to True.
 
     Returns:
-        InputType:
-            The validated value entered by the user.
+        InputType: The validated value entered by the user.
 
     Raises:
-        KeyError:
-            If 'field_key' is not present in 'config_map'.
-        UserAbortError:
-            If the user cancels the operation via the exit command.
+        KeyError: If 'field_key' is not present in 'config_map'.
+        UserAbortError: If the user cancels the operation via the exit command.
+        InactiveUserError: If the session times out.
+        TypeError: If argument types fail verification.
     """
-    if not isinstance(field_key, str):
-        raise TypeError(f"field_key must be a string, got {type(field_key).__name__}")
-
-    if not isinstance(config_map, dict):
-        raise TypeError(f"config_map must be a dict, got {type(config_map).__name__}")
-
-    if field_key not in config_map:
-        raise KeyError(f"Field '{field_key}' not found in the provided configuration.")
+    verify.verify_instance(field_key, str)
+    verify.verify_instance(use_timeout, bool)
+    verify_config_map(config_map)
 
     if not callable(callback_fn):
         raise TypeError(
@@ -327,7 +303,7 @@ def get_single_input(
         )
 
     field_config = {field_key: config_map[field_key]}
-    user_inputs = config_loop(field_config, callback_fn)
+    user_inputs = config_loop(field_config, callback_fn, use_timeout=use_timeout)
     return user_inputs[field_key]
 
 
@@ -335,43 +311,33 @@ def get_selected_inputs(
     target_fields: tuple[str, ...],
     config_map: ConfigMap,
     callback_fn: Callable[[str, InputType], CallbackReturn],
+    use_timeout: bool = True,
 ) -> dict[str, InputType]:
     """
     Retrieves and validates a specific subset of input fields based on a configuration map.
 
-    This function acts as a dynamic wrapper around 'config_loop'. It safely extracts
-    only the requested fields into a sub-configuration, keeping the domain controllers
-    clean and free from dictionary manipulation logic.
+    This function acts as a dynamic wrapper around 'config_loop', safely extracting
+    only the requested fields into a sub-configuration.
 
     Args:
-        target_fields (tuple[str, ...]):
-            A tuple containing the exact keys of the fields to be prompted.
-        config_map (ConfigMap):
-            The full configuration dictionary containing the fields' settings.
-        callback_fn (Callable[[str, InputType], CallbackReturn]):
-            The contextual validation callback function to process the user inputs.
+        target_fields (tuple[str, ...]): The exact keys of the fields to be prompted.
+        config_map (ConfigMap): The full configuration dictionary containing the fields' settings.
+        callback_fn (Callable[[str, InputType], CallbackReturn]): The contextual validation callback.
+        use_timeout (bool, optional): Flag to activate inactivity tracking. Defaults to True.
 
     Returns:
-        dict[str, InputType]:
-            A dictionary containing only the requested fields mapped to their
-            validated input values.
+        dict[str, InputType]: A dictionary containing only the requested fields mapped
+            to their validated input values.
 
     Raises:
-        TypeError:
-            If 'target_fields', 'config_map', or 'callback_fn' receive invalid types.
-        KeyError:
-            If any key inside 'target_fields' is not present in the 'config_map'.
-        UserAbortError:
-            Propagated from 'config_loop' if the user cancels the operation.
+        KeyError: If any key inside 'target_fields' is not present in the 'config_map'.
+        UserAbortError: Propagated if the user cancels the operation.
+        InactiveUserError: Propagated if the session times out.
+        TypeError: If argument types fail verification.
     """
-
-    if not isinstance(target_fields, tuple):
-        raise TypeError(
-            f"target_fields must be a tuple, got {type(target_fields).__name__}"
-        )
-
-    if not isinstance(config_map, dict):
-        raise TypeError(f"config_map must be a dict, got {type(config_map).__name__}")
+    verify.verify_instance(target_fields, tuple)
+    verify.verify_instance(use_timeout, bool)
+    verify_config_map(config_map)
 
     if not set(target_fields).issubset(config_map):
         raise KeyError("One or more target field(s) not found in config_map")
@@ -382,5 +348,5 @@ def get_selected_inputs(
         )
 
     sub_config = {k: config_map[k] for k in target_fields}
-    user_in_dict = config_loop(sub_config, callback_fn)
+    user_in_dict = config_loop(sub_config, callback_fn, use_timeout=use_timeout)
     return user_in_dict
