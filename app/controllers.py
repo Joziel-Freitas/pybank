@@ -1,3 +1,27 @@
+"""
+PyBank Presentation and Application Controllers Module.
+
+This module acts as the orchestrator between the external environment (User/IO)
+and the core Domain layer (Bank). It handles user interactions, input validation,
+routing, and session management within a highly secure, terminal-based Kiosk environment.
+
+Core Responsibilities:
+1. I/O Orchestration: Utilizes configuration maps and dynamic callbacks to safely
+   prompt, capture, and validate user inputs before they ever touch the domain.
+2. Exception Translation: Acts as a protective barrier, catching Domain and
+   Infrastructure exceptions and translating them into user-friendly UI messages
+   via a centralized mapping system, preventing stack trace leaks.
+3. State & Session Management: Securely handles authentication tokens (`AuthToken`
+   and `AccessToken`), ensuring strict access control to financial operations.
+4. Resiliency: Implements an 'Intercept-and-Rethrow' pattern and a Global Exception
+   Handler to guarantee the terminal recovers gracefully from infrastructure
+   failures (like database unavailability) without exposing secure sessions.
+
+Controllers strictly adhere to the 'Tell, Don't Ask' principle when interacting
+with the Bank aggregate, sending immutable DTOs and tokens without ever manipulating
+domain state directly.
+"""
+
 from abc import ABC, abstractmethod
 from dataclasses import asdict
 from datetime import datetime, timedelta
@@ -17,14 +41,15 @@ from shared.dtos import AccountSummaryDTO, NewAccountDTO, NewAccountHolderDTO
 from shared.exceptions import (
     AccountAlreadyActiveError,
     AccountHolderNotFoundError,
+    AccountNotFoundError,
     BankAccessError,
     BankAuthenticationError,
-    BankError,
     BankPasswordError,
     BankUnavailableError,
     ControllerCredentialsError,
     ControllerError,
     ControllerOperationError,
+    ControllerRegisterError,
     DomainError,
     DuplicatedAccountError,
     DuplicatedAccountHolderError,
@@ -85,6 +110,24 @@ def _verify_message_map(message_map: dict[str, dict[str, str]]) -> None:
 
 
 def _assert_input(user_in: InputType, expected_type: type[UserInputT]) -> UserInputT:
+    """
+    Enforces strict runtime type checking for dynamically captured user inputs.
+
+    Acts as a bridge between the untyped I/O boundaries and the statically typed
+    Python ecosystem (mypy). Ensures that validation callbacks returned the expected
+    data types before they are routed to domain components.
+
+    Args:
+        user_in (InputType): The raw input value returned from the UI layer.
+        expected_type (type[UserInputT]): The explicitly required Python type.
+
+    Returns:
+        UserInputT: The validated input securely cast to the expected type.
+
+    Raises:
+        TypeError: If the input type does not perfectly match the expected type,
+            indicating a critical flaw in the internal validation mapping.
+    """
     if isinstance(user_in, expected_type):
         return user_in
 
@@ -94,6 +137,14 @@ def _assert_input(user_in: InputType, expected_type: type[UserInputT]) -> UserIn
 
 
 class SharedPromptsMixin(ABC):
+    """
+    Mixin providing reusable I/O workflows for common, sensitive data entry.
+
+    Encapsulates standard routines like double-entry password creation and
+    CPF gathering, maintaining the DRY (Don't Repeat Yourself) principle across
+    multiple controllers.
+    """
+
     _auth_config: io_utils.ConfigMap
     _identification_config: io_utils.ConfigMap
     _controller_validator_cb: Callable[[str, InputType], CallbackReturn]
@@ -110,13 +161,13 @@ class SharedPromptsMixin(ABC):
             str: The validated, matching 6-digit password string.
         """
         while True:
-            self._handle_info_ui("new_password", "first")
+            self._handle_info_ui("info", "pwd_input")
             raw_pwd_1 = io_utils.get_single_input(
                 "password", self._auth_config, self._controller_validator_cb
             )
             pwd_1 = _assert_input(raw_pwd_1, str)
 
-            self._handle_info_ui("new_password", "second")
+            self._handle_info_ui("info", "pwd_confirm")
             raw_pwd_2 = io_utils.get_single_input(
                 "password", self._auth_config, self._controller_validator_cb
             )
@@ -127,7 +178,7 @@ class SharedPromptsMixin(ABC):
             if matched:
                 return pwd_1
 
-            self._handle_info_ui("new_password", "error")
+            self._handle_info_ui("info", "pwd_error")
 
     def _prompt_cpf(self) -> str:
         """
@@ -150,20 +201,15 @@ class BaseController(ABC, Generic[T, R]):
     Establishes the contract for Input/Output orchestration. Subclasses must implement
     the 'run_controller' method to define the specific flow (creation or transaction).
     It also centralizes the construction of the input validation callback used across
-    all controllers.
+    all controllers and the UI message mapping mechanism.
 
     Attributes:
-        _model_class (Type[T]):
-            The domain class (Person, Account, Bank) managed by this controller.
-        _validation_mapper (ClassVar[dict]):
-            Static dictionary mapping field names to validation functions.
-            Must be defined by each concrete subclass.
-        _controller_validator_cb (Callable[[str, InputType], CallbackReturn]):
-            A dynamically bound callback function, pre-loaded with the subclass's
-            validation mapper, ready to be passed to IO utility functions.
+        _model_class (Type[T]): The domain class managed by this controller.
+        _validation_mapper (ClassVar[dict]): Static dictionary mapping field names
+            to domain-level validation functions.
+        _controller_validator_cb (Callable): Pre-loaded callback for I/O validation.
+        _ui_message_map (dict): The specific message catalog for the controller.
     """
-
-    SYSTEM_TIMEOUT: ClassVar[float] = 90
 
     _model_class: type[T]
     _validation_mapper: ClassVar[dict[str, ValidatorCallback]]
@@ -175,8 +221,8 @@ class BaseController(ABC, Generic[T, R]):
         Initializes the controller with model type and error mapping rules.
 
         Args:
-            model_class (Type[T]):
-                The concrete class type (Bank, Person, Account) to be managed.
+            model_class (Type[T]): The concrete domain class type.
+
         Raises:
             TypeError: If model_class is not a valid Domain Entity subclass.
         """
@@ -194,17 +240,13 @@ class BaseController(ABC, Generic[T, R]):
         )
 
     def __repr__(self) -> str:
+        """Returns a string representation of the controller's runtime identity."""
         class_name = type(self).__name__
         return f"{class_name}({self._model_class.__name__})"
 
     @abstractmethod
     def run_controller(self) -> R:
-        """
-        Executes the main business logic of the controller.
 
-        Returns:
-            R: The result of the controller execution (Object or None).
-        """
         raise NotImplementedError()
 
     def _handle_exception_ui(
@@ -213,6 +255,14 @@ class BaseController(ABC, Generic[T, R]):
         error: ControllerError | DomainError | SecurityError,
         **kwargs,
     ) -> None:
+        """
+        Translates a caught backend exception into a standardized UI message.
+
+        Args:
+            context_key (str): The category inside the message catalog (e.g., 'errors').
+            error (Exception): The exception raised by the domain/application logic.
+            **kwargs: Dynamic arguments to format into the resulting message.
+        """
         error_key = exceptions.map_exceptions(error)
         error_msg = self._ui_message_map[context_key][error_key]
 
@@ -222,6 +272,14 @@ class BaseController(ABC, Generic[T, R]):
         views.controller_output(error_msg)
 
     def _handle_info_ui(self, context_key: str, info_key: str, **kwargs) -> None:
+        """
+        Retrieves and outputs standard informative messages from the UI catalog.
+
+        Args:
+            context_key (str): The category inside the message catalog (e.g., 'info').
+            info_key (str): The specific lookup key for the message.
+            **kwargs: Dynamic arguments to format into the resulting message.
+        """
         info_msg = self._ui_message_map[context_key][info_key]
 
         if kwargs:
@@ -231,6 +289,14 @@ class BaseController(ABC, Generic[T, R]):
 
 
 class OnboardingController(BaseController[Bank, None], SharedPromptsMixin):
+    """
+    Controller responsible for the registration of new clients and accounts.
+
+    Guides the user through data collection via dynamic loops, packages the input
+    into Data Transfer Objects (DTOs), and acts as the entry point for persisting
+    new domain states into the Bank aggregate.
+    """
+
     _validation_mapper = {
         "name": validators.boolean_validator_dec(Person.validate_name),
         "cpf": validators.boolean_validator_dec(Person.validate_cpf),
@@ -253,13 +319,15 @@ class OnboardingController(BaseController[Bank, None], SharedPromptsMixin):
         self,
         bank_instance: Bank,
     ):
+        """
+        Initializes the onboarding controller, injecting the Bank aggregate and UI configs.
+        """
         super().__init__(Bank)
 
         verify.verify_instance(bank_instance, Bank)
         io_utils.verify_config_map(config.auth_config)
         io_utils.verify_config_map(config.identification_config)
         io_utils.verify_config_map(config.new_account_config)
-
         _verify_message_map(ui_messages.ONBOARDING_MESSAGES)
 
         self._bank_instance = bank_instance
@@ -285,10 +353,10 @@ class OnboardingController(BaseController[Bank, None], SharedPromptsMixin):
         is_holder = self._bank_instance.check_account_holder_exists(cpf)
 
         if is_holder:
-            self._handle_info_ui("account_holder", "already_account_holder")
+            self._handle_info_ui("info", "already_account_holder")
             return cpf
 
-        self._handle_info_ui("account_holder", "new_account_holder")
+        self._handle_info_ui("info", "new_account_holder")
         obj_attr = io_utils.config_loop(
             self._identification_config,
             self._controller_validator_cb,
@@ -299,6 +367,12 @@ class OnboardingController(BaseController[Bank, None], SharedPromptsMixin):
         return NewAccountHolderDTO(**obj_attr)
 
     def _handle_account_data(self) -> NewAccountDTO:
+        """
+        Orchestrates the collection of account-specific configurations (type and number).
+
+        Returns:
+            NewAccountDTO: The immutable payload for the new account parameters.
+        """
         obj_attr = io_utils.config_loop(
             self._new_account_config, self._controller_validator_cb
         )
@@ -312,8 +386,8 @@ class OnboardingController(BaseController[Bank, None], SharedPromptsMixin):
 
         Orchestrates data gathering for the account holder and the account,
         prompts for a secure password, and dispatches the registration to
-        the Bank aggregate. Handles domain and application exceptions by
-        rendering appropriate UI messages.
+        the Bank aggregate. Handles domain exceptions by rendering UI messages
+        and allows critical infrastructure errors (BankUnavailableError) to bubble up.
         """
         try:
             cpf = self._prompt_cpf()
@@ -321,26 +395,25 @@ class OnboardingController(BaseController[Bank, None], SharedPromptsMixin):
             account_dto = self._handle_account_data()
             password = self._prompt_new_password()
 
-            self._handle_info_ui("new_password", "created")
+            self._handle_info_ui("info", "pwd_ok")
             self._bank_instance.register_account(
                 account_dto=account_dto,
                 holder_dto_or_cpf=holder_dto_or_cpf,
                 password=password,
             )
-            self._handle_info_ui("new_account", "success")
-        except DuplicatedAccountError as e:
-            self._handle_exception_ui("new_account", e)
+            self._handle_info_ui("info", "register_ok")
         except UserAbortError:
-            self._handle_info_ui("menu", "cancel")
-        except BankUnavailableError as e:
-            self._handle_exception_ui("menu", e)
+            self._handle_info_ui("info", "user_cancel")
+        except DuplicatedAccountError as e:
+            self._handle_exception_ui("errors", e)
+            raise ControllerRegisterError from e
         except (
             BankPasswordError,
             DuplicatedAccountHolderError,
             AccountHolderNotFoundError,
         ):
             raise RuntimeError(
-                "Critical error in I/O logic in password input or internal method logic"
+                "Critical error in I/O logic in password input or internal logic"
             )
 
 
@@ -348,13 +421,10 @@ class TransactionController(BaseController[Account, None]):
     """
     Controller responsible for executing banking transactions (Deposit, Withdraw, Statement).
 
-    Operates in a 'Stateful' manner regarding the session token, but requires
-    'Just-in-Time' password authentication to unlock the Account object.
-
-     Lifecycle:
-    1. Initialization: Receives a valid AuthToken from the parent controller.
-    2. Access Loop: Prompts for password to retrieve the Account instance.
-    3. Operation Loop: Orchestrates financial operations until logout or exit.
+    Operates in a hybrid manner: it can perform public, stateless operations
+    (like third-party deposits) or highly secure, stateful operations (like
+    withdrawals and statements) utilizing an injected AccessToken representing
+    the active vault session.
     """
 
     _validation_mapper = {
@@ -389,6 +459,15 @@ class TransactionController(BaseController[Account, None]):
         transaction_type: TransactionMenuType,
         access_token: AccessToken | None = None,
     ):
+        """
+        Initializes the transaction controller for a specific operational context.
+
+        Args:
+            bank_instance (Bank): The core domain aggregate.
+            transaction_type (TransactionMenuType): The specific operation to perform.
+            access_token (AccessToken, optional): The secure vault token. Must be provided
+                for all operations except public deposits.
+        """
 
         super().__init__(Account)
 
@@ -413,6 +492,7 @@ class TransactionController(BaseController[Account, None]):
         self._ui_message_map = ui_messages.TRANSACTION_MESSAGES
 
     def __repr__(self) -> str:
+        """Returns the controller's runtime state, indicating the access level."""
         class_name = type(self).__name__
         access_status = "Authorized" if self._access_token else "Not authorized"
         account_accessed = (
@@ -428,12 +508,27 @@ class TransactionController(BaseController[Account, None]):
 
     @property
     def _active_access_token(self) -> AccessToken:
+        """
+        Safe getter for the vault access token. Acts as a guard clause.
+
+        Returns:
+            AccessToken: The active vault token.
+
+        Raises:
+            RuntimeError: If called during an unauthenticated flow.
+        """
         if self._access_token is None:
             raise RuntimeError("Getter called without an AccessToken")
 
         return self._access_token
 
     def _get_transaction_value(self) -> Decimal:
+        """
+        Prompts and retrieves the monetary value for a withdrawal or deposit.
+
+        Returns:
+            Decimal: The exact transaction amount requested by the user.
+        """
         transaction_mapper = {
             TransactionMenuType.WITHDRAW: "withdraw",
             TransactionMenuType.DEPOSIT: "deposit",
@@ -443,9 +538,7 @@ class TransactionController(BaseController[Account, None]):
             raise RuntimeError(
                 f"Method doesn't handle {self._transaction_type} operation"
             )
-        self._handle_info_ui(
-            "transaction", "min_value", min_atm=Account.MIN_ATM_TRANSACTION
-        )
+        self._handle_info_ui("info", "min_value", min_atm=Account.MIN_ATM_TRANSACTION)
         transaction_key = transaction_mapper[self._transaction_type]
         value_raw = io_utils.get_single_input(
             transaction_key, self._controller_config, self._controller_validator_cb
@@ -454,6 +547,12 @@ class TransactionController(BaseController[Account, None]):
         return value
 
     def _confirm_overdraft(self) -> bool:
+        """
+        Prompts for explicit client authorization to utilize the account's credit limit.
+
+        Returns:
+            bool: True if authorized, False if denied.
+        """
         use_overdraft_mapper = {1: True, 2: False}
         user_in_raw = io_utils.get_single_input(
             "limit", self._controller_config, self._controller_validator_cb
@@ -462,6 +561,12 @@ class TransactionController(BaseController[Account, None]):
         return use_overdraft_mapper[int_user_in]
 
     def _handle_withdraw(self) -> None:
+        """
+        Manages the complete stateful withdrawal workflow.
+
+        Requests the amount, dispatches to the Bank, handles dynamic fallback
+        prompts for overdraft limits, and traps business constraint errors.
+        """
         amount = self._get_transaction_value()
         use_overdraft = False
 
@@ -470,21 +575,27 @@ class TransactionController(BaseController[Account, None]):
                 self._bank_instance.execute_withdraw(
                     self._active_access_token, amount, use_overdraft=use_overdraft
                 )
-                self._handle_info_ui("transaction", "success")
+                self._handle_info_ui("info", "withdraw_ok")
                 break
             except OverdraftRequiredError as e:
-                self._handle_exception_ui("withdraw", e)
+                self._handle_exception_ui("withdraw_errors", e)
                 proceed = self._confirm_overdraft()
 
                 if not proceed:
                     raise UserAbortError
 
                 use_overdraft = True
-            except InvalidWithdrawError as e:
-                self._handle_exception_ui("withdraw", e)
+            except (BankAccessError, InvalidWithdrawError) as e:
+                self._handle_exception_ui("withdraw_errors", e)
                 raise ControllerOperationError
 
     def _handle_public_deposit(self) -> None:
+        """
+        Manages the stateless, public-facing deposit workflow.
+
+        Requires target routing info (branch and account) instead of a token,
+        translating UI entries into a dispatch request to the Bank.
+        """
         user_in_dict = io_utils.get_selected_inputs(
             ("branch_code", "account_num"),
             self._controller_config,
@@ -496,9 +607,9 @@ class TransactionController(BaseController[Account, None]):
 
         try:
             self._bank_instance.execute_deposit(branch_code, account_num, amount)
-            self._handle_info_ui("transaction", "success")
-        except BankError as e:
-            self._handle_exception_ui("deposit", e)
+            self._handle_info_ui("info", "deposit_ok")
+        except (AccountNotFoundError, BankAccessError) as e:
+            self._handle_exception_ui("deposit_errors", e)
             raise ControllerOperationError
         except InvalidDepositError:
             raise RuntimeError("Critical error in I/O deposit value validation logic")
@@ -522,6 +633,9 @@ class TransactionController(BaseController[Account, None]):
         views.show_statement(transactions_raw, account_info_dict)
 
     def run_controller(self) -> None:
+        """
+        Routes execution to the correct private transaction handler.
+        """
         match self._transaction_type:
             case TransactionMenuType.DEPOSIT:
                 self._handle_public_deposit()
@@ -560,7 +674,7 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
         "cpf": validators.boolean_validator_dec(validators.validate_cpf),
         "password": validators.boolean_validator_dec(Bank.validate_password),
         "birth_date": validators.boolean_validator_dec(Person.validate_birth_date),
-        "use_card": validators.boolean_validator_dec(
+        "use_card_menu": validators.boolean_validator_dec(
             partial(verify.verify_interval, min_val=1, max_val=2)
         ),
         "branch_code": validators.boolean_validator_dec(Account.validate_branch_code),
@@ -652,7 +766,7 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
         use_card_mapper = {1: True, 2: False}
 
         use_card_raw = io_utils.get_single_input(
-            "use_card",
+            "use_card_menu",
             self._menu_config,
             self._controller_validator_cb,
         )
@@ -671,7 +785,7 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
 
         Raises:
             ControllerCredentialsError: If the user fails to provide valid credentials
-                after repeated attempts.
+                after repeated attempts or aborts the process.
         """
         cpf = self._prompt_cpf()
         cards = None
@@ -699,16 +813,31 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
             account_num = _assert_input(user_inputs["account_num"], str)
 
             return self._bank_instance.authenticate(cpf, branch_code, account_num)
+        except UserAbortError:
+            self._handle_info_ui("info", "user_cancel")
+            raise ControllerCredentialsError
         except (
             AccountHolderNotFoundError,
             BankAuthenticationError,
-            UserAbortError,
         ) as e:
-            self._handle_info_ui("authentication", "failed")
+            self._handle_info_ui("error", "auth_failed")
             raise ControllerCredentialsError from e
 
     def _ensure_vault_access(self) -> AccessToken:
+        """
+        The 'Vault Door'. Upgrades Lobby access to full Vault access.
 
+        Requests the user's password, tracking remaining attempts, and dispatches
+        to the Bank domain for brute-force mitigation and cryptographic token upgrades.
+
+        Returns:
+            AccessToken: A secure token granting vault access.
+
+        Raises:
+            RuntimeError: If called without first obtaining an AuthToken.
+            ControllerCredentialsError: If authentication fails, the account freezes,
+                or the user aborts.
+        """
         if not self._auth_token:
             raise RuntimeError(
                 "An authentication token is required to attempt to gain access to the vault"
@@ -720,7 +849,7 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
 
         for attempt in range(attempts_left, 0, -1):
             if attempt == 1:
-                self._handle_info_ui("access", "last")
+                self._handle_info_ui("info", "pwd_last_try")
 
             try:
                 raw_password = io_utils.get_single_input(
@@ -730,13 +859,14 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
                 return self._bank_instance.authorize_vault_access(
                     self._auth_token, password=password
                 )
-            except BankAuthenticationError as e:
-                self._handle_exception_ui("access", e)
+            except BankAuthenticationError:
+                self._handle_info_ui("info", "pwd_wrong")
             except BankAccessError as e:
-                self._handle_exception_ui("access", e)
+                self._handle_exception_ui("errors", e)
                 raise ControllerCredentialsError from e
-            except UserAbortError as e:
-                raise ControllerCredentialsError from e
+            except UserAbortError:
+                self._handle_info_ui("info", "user_cancel")
+                raise ControllerCredentialsError
             except BankPasswordError:
                 raise RuntimeError("Critical error in I/O password validation logic")
 
@@ -754,8 +884,8 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
 
     def _update_password(self) -> None:
         """
-        Orchestrates the secure password update workflow.
-        Automatically revokes the current AccessToken upon success, forcing re-authentication.
+        Handles the workflow for modifying an account's security password.
+        Ensures the active session token is destroyed upon success.
         """
         if not self._access_token:
             raise RuntimeError("Access token required to update the password")
@@ -764,14 +894,17 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
         try:
             self._bank_instance.update_password(self._access_token, new_password)
             self._access_token = None
-            self._handle_info_ui("new_password", "updated")
+            self._handle_info_ui("info", "pwd_update_ok")
+        except BankAccessError as e:
+            self._handle_exception_ui("errors", e)
+            raise ControllerOperationError from e
         except BankPasswordError as e:
             raise RuntimeError("Critical error in I/O password validation logic") from e
 
     def _unfreeze_account(self) -> None:
         """
-        Orchestrates the account recovery workflow.
-        Verifies identity via birth date and resets the password, restoring account access.
+        Provides the specialized workflow for recovering a blocked account
+        using identity verification (birth date confirmation).
         """
         if self._auth_token is None:
             raise RuntimeError("AuthToken required to perform the operation")
@@ -788,42 +921,42 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
             self._bank_instance.unfreeze_account(
                 self._auth_token, birth_date, new_password
             )
-            self._handle_info_ui("unfreeze", "success")
+            self._handle_info_ui("info", "unfreeze_acc_ok")
         except (BankAuthenticationError, AccountAlreadyActiveError) as e:
-            self._handle_exception_ui("unfreeze", e)
+            self._handle_exception_ui("errors", e)
             raise ControllerOperationError
         except (BankPasswordError, InvalidBirthDateError) as e:
             raise RuntimeError("Critical error in I/O validation logic") from e
 
     def _close_account(self) -> None:
         """
-        Orchestrates the permanent account closure workflow.
-
-        Follows the 'Tell, Don't Ask' (EAFP) pattern. It delegates the execution
-        directly to the Domain, relying on Domain Exceptions (NotEmptyAccountError,
-        HomeBranchRestrictionError) to dynamically format and display the correct
-        UI warnings, ensuring business rules remain isolated in the Bank aggregate.
+        Handles the complete account termination workflow, applying constraints
+        such as enforcing a strict zero-balance policy before deletion.
         """
         if self._access_token is None:
             raise RuntimeError("AccessToken is required to close an account")
 
         try:
             self._bank_instance.close_account(self._access_token)
-            self._handle_info_ui("close_account", "success")
-            self._end_session()
+            self._handle_info_ui("info", "close_acc_ok")
+            raise ControllerCredentialsError
         except NotEmptyAccountError:
             account_info_dto = self._bank_instance.get_account_info(self._access_token)
-            key = "positive" if account_info_dto.balance > 0 else "negative"
-            self._handle_info_ui("close_account", key, balance=account_info_dto.balance)
+            key = (
+                "close_acc_positive"
+                if account_info_dto.balance > 0
+                else "close_acc_negative"
+            )
+            self._handle_info_ui("info", key, balance=account_info_dto.balance)
             raise ControllerOperationError
-        except HomeBranchRestrictionError as e:
-            self._handle_exception_ui("close_account", e)
+        except (HomeBranchRestrictionError, BankAccessError) as e:
+            self._handle_exception_ui("errors", e)
             raise ControllerOperationError
 
     def _run_transaction_controller(
         self, transaction_type: TransactionMenuType
     ) -> None:
-        """Instantiates and prepares the TransactionController."""
+        """Delegates financial transaction logic to the specialized Controller."""
         controller_obj = TransactionController(
             self._bank_instance,
             transaction_type,
@@ -834,6 +967,7 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
     def _restrict_operations_menu(
         self, acc_summary: AccountSummaryDTO
     ) -> RestrictedMenuType:
+        """Shows the specific UI menu for frozen/blocked accounts."""
         acc_type_map = {
             "CheckingAccount": "Conta corrente",
             "SavingsAccount": "Conta poupança",
@@ -849,6 +983,7 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
         return RestrictedMenuType(user_in_int)
 
     def _operations_menu(self) -> OperationMenuType:
+        """Shows the standard UI operations menu."""
         user_in_raw = io_utils.get_single_input(
             "operations", self._menu_config, self._controller_validator_cb
         )
@@ -857,9 +992,13 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
         return OperationMenuType(user_in_int)
 
     def _vault_hub(self, operation: OperationMenuType) -> None:
+        """
+        The routing endpoint for Vault-level operations (Withdraw, Statement, Change Password, Close Account).
+        Demands AccessToken authorization.
+        """
         if not self._access_token:
             self._access_token = self._ensure_vault_access()
-            self._handle_info_ui("access", "success")
+            self._handle_info_ui("info", "access_ok")
 
         match operation:
             case OperationMenuType.WITHDRAW:
@@ -874,6 +1013,16 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
                 raise RuntimeError("Critical error: Unmapped type")
 
     def _lobby_hub(self) -> None:
+        """
+        The authenticated environment loop.
+
+        Demands an AuthToken to enter. Allows navigation between restricted
+        operations (such as password change and account closure) and operations
+        that only depend on basic authentication, without requiring vault access
+        (such as unfreezing an account). Upgrades access dynamically if the user
+        selects a vault-level operation. Safely catches local errors while ensuring
+        critical errors cleanly close the session via 'Intercept and Rethrow'.
+        """
         try:
             if not self._auth_token:
                 self._auth_token = self._ensure_lobby_access()
@@ -914,7 +1063,10 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
             except ControllerOperationError as e:
                 self._handle_exception_ui("errors", e)
                 continue
-            except (ControllerError, DomainError, SecurityError) as e:
+            except BankUnavailableError:
+                self._end_session()
+                raise
+            except (ControllerCredentialsError, SecurityError) as e:
                 self._end_session()
                 self._handle_exception_ui("errors", e)
 
@@ -924,7 +1076,6 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
         Includes a hidden verification for the ADMIN_EXIT_CODE to safely shut down
         the terminal application.
         """
-
         user_in = io_utils.get_single_input(
             "main_menu", self._menu_config, self._controller_validator_cb
         )
@@ -940,8 +1091,9 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
         The Kiosk Loop.
 
         The absolute entry point of the presentation layer. It maintains an infinite
-        loop, ensuring the terminal always returns to the Welcome Screen regardless
-        of successful operations, user cancellations, or handled exceptions.
+        loop, acting as the Global Exception Handler, ensuring the terminal always
+        returns to the Welcome Screen gracefully, regardless of successful operations,
+        user cancellations, or unhandled infrastructure exceptions.
         """
         while True:
             try:
@@ -949,15 +1101,18 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
             except UserAbortError:
                 continue
 
-            match menu:
-                case AdminCodeType.EXIT_CODE:
-                    break
-                case MainMenuType.DEPOSIT:
-                    self._run_transaction_controller(TransactionMenuType.DEPOSIT)
-                case MainMenuType.ONBOARDING:
-                    controller_obj = OnboardingController(self._bank_instance)
-                    controller_obj.run_controller()
-                case MainMenuType.OPERATIONS:
-                    self._lobby_hub()
-                case _:
-                    raise RuntimeError("Critical error: Unmapped type")
+            try:
+                match menu:
+                    case AdminCodeType.EXIT_CODE:
+                        break
+                    case MainMenuType.DEPOSIT:
+                        self._run_transaction_controller(TransactionMenuType.DEPOSIT)
+                    case MainMenuType.ONBOARDING:
+                        controller_obj = OnboardingController(self._bank_instance)
+                        controller_obj.run_controller()
+                    case MainMenuType.OPERATIONS:
+                        self._lobby_hub()
+                    case _:
+                        raise RuntimeError("Critical error: Unmapped type")
+            except (BankUnavailableError, ControllerRegisterError) as e:
+                self._handle_exception_ui("errors", e)

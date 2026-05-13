@@ -139,6 +139,10 @@ class AccountAlreadyActiveError(BankError):
     """Raised when trying to unfreeze an operational account."""
 
 
+class AccountHolderNotFoundError(BankError):
+    """Raised when an account holder is not found in the Bank's registry."""
+
+
 class AccountNotFoundError(BankError):
     """Raised when an account is not found in the Bank's registry."""
 
@@ -161,10 +165,6 @@ class BankPasswordError(BankError):
 
 class BankUnavailableError(BankError):
     """Raised when an operation fails due to internal infrastructure issues."""
-
-
-class AccountHolderNotFoundError(BankError):
-    """Raised when an account holder is not found in the Bank's registry."""
 
 
 class DuplicatedAccountError(BankError):

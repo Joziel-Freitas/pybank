@@ -7,11 +7,10 @@ ONBOARDING_MESSAGES: dict[str, dict[str, str]] = {
         "pwd_input": "Insira a sua nova senha (6 dígitos)",
         "pwd_ok": "Senha criada com sucesso",
         "register_ok": "Conta registrada com sucesso",
+        "user_cancel": "Operação cancelada pelo usuário",
     },
     "errors": {
         "acc_duplicated": "Essa conta já se encontra registrada no sistema. Crie uma nova conta",
-        "ctrl_register": "Erro ao registrar sua conta. Tente novamente",
-        "password": "Falha ao registrar sua senha. Tente novamente",
     },
 }
 SYSTEM_MESSAGES: dict[str, dict[str, str]] = {
@@ -25,6 +24,7 @@ SYSTEM_MESSAGES: dict[str, dict[str, str]] = {
         "lobby_restrict": "Sua conta {acc_type} está bloqueada. Seu acesso ao menu está restringido}",
         "pwd_confirm": "Confirme a sua nova senha",
         "pwd_error": "As senhas não conferem. Tente novamente",
+        "pwd_wrong": "Senha incorreta. Tente novamente",
         "pwd_input": "Insira a sua nova senha (6 dígitos)",
         "pwd_last_try": "Atenção: Última tentativa. Se errar a senha, a conta será bloqueada",
         "pwd_ok": "Senha criada com sucesso",
@@ -35,10 +35,11 @@ SYSTEM_MESSAGES: dict[str, dict[str, str]] = {
     "errors": {
         "acc_active": "Essa conta está ativa. Impossível desbloquear",
         "access_denied": "Conta BLOQUEADA por segurança. Desbloqueie a conta para usá-la novamente",
-        "auth_failed": "Falha na autenticação. Retornando à tela inicial",
+        "auth_failed": "Falha na autenticação. Verifique os seus dados com o banco",
         "bank_security": "Sessão encerrada por falha de segurança. Voltando à tela inicial",
         "ctrl_credentials": "Sessão encerrada. Voltando à tela inicial",
         "ctrl_operations": "Operação cancelada",
+        "ctrl_register": "Falha ao registrar sua conta. Tente novamente",
         "exp_token": "Sessão expirada. Por favor, autentique-se novamente",
         "other_branch": "Operação negada. O encerramento de conta deve ser realizado presencialmente na sua agência de origem",
         "unavailable": "O sistema do PyBank está temporariamente indisponível. Tente novamente mais tarde",
@@ -52,11 +53,11 @@ TRANSACTION_MESSAGES: dict[str, dict[str, str]] = {
         "min_value": "Valor mínimo para transação: {min_atm}",
         "withdraw_ok": "Saque realizado com sucesso",
     },
-    "deposit_error": {
+    "deposit_errors": {
         "acc_blocked": "Transação não permitida para esta conta no momento. Entre em contato com o titular",
         "acc_not_found": "Conta inexistente no sistema do PyBank",
     },
-    "withdraw_error": {
+    "withdraw_errors": {
         "acc_blocked": "Sua conta foi BLOQUEADA por segurança. Desbloqueie a conta pra usá-la novamente",
         "value": "Valor indisponível para saque. Transação não autorizada",
         "use_limit": "Valor insuficiente em conta. Para sacar essa quantia autorize o uso do limite especial",
