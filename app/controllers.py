@@ -614,23 +614,31 @@ class TransactionController(BaseController[Account, None]):
         except InvalidDepositError:
             raise RuntimeError("Critical error in I/O deposit value validation logic")
 
-    def _handle_statement(self) -> None:
-        days_mapper = {1: 30, 2: 90, 3: 180}
+    def _handle_balance_statement(self) -> None:
+        account_info_dto = self._bank_instance.get_account_info(
+            self._active_access_token
+        )
+        account_info_dict = asdict(account_info_dto)
 
+        views.show_balance_statement(account_info_dict)
+
+        days_mapper = {1: 30, 2: 90, 3: 180}
         user_in_raw = io_utils.get_single_input(
             "statement", self._controller_config, self._controller_validator_cb
         )
         int_user_in = _assert_input(user_in_raw, int)
         days = days_mapper[int_user_in]
         start_date = datetime.now() - timedelta(days=days)
-        transactions_raw = self._bank_instance.generate_statement(
+
+        statement_dto = self._bank_instance.generate_statement(
             self._active_access_token, start_date
         )
-        account_info_dto = self._bank_instance.get_account_info(
-            self._active_access_token
-        )
+
+        account_info_dto = statement_dto.account_info
         account_info_dict = asdict(account_info_dto)
-        views.show_statement(transactions_raw, account_info_dict)
+        transactions = statement_dto.transactions
+
+        views.show_balance_statement(account_info_dict, transactions)
 
     def run_controller(self) -> None:
         """
@@ -642,7 +650,7 @@ class TransactionController(BaseController[Account, None]):
             case TransactionMenuType.WITHDRAW:
                 self._handle_withdraw()
             case TransactionMenuType.STATEMENT:
-                self._handle_statement()
+                self._handle_balance_statement()
             case _:
                 raise RuntimeError("Unmapped TransactionType")
 

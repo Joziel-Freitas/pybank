@@ -690,8 +690,9 @@ class MySQLRepository:
 
         Returns:
             tuple[dict[str, Any], ...]: A tuple of dictionaries, where each dictionary
-                represents a transaction containing the 'amount' (Decimal) and
-                'created_at' (datetime). Ordered from oldest to newest.
+                represents a transaction containing 'previous_balance' (Decimal),
+                'created_at' (datetime), 'transaction_type' (str), and 'amount' (Decimal).
+                Ordered from oldest to newest.
 
         Raises:
             TypeError: If the provided arguments are not of the expected types.
@@ -707,7 +708,7 @@ class MySQLRepository:
             )
 
         sql = (
-            "SELECT t.previous_balance, t.amount, t.created_at "
+            "SELECT t.previous_balance, t.created_at, t.transaction_type, t.amount "
             "FROM transactions AS t "
             "JOIN accounts AS a "
             "ON t.account_id = a.id "

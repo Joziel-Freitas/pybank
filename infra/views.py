@@ -55,9 +55,19 @@ def controller_output(message: str) -> None:
     print()
 
 
-def show_statement(
-    transactions: tuple[dict[str, Any], ...], account_info: dict[str, Any]
-) -> None:
+def _balance_statement_header(account_info: dict[str, Any]) -> None:
+    """
+    Renders the standardized header for ATM balance and statement screens.
+
+    Clears the terminal to provide a clean UX and displays the bank's layout,
+    current timestamp, and the account holder's identifying information.
+
+    Args:
+        account_info (dict[str, Any]): A dictionary containing the account's
+            metadata (holder_name, branch_code, account_num, account_type).
+    """
+    subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
+
     account_type_mapper = {
         "CheckingAccount": "CONTA CORRENTE",
         "SavingsAccount": "CONTA POUPANÇA",
@@ -66,49 +76,91 @@ def show_statement(
     date = dt.today().strftime("%d/%m/%Y")
     time = dt.time().strftime("%H:%M:%S")
 
-    name = account_info["client_name"]
+    name = account_info["holder_name"]
     branch_code = account_info["branch_code"]
     account_num = account_info["account_num"]
     account_type = account_type_mapper[account_info["account_type"]]
-    balance = account_info["balance"]
-    overdraft_limit = account_info["overdraft_limit"]
-    available_overdraft = account_info["available_overdraft"]
-
-    subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
 
     print(f"{'PYBANK S. A.':^45}")
     print(f"{date} - {'AUTO-ATENDIMENTO'} - {time}")
-    print(
-        f"EXTRATO DE {account_type_mapper[account_info['account_type']]} PARA SIMPLES CONFERÊNCIA"
-    )
+    print(f"EXTRATO DE {account_type} PARA SIMPLES CONFERÊNCIA")
     print()
     print(f"AGÊNCIA: {branch_code},\t CONTA: {account_num}")
     print(f"CLIENTE: {name}")
     print()
-    print(f"{'DATA'}\t{'HISTÓRICO'}\t{'VALOR'}")
+
+
+def _balance_statement_footer(account_info: dict[str, Any]) -> None:
+    """
+    Renders the standardized financial footer for ATM screens.
+
+    Displays the current balance. If the account is a CheckingAccount with an
+    active overdraft limit, it conditionally renders the total and available limits.
+
+    Args:
+        account_info (dict[str, Any]): A dictionary containing the account's
+            financial data (balance, overdraft_limit, available_overdraft).
+    """
+    balance = account_info["balance"]
+    limit = account_info["overdraft_limit"]
+    available = account_info["available_overdraft"]
+
+    print("\n" + "-" * 45)
+    print(f"{'SALDO ATUAL:':<30} R$ {balance:>10.2f}")
+
+    if limit is not None and available is not None:
+        print(f"{'LIMITE CHEQUE ESPECIAL:':<30} R$ {limit:>10.2f}")
+        print(f"{'LIMITE DISPONÍVEL:':<30} R$ {available:>10.2f}")
+
     print("-" * 45 + "\n")
 
+
+def show_balance_statement(
+    account_info: dict[str, Any], transactions: tuple[dict[str, Any], ...] | None = None
+) -> None:
+    """
+    Orchestrates the terminal view for both Balance and Statement operations.
+
+    Acts as a dual-purpose render function based on the presence of the
+    'transactions' argument:
+    - If None: Renders a simple Balance view (Header + Footer).
+    - If empty tuple: Renders the Statement view indicating no recent movements.
+    - If populated tuple: Iterates through the transaction history, rendering
+      the previous balance and the chronological ledger before the current totals.
+
+    Args:
+        account_info (dict[str, Any]): A dictionary representation of the AccountInfoDTO.
+        transactions (tuple[dict[str, Any], ...] | None, optional): A chronological
+            sequence of transaction dictionaries. Defaults to None.
+    """
+    _balance_statement_header(account_info)
+
     if not transactions:
-        print("Nenhuma movimentação registrada")
+        if transactions is not None:
+            print("Nenhuma movimentação registrada no período")
 
-    for i, value in enumerate(transactions, 1):
-        label = "Saque" if value < 0 else "Depósito"
-        print(f"{i:02d} {label:.<25} R$ {value:>10.2f}")
+        _balance_statement_footer(account_info)
+        return
 
-    print("\n" * 2)
-    print(f"{'Saldo Atual':.<28} R$ {balance:>10.2f}")
+    first_item = transactions[0]
+    previous_balance = first_item["previous_balance"]
+    first_date: datetime = first_item["created_at"]
 
-    if overdraft_info:
-        limit = overdraft_info["total_limit"]
-        remaining = overdraft_info["remaining"]
-        print(f"{'Limite Cheque Especial':.<28} R$ {limit:>10.2f}")
+    print(f"{'DATA':<10}\t{'HISTÓRICO':<25} VALOR")
+    print("\n" + "-" * 45)
+    print(
+        f"{first_date.strftime('%d/%m'):<10} {'Saldo anterior':<25} {previous_balance}"
+    )
+    print("\n" + "-" * 45)
 
-        if remaining < limit:
-            print(f"{'Limite Disponível':.<28} R$ {remaining:>10.2f}")
+    for t in transactions:
+        t_date = t["created_at"]
+        t_type = t["transaction_type"]
+        t_amount = t["amount"]
 
-    for i in range(5):
-        print(".", end=" ")
-        sleep(1)
+        print(f"{t_date:<10} {t_type:<25} {t_amount}")
+
+    _balance_statement_footer(account_info)
 
 
 def show_cards(client_cards: list[str]) -> None:
