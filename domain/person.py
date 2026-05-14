@@ -43,19 +43,18 @@ class Person(ABC):
     _cpf: str
     _birth_date: date
 
-    def __init__(self, name: str, cpf: str, birth_date: str | date):
+    def __init__(self, name: str, cpf: str, birth_date: date):
         """
         Initializes a Person instance with validated attributes.
 
         Args:
             name (str): The person's full name.
             cpf (str): The person's CPF string (11 digits).
-            birth_date (str | date): The person's date of birth. Can be a 'dd/mm/yyyy'
-                string (from user input) or a native date object (from the database).
+            birth_date (date): The person's native date of birth.
 
         Raises:
             InvalidNameError: If the name is invalid.
-            InvalidBirthDateError: If the date format is wrong, in the future, or age is invalid.
+            InvalidBirthDateError: If the date is in the future or age is invalid.
             InvalidCpfError: If the CPF is mathematically invalid or poorly formatted.
         """
         self.name = name
@@ -181,46 +180,40 @@ class Person(ABC):
             raise InvalidCpfError(f"Person CPF is invalid: {e}")
 
     @staticmethod
-    def validate_birth_date(birth_date: str | date) -> date:
+    def validate_birth_date(birth_date: date) -> date:
         """
         Validates a given birth date against domain business rules.
 
-        This method accepts both formatted strings (from user input) and native
-        date objects (from the database adapter). It enforces the following rules:
-        1. If it's a string, it must be exactly convertible from the 'dd/mm/yyyy' format.
-        2. Cannot be a future date.
-        3. The resulting age must be within the allowed range (`Person.MIN_AGE` to `Person.MAX_AGE`).
+        Enforces the following rules:
+        1. Cannot be a future date.
+        2. The resulting age must be within the allowed range (`Person.MIN_AGE` to `Person.MAX_AGE`).
 
         Args:
-            birth_date (str | date): The date of birth to validate.
+            birth_date (date): The native Python date object to validate.
 
         Returns:
-            date: The validated native Python date object.
+            date: The validated date object.
 
         Raises:
-            TypeError: If the input is neither a string nor a date object.
-            InvalidBirthDateError: If the format is incorrect, the date is in the future,
-                or the calculated age is outside the valid limits.
+            TypeError: If the input is not a date object.
+            InvalidBirthDateError: If the date is in the future, or the calculated age
+                is outside the valid limits.
         """
-        verify.verify_instance(birth_date, (str, date))
-        try:
-            if isinstance(birth_date, str):
-                date_obj = date.strptime(birth_date, "%d/%m/%Y")
-            elif isinstance(birth_date, date):
-                date_obj = birth_date
+        verify.verify_instance(birth_date, date)
 
+        try:
             today = date.today()
-            if date_obj > today:
+            if birth_date > today:
                 raise ValueError("Date of birth cannot be in the future")
 
-            age = Person._calculate_age(date_obj)
+            age = Person._calculate_age(birth_date)
 
             if not Person.MIN_AGE <= age <= Person.MAX_AGE:
                 raise ValueError(
                     f"Invalid age. Age must be between {Person.MIN_AGE} and {Person.MAX_AGE} (inclusive)"
                 )
 
-            return date_obj
+            return birth_date
         except ValueError as e:
             raise InvalidBirthDateError(
                 f"Value {birth_date} is invalid for date of birth. Cause: {e}"
@@ -244,10 +237,12 @@ class Person(ABC):
 
     def to_dict(self) -> dict:
         """
-        Serializes the person's core data into a dictionary format.
+        Serializes the person's core data into a standard dictionary.
 
-        Retains the native Python `date` object for `birth_date`, delegating
-        the SQL format translation to the database driver (e.g., PyMySQL).
+        Exposes the internal state using native domain types (e.g., maintaining
+        the Python `date` object for `birth_date`). It relies on external adapters
+        (like repositories or serializers) to handle format-specific casting
+        when persisting or transmitting this data.
 
         Returns:
             dict: A dictionary containing 'name', 'cpf', and 'birth_date'.
@@ -287,11 +282,17 @@ class AccountHolder(Person):
 
     _account_cards: set[AccountCard]
 
-    def __init__(self, name: str, cpf: str, birth_date: str | date):
+    def __init__(self, name: str, cpf: str, birth_date: date):
         """
         Initializes an AccountHolder instance.
 
-        Initializes the account holder's wallet of account cards as empty.
+        Initializes the account holder's base identity and sets up an empty
+        wallet for their physical/virtual account cards.
+
+        Args:
+            name (str): The account holder's full name.
+            cpf (str): The account holder's CPF string (11 digits).
+            birth_date (date): The native Python date object representing the date of birth.
         """
         super().__init__(name, cpf, birth_date)
         self._account_cards = set()

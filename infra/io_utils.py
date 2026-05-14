@@ -7,6 +7,7 @@ based on configuration maps. It is agnostic to domain rules and relies on the
 `verify` module for strict type safety at the public boundaries.
 """
 
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Callable, NotRequired, TypedDict
 
@@ -16,6 +17,12 @@ from settings import SYSTEM_TIMEOUT
 from shared.exceptions import InactiveUserError, UserAbortError
 from shared.validators import ValidatorCallback
 
+IO_KEYS = {"info", "prompt", "value_type", "error_msg"}
+EXIT_CMD = "S"
+
+type InputType = str | int | float | Decimal | date
+type ConfigMap = dict[str, InnerConfig]
+
 
 class InnerConfig(TypedDict):
     """
@@ -24,13 +31,15 @@ class InnerConfig(TypedDict):
     Attributes:
         info (str): Short description or label for the configuration option.
         prompt (str): Text shown to the user when input is required.
-        value_type (type): Expected Python type for the input value (e.g., int, str, float).
-        error_msg (str): Error message displayed when the input does not match the expected type or format.
+        input_type (Callable[[str], InputType]): A callable (like a built-in type
+            or a custom parser) that casts the raw string input into the expected Python type.
+        error_msg (str): Error message displayed when the input does not match
+            the expected type or format.
     """
 
     info: str
     prompt: str
-    value_type: type
+    input_type: Callable[[str], InputType]
     error_msg: str
 
 
@@ -50,12 +59,9 @@ class CallbackReturn(TypedDict):
     skip_fields: NotRequired[tuple[str | None]]
 
 
-type InputType = str | int | float | Decimal
-type ConfigMap = dict[str, InnerConfig]
-
-EXIT_CMD = "S"
-
-IO_KEYS = {"info", "prompt", "value_type", "error_msg"}
+def parse_input_date(str_date: str) -> date:
+    """Casts a Brazilian formatted date string into a native date object."""
+    return date.strptime(str_date, "%d/%m/%Y")
 
 
 def verify_config_map(obj_config: ConfigMap) -> None:
@@ -64,11 +70,11 @@ def verify_config_map(obj_config: ConfigMap) -> None:
 
     Ensures that the provided map is a dictionary where each key is a string,
     and its value is an inner dictionary. It validates that within the inner
-    dictionary, the 'value_type' key holds a type object, while all other keys
+    dictionary, the 'input_type' key holds a Callable, while all other keys
     hold string values.
 
     Args:
-        obj_config (config.ConfigMap):
+        obj_config (ConfigMap):
             The configuration map to be verified.
 
     Raises:
@@ -88,9 +94,8 @@ def verify_config_map(obj_config: ConfigMap) -> None:
             for k, v in inner_dict.items():
                 verify.verify_instance(k, str)
 
-                if k == "value_type":
-                    verify.verify_instance(v, type)
-                    continue
+                if k == "input_type" and not callable(v):
+                    raise TypeError("The key 'input_type' expects a callable")
 
                 verify.verify_instance(v, str)
     except TypeError as e:
@@ -155,33 +160,31 @@ def _get_user_input(field_config: InnerConfig, use_timeout: bool) -> InputType:
         use_timeout (bool): Flag indicating if the Kiosk inactivity timeout should be enforced.
 
     Returns:
-        InputType: The user input value cast to the specified type.
+        InputType: The user input value cast to the type specified by 'input_type'.
 
     Raises:
         UserAbortError: If the user enters the EXIT_CMD (e.g., 'S') to abort the operation.
         InactiveUserError: If 'use_timeout' is True and the user exceeds the system time limit.
-        TypeError: If the specified 'value_type' is not a supported target cast type.
+        ValueError | InvalidOperation: If the raw input cannot be cast by the provided callable.
     """
     info = field_config["info"]
     prompt = field_config["prompt"]
-    value_type = field_config["value_type"]
+    input_type = field_config["input_type"]
     error_msg = field_config["error_msg"]
 
-    if value_type not in (str, int, float, Decimal):
-        raise TypeError("Invalid type provided for I/O value casting")
-
     print(f"\n--- {info} ---\t>> 'S' para sair <<")
+
     while True:
         try:
             if use_timeout:
-                value = inputimeout(prompt=prompt, timeout=SYSTEM_TIMEOUT).strip()
+                user_in = inputimeout(prompt=prompt, timeout=SYSTEM_TIMEOUT).strip()
             else:
-                value = input(prompt).strip()
+                user_in = input(prompt).strip()
 
-            if value.upper() == EXIT_CMD:
+            if user_in.upper() == EXIT_CMD:
                 raise UserAbortError("Input aborted by user")
 
-            return value_type(value)
+            return input_type(user_in)
         except (ValueError, InvalidOperation):
             print()
             print(error_msg)

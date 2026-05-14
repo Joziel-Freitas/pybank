@@ -24,7 +24,7 @@ domain state directly.
 
 from abc import ABC, abstractmethod
 from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from functools import partial
 from typing import Any, Callable, ClassVar, Generic, TypeVar, cast
@@ -914,10 +914,10 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
         )
         new_password = self._prompt_new_password()
 
-        birth_date_str = _assert_input(raw_birth_date, str)
+        birth_date = _assert_input(raw_birth_date, date)
 
         try:
-            birth_date = Person.validate_birth_date(birth_date_str)
+            birth_date = Person.validate_birth_date(birth_date)
             self._bank_instance.unfreeze_account(
                 self._auth_token, birth_date, new_password
             )
