@@ -615,6 +615,18 @@ class TransactionController(BaseController[Account, None]):
             raise RuntimeError("Critical error in I/O deposit value validation logic")
 
     def _handle_balance_statement(self) -> None:
+        """
+        Orchestrates the workflow for displaying the account balance and transaction statement.
+
+        Follows a progressive disclosure UI pattern:
+        1. Securely retrieves and displays the current account balance via a
+           read-only AccountInfoDTO.
+        2. Prompts the user to select a historical period (30, 90, or 180 days)
+           for a detailed statement.
+        3. Calculates the cutoff date, fetches the mathematically consistent
+           StatementDTO, and delegates the final rendering of the chronological
+           ledger to the presentation layer.
+        """
         account_info_dto = self._bank_instance.get_account_info(
             self._active_access_token
         )
@@ -1084,8 +1096,13 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
         Includes a hidden verification for the ADMIN_EXIT_CODE to safely shut down
         the terminal application.
         """
+        views.welcome()
+
         user_in = io_utils.get_single_input(
-            "main_menu", self._menu_config, self._controller_validator_cb
+            "main_menu",
+            self._menu_config,
+            self._controller_validator_cb,
+            use_timeout=False,
         )
         int_user_in = _assert_input(user_in, int)
 

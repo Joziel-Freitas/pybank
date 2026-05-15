@@ -14,25 +14,18 @@ from datetime import datetime
 from time import sleep
 from typing import Any
 
+from inputimeout import TimeoutOccurred, inputimeout
+from shared.exceptions import InactiveUserError
+
 
 def welcome() -> None:
     """Displays the application's startup banner and initial instructions."""
     subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
-    print(f"{' PyBank System ':*^43}")
-    print()
-    print(f"{'Escolha uma das opções no menu': ^43}")
-    print("-" * 43)
-
-
-def bye() -> None:
-    """Displays the system shutdown message and exit banner."""
-    subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
-    print("*" * 10, "PyBank System", "*" * 10)
-    print()
-    print("Saindo do sistema", end="")
-    for i in range(3):
-        print(".", end=" ")
-        sleep(0.5)
+    print("*" * 45)
+    print(f"{' PyBank System 3.0':*^45}")
+    print("*" * 45)
+    print(f"{'Escolha uma das opções no menu': ^45}")
+    print("-" * 45)
 
 
 # Dictionary mapping internal status keys to user-friendly messages
@@ -51,7 +44,7 @@ def controller_output(message: str) -> None:
     """
     print()
     print(message)
-    sleep(3)
+    sleep(5)
     print()
 
 
@@ -82,11 +75,12 @@ def _balance_statement_header(account_info: dict[str, Any]) -> None:
     account_type = account_type_mapper[account_info["account_type"]]
 
     print(f"{'PYBANK S. A.':^45}")
-    print(f"{date} - {'AUTO-ATENDIMENTO'} - {time}")
-    print(f"EXTRATO DE {account_type} PARA SIMPLES CONFERÊNCIA")
+    print(f"{date:<10} - {'AUTO-ATENDIMENTO':^23} - {time:>10}")
+    print(f"{f'EXTRATO DE {account_type}':^45}")
+    print(f"{'PARA SIMPLES CONFERÊNCIA':^45}")
     print()
-    print(f"AGÊNCIA: {branch_code},\t CONTA: {account_num}")
-    print(f"CLIENTE: {name}")
+    print(f"AGÊNCIA: {branch_code:<8} CONTA: {account_num:>20}")
+    print(f"CLIENTE: {name.upper()[:36]}")
     print()
 
 
@@ -106,13 +100,18 @@ def _balance_statement_footer(account_info: dict[str, Any]) -> None:
     available = account_info["available_overdraft"]
 
     print("\n" + "-" * 45)
-    print(f"{'SALDO ATUAL:':<30} R$ {balance:>10.2f}")
+    print(f"{'SALDO ATUAL:':<25} R$ {balance:>16.2f}")
 
     if limit is not None and available is not None:
-        print(f"{'LIMITE CHEQUE ESPECIAL:':<30} R$ {limit:>10.2f}")
-        print(f"{'LIMITE DISPONÍVEL:':<30} R$ {available:>10.2f}")
+        print(f"{'LIMITE CHEQUE ESPECIAL:':<25} R$ {limit:>16.2f}")
+        print(f"{'LIMITE DISPONÍVEL:':<25} R$ {available:>16.2f}")
 
     print("-" * 45 + "\n")
+
+    try:
+        inputimeout(prompt="Pressione ENTER para sair...", timeout=90)
+    except TimeoutOccurred as e:
+        raise InactiveUserError("Inactivity timeout during statement view") from e
 
 
 def show_balance_statement(
@@ -137,28 +136,32 @@ def show_balance_statement(
 
     if not transactions:
         if transactions is not None:
-            print("Nenhuma movimentação registrada no período")
+            print(f"{'Nenhuma movimentação registrada no período':^45}")
 
         _balance_statement_footer(account_info)
         return
 
+    transaction_type_map = {
+        "DEPOSIT": "DEPOSITO",
+        "WITHDRAWAL": "SAQUE",
+        "OVERDRAFT_WITHDRAWAL": "SAQUE CHEQUE ESP.",
+    }
+
     first_item = transactions[0]
     previous_balance = first_item["previous_balance"]
-    first_date: datetime = first_item["created_at"]
+    first_date: datetime = first_item["created_at"].strftime("%d/%m")
 
-    print(f"{'DATA':<10}\t{'HISTÓRICO':<25} VALOR")
+    print(f"{'DATA':<6}{'HISTÓRICO':<22}{'VALOR':17}")
     print("\n" + "-" * 45)
-    print(
-        f"{first_date.strftime('%d/%m'):<10} {'Saldo anterior':<25} {previous_balance}"
-    )
+    print(f"{first_date:<6}{'Saldo anterior':<22}{previous_balance:17.2f}")
     print("\n" + "-" * 45)
 
     for t in transactions:
-        t_date = t["created_at"]
-        t_type = t["transaction_type"]
+        t_date = t["created_at"].strftime("%d/%m")
+        t_type = transaction_type_map[t["transaction_type"]]
         t_amount = t["amount"]
 
-        print(f"{t_date:<10} {t_type:<25} {t_amount}")
+        print(f"{t_date:<6}{t_type:<22} {t_amount:17.2f}")
 
     _balance_statement_footer(account_info)
 
