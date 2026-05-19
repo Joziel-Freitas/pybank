@@ -766,7 +766,7 @@ class Bank:
                 self._repository.register_failed_login(
                     auth_token.branch_code, auth_token.account_num
                 )
-                if (failed_attempts + 1) >= 3:
+                if (failed_attempts + 1) >= self.MAX_LOGIN_ATTEMPTS:
                     account = self._get_account(
                         auth_token.branch_code,
                         auth_token.account_num,
@@ -1150,7 +1150,13 @@ class Bank:
             account.unfreeze()
 
             try:
-                self._repository.update_security_credentials(account, pwd_hash)
+                self._repository.update_password(
+                    account.branch_code, account.account_num, pwd_hash
+                )
+                self._repository.reset_login_attempts(
+                    account.branch_code, account.account_num
+                )
+                self._repository.update_account_status(account)
             except DataNotFoundError:
                 raise BankAuthenticationError(
                     "The account related to this token no longer exists"

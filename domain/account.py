@@ -513,7 +513,7 @@ class CheckingAccount(Account):
         available = CheckingAccount.OVERDRAFT_LIMIT + self._balance
         Account._validate_account_withdraw(val=amount, available_val=available)
 
-        if amount > self.balance and not use_overdraft:
+        if amount > self._balance and not use_overdraft:
             raise OverdraftRequiredError(
                 "The requested amount exceeds the standard balance. Explicit overdraft consent required."
             )

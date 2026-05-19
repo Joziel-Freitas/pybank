@@ -230,7 +230,7 @@ class Person(ABC):
         age = today.year - birth_date.year
 
         # Adjust age if the birth date for the current year has not yet passed
-        if (today.day, today.month) < (birth_date.day, birth_date.month):
+        if (today.month, today.day) < (birth_date.month, birth_date.day):
             age -= 1
 
         return age
