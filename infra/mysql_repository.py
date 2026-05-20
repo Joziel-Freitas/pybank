@@ -32,87 +32,6 @@ from shared.types import TransactionType
 load_dotenv()
 
 
-class RepositoryContext:
-    """
-    Internal Context Manager for managing database transactions, cursor lifecycles,
-    and acting as an Anti-Corruption Layer (ACL) boundary.
-
-    Provides a robust, DRY mechanism for executing atomic database operations.
-    It automatically provisions a cursor upon entering the context and guarantees
-    transaction finalization upon exit (commit on success, rollback on failure).
-
-    Crucially, this context manager intercepts low-level database exceptions and
-    translates them into domain-safe `RepositoryError`s. This ensures that the
-    infrastructure details do not leak into the Application or Domain layers.
-    It also strictly releases cursor resources via a `finally` block to prevent
-    memory leaks.
-
-    Attributes:
-        _connection (Connection[cursors.DictCursor]): The active PyMySQL database connection.
-        _cursor (cursors.DictCursor | None): The database dictionary cursor active during the context.
-    """
-
-    _connection: Connection[cursors.DictCursor]
-    _cursor: cursors.Cursor | None
-
-    def __init__(self, connection: Connection[cursors.DictCursor]):
-        """
-        Initializes the context manager with the active database connection.
-
-        Args:
-            connection (Connection[cursors.DictCursor]): The PyMySQL connection
-                instance configured with a DictCursor.
-        """
-        self._connection = connection
-        self._cursor = None
-
-    def __enter__(self) -> cursors.DictCursor:
-        """
-        Enters the runtime context, instantiating and returning a new database cursor.
-
-        Returns:
-            cursors.DictCursor: A new dictionary cursor instance for executing SQL queries.
-        """
-        self._cursor = self._connection.cursor()
-        return self._cursor
-
-    def __exit__(self, exc_type, exc, tb) -> bool:
-        """
-        Exits the runtime context, resolving the transaction, cleaning up resources,
-        and translating infrastructure exceptions.
-
-        If an exception occurs, a rollback is issued. If the exception is a low-level
-        database error, it is caught and re-raised as a `RepositoryError` to maintain
-        layer isolation. If execution is successful, a commit is issued.
-
-        Args:
-            exc_type: The exception type if an error occurred, None otherwise.
-            exc: The exception instance if an error occurred, None otherwise.
-            tb: The traceback if an error occurred, None otherwise.
-
-        Raises:
-            RepositoryError: If a non-domain database exception occurs during execution.
-
-        Returns:
-            bool: Always returns False to ensure exceptions propagate up the call stack.
-        """
-        try:
-            if exc_type:
-                self._connection.rollback()
-
-                if not isinstance(exc, RepositoryError):
-                    raise RepositoryError(
-                        f"Data persistence failed due DB error: {exc}"
-                    ) from exc
-            else:
-                self._connection.commit()
-        finally:
-            if self._cursor:
-                self._cursor.close()
-
-        return False
-
-
 class MySQLRepository:
     """
     Repository class responsible for MySQL database persistence operations.
@@ -368,14 +287,27 @@ class MySQLRepository:
         verify.verify_instance(holder_or_cpf, (AccountHolder, str))
         verify.verify_instance(password_hash, str)
 
-        with RepositoryContext(self._connection) as cursor:
+        try:
+            with self._connection.cursor() as cursor:
 
-            if isinstance(holder_or_cpf, AccountHolder):
-                holder_id = self._insert_account_holder_record(cursor, holder_or_cpf)
-            else:
-                holder_id = self._get_account_holder_id(cursor, holder_or_cpf)
+                if isinstance(holder_or_cpf, AccountHolder):
+                    holder_id = self._insert_account_holder_record(
+                        cursor, holder_or_cpf
+                    )
+                else:
+                    holder_id = self._get_account_holder_id(cursor, holder_or_cpf)
 
-            self._insert_account_record(cursor, account, holder_id, password_hash)
+                self._insert_account_record(cursor, account, holder_id, password_hash)
+                self._connection.commit()
+        except Exception as e:
+            self._connection.rollback()
+
+            if not isinstance(e, RepositoryError):
+                raise RepositoryError(
+                    f"Data persistence failed due DB error: {e}"
+                ) from e
+
+            raise
 
     def save_transaction(
         self, account: Account, amount: Decimal, transaction_type: TransactionType
@@ -728,16 +660,24 @@ class MySQLRepository:
         """
         Increments the failed login attempts counter for a specific account.
 
+        This method is a subordinate operation and strictly requires an active
+        Unit of Work. It MUST be executed within a `with self.unit_of_work():` block.
+
         Args:
             branch_code (str): The 4-digit string representing the branch.
             account_num (str): The target 8-digit account number.
 
         Raises:
+            RuntimeError: If called outside an active `unit_of_work()` block.
             TypeError: If the provided arguments are not strings.
-            DataNotFoundError: If the account does not exist in the database,
-                detected by a zero rowcount during the update.
+            DataNotFoundError: If the account does not exist in the database.
             RepositoryError: If a database error occurs, triggering a transaction rollback.
         """
+        if not self._in_transaction:
+            raise RuntimeError(
+                "Invalid method call. Use the context manager MySQLRepository.unit_of_work()"
+            )
+
         verify.verify_instance(branch_code, str)
         verify.verify_instance(account_num, str)
 
@@ -747,7 +687,7 @@ class MySQLRepository:
             "WHERE branch_code = %s AND account_num = %s"
         )
 
-        with RepositoryContext(self._connection) as cursor:
+        with self._connection.cursor() as cursor:
             cursor.execute(sql, (branch_code, account_num))
 
             if cursor.rowcount == 0:
@@ -758,18 +698,26 @@ class MySQLRepository:
     def reset_login_attempts(self, branch_code: str, account_num: str) -> None:
         """
         Resets the failed login attempts counter to zero for a specific account.
-
         Called upon successful authentication or account unfreezing.
+
+        This method is a subordinate operation and strictly requires an active
+        Unit of Work. It MUST be executed within a `with self.unit_of_work():` block.
 
         Args:
             branch_code (str): The 4-digit string representing the branch.
             account_num (str): The target 8-digit account number.
 
         Raises:
+            RuntimeError: If called outside an active `unit_of_work()` block.
             TypeError: If the provided arguments are not strings.
             DataNotFoundError: If the account does not exist in the database.
             RepositoryError: If a database error occurs, triggering a transaction rollback.
         """
+        if not self._in_transaction:
+            raise RuntimeError(
+                "Invalid method call. Use the context manager MySQLRepository.unit_of_work()"
+            )
+
         verify.verify_instance(branch_code, str)
         verify.verify_instance(account_num, str)
 
@@ -779,7 +727,7 @@ class MySQLRepository:
             "WHERE branch_code = %s AND account_num = %s"
         )
 
-        with RepositoryContext(self._connection) as cursor:
+        with self._connection.cursor() as cursor:
             cursor.execute(sql, (branch_code, account_num))
 
             if cursor.rowcount == 0:
@@ -826,8 +774,8 @@ class MySQLRepository:
         """
         Updates the authentication password hash for a specific account.
 
-        Typically called during account recovery or unfreezing procedures when
-        the client needs to set new credentials.
+        This method is a subordinate operation and strictly requires an active
+        Unit of Work. It MUST be executed within a `with self.unit_of_work():` block.
 
         Args:
             branch_code (str): The 4-digit string representing the branch.
@@ -835,10 +783,16 @@ class MySQLRepository:
             new_password_hash (str): The new securely hashed password.
 
         Raises:
+            RuntimeError: If called outside an active `unit_of_work()` block.
             TypeError: If the arguments are not strings.
             DataNotFoundError: If the account does not exist in the database.
             RepositoryError: If a database error occurs, triggering a transaction rollback.
         """
+        if not self._in_transaction:
+            raise RuntimeError(
+                "Invalid method call. Use the context manager MySQLRepository.unit_of_work()"
+            )
+
         verify.verify_instance(branch_code, str)
         verify.verify_instance(account_num, str)
         verify.verify_instance(new_password_hash, str)
@@ -849,63 +803,13 @@ class MySQLRepository:
             "WHERE branch_code = %s AND account_num = %s"
         )
 
-        with RepositoryContext(self._connection) as cursor:
+        with self._connection.cursor() as cursor:
             cursor.execute(sql, (new_password_hash, branch_code, account_num))
 
             if cursor.rowcount == 0:
                 raise DataNotFoundError(
                     f"Data not found in the database for {branch_code=}, {account_num=}"
                 )
-
-    def update_security_credentials(
-        self,
-        account: Account,
-        new_password_hash: str,
-    ) -> None:
-        """
-        Executes an atomic update of the account's security credentials.
-
-        This method is a subordinate operation and strictly requires an active
-        Unit of Work. It MUST be executed within a `with self.unit_of_work():` block.
-        Updates the password hash, modifies the active status (frozen/unfrozen),
-        and resets the failed login attempts counter back to zero.
-
-        Args:
-            account (Account): The domain Account entity containing the target branch,
-                account number, and the new active status.
-            new_password_hash (str): The new securely hashed password.
-
-        Raises:
-            RuntimeError: If called outside an active `unit_of_work()` block, enforcing the Unit of Work.
-            TypeError: If any of the provided arguments have incorrect types.
-            DataNotFoundError: If the account does not exist in the database,
-                detected by a zero rowcount during the update.
-            RepositoryError: If a database error occurs during the operation.
-        """
-        if not self._in_transaction:
-            raise RuntimeError(
-                "Invalid method call. Use the context manager MySQLRepository.unit_of_work()"
-            )
-
-        verify.verify_instance(account, Account)
-        verify.verify_instance(new_password_hash, str)
-
-        sql = (
-            "UPDATE accounts "
-            "SET password_hash = %s, failed_login_attempts = 0 "
-            "WHERE branch_code = %s AND account_num = %s"
-        )
-
-        with self._connection.cursor() as cursor:
-            cursor.execute(
-                sql, (new_password_hash, account.branch_code, account.account_num)
-            )
-            if cursor.rowcount == 0:
-                raise DataNotFoundError(
-                    f"Data not found in the database for {account.branch_code=}, {account.account_num=}"
-                )
-
-            self._update_account_status(cursor, account)
 
     def delete_account(self, account: Account) -> None:
         """

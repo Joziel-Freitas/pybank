@@ -15,6 +15,7 @@ from time import sleep
 from typing import Any
 
 from inputimeout import TimeoutOccurred, inputimeout
+from settings import BANK_NAME
 from shared.exceptions import InactiveUserError
 
 
@@ -74,7 +75,7 @@ def _balance_statement_header(account_info: dict[str, Any]) -> None:
     account_num = account_info["account_num"]
     account_type = account_type_mapper[account_info["account_type"]]
 
-    print(f"{'PYBANK S. A.':^45}")
+    print(f"{BANK_NAME.upper():^45}")
     print(f"{date:<10} - {'AUTO-ATENDIMENTO':^23} - {time:>10}")
     print(f"{f'EXTRATO DE {account_type}':^45}")
     print(f"{'PARA SIMPLES CONFERÊNCIA':^45}")
