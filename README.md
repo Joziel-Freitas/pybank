@@ -96,5 +96,5 @@ python main.py
 ```
 
 ---
-**Autor:** Joziel Freitas da Silva
+**Autor:** Joziel Freitas da Silva<br>
 *Projeto desenvolvido do zero, guiado pela paixão por resolver problemas complexos através de Backend Engineering, Design Patterns e Clean Code.*
