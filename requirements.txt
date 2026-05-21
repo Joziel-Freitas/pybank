@@ -1,0 +1,4 @@
+bcrypt==5.0.0
+inputimeout==1.0.4
+PyMySQL==1.2.0
+python-dotenv==1.2.2

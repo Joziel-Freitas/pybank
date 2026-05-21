@@ -1,93 +1,100 @@
-# 🏦 PyBank System - CLI Banking Application
+# 🏦 PyBank System 3.0 - Enterprise-Grade CLI Banking Application
 
-Aplicação bancária via linha de comando desenvolvida com foco em **Arquitetura de Software**, **Persistência de Dados** e **Segurança**.
+Uma aplicação bancária via linha de comando desenvolvida com foco extremo em **Arquitetura de Software (Clean Architecture / DDD)**, **Segurança (Zero Trust / AppSec)** e **Concorrência de Dados (ACID)**.
 
 ## 📖 Sobre o Projeto
 
-Este projeto foi desenvolvido como parte do meu portfólio de transição de carreira para Desenvolvimento Backend. O objetivo foi criar um sistema que fugisse de scripts simples e apresentasse uma arquitetura organizada, modular e escalável, sem depender de frameworks externos.
+Este projeto é o marco principal do meu portfólio para Desenvolvimento Backend. O objetivo não foi criar apenas um script funcional, mas provar que é possível aplicar engenharia de software de nível corporativo utilizando Python puro, sem depender de frameworks de alto nível (como Django ou FastAPI) para abstrair a complexidade.
 
-Nesta versão **2.0**, o sistema evoluiu de uma execução em memória para uma aplicação robusta com persistência de dados e tratamentos avançados de segurança e UX.
+Em um intervalo de 82 dias, o sistema evoluiu de uma persistência simples em JSON (v2.0) para uma arquitetura robusta, baseada em um banco de dados relacional isolado em contêineres, aplicando padrões rigorosos de design para garantir segurança, desacoplamento e resiliência a falhas.
 
-O foco central é demonstrar domínio sobre a linguagem Python e conceitos fundamentais de desenvolvimento, como:
+## 🚀 O que mudou na v3.0? (Destaques de Engenharia)
 
-* **Persistência de Dados:** Implementação manual de serialização JSON utilizando o padrão *Repository*.
-* **Segurança Ofensiva/Defensiva:** Proteção contra enumeração de contas e acesso cruzado (*Cross-Access*).
-* **Fail-Fast & UX:** Fluxos otimizados que validam o estado da conta antes de solicitar interações do usuário.
-* **Gestão de Estado:** Controle lógico de sessões e prevenção de *crashes* em tempo de execução.
+Nesta versão, a aplicação deixou de ser um projeto de estudos e passou a adotar práticas de mercado focadas em alta disponibilidade e segurança:
 
-## 🏗️ Estrutura e Arquitetura
+* **Domain-Driven Design (DDD) e DTOs:** Fronteiras arquiteturais estritas. A interface de usuário (View/Controllers) nunca interage diretamente com as entidades de Domínio (`Account`, `AccountHolder`). Todo o tráfego de dados é feito através de Data Transfer Objects (DTOs) imutáveis.
+* **Concorrência e Transações ACID (Unit of Work):** Transição para MySQL. Implementação manual do padrão *Unit of Work* com gerenciamento de contexto (`contextmanager`) e **Bloqueio Pessimista (FOR UPDATE)**, mitigando completamente vulnerabilidades de Race Conditions e TOCTOU (Time-of-Check to Time-of-Use) durante saques e transferências simultâneas.
+* **Segurança Zero Trust e Sessões Stateless:** Fim do armazenamento de sessão em memória. Implementação de um sistema de tokens criptográficos baseados em HMAC-SHA256.
+  * **AuthToken (Lobby):** Comprova a identidade sem expor dados financeiros.
+  * **AccessToken (Vault):** Garante acesso ao cofre. O hash da senha via Bcrypt é embutido na assinatura do token, garantindo que uma troca de senha invalide sessões ativas instantaneamente.
+* **Anti-Corruption Layer (ACL) e Padrão Repository:** O banco de dados é apenas um detalhe de infraestrutura. O Domínio desconhece o SQL. O `MySQLRepository` atua como tradutor, hidratando os objetos de domínio.
+* **Roteamento Centralizado de Exceções:** Padrão *Intercept-and-Rethrow*. Exceções de Domínio e Infraestrutura são mapeadas dinamicamente para um dicionário de mensagens da UI, evitando vazamento de Stack Trace ou lógicas de negócio para o cliente.
 
-O sistema segue princípios de **Clean Architecture**, separando responsabilidades entre Domínio, Aplicação e Infraestrutura.
-
-### Organização de Pastas
+## 🏗️ Estrutura e Arquitetura (Clean Architecture)
 
 ```text
-BankSystem/
-├── app/                # Camada de Aplicação
-│   └── controllers.py  # Orquestração de fluxo e regras de aplicação (Fail-Fast)
-├── data/               # [NOVO] Persistência de dados (Arquivos .json)
-├── domain/             # Camada de Domínio (Core do Negócio)
-│   ├── bank.py         # Regras de negócio, segurança e validação de sessão
-│   ├── account.py      # Entidades de conta (Dataclasses)
-│   └── person.py       # Entidades de Cliente
-├── infra/              # Camada de Infraestrutura
-│   ├── config.py       # Configurações gerais
-│   ├── repository.py   # [NOVO] Implementação do Repository Pattern (Leitura/Escrita)
-│   ├── io_utils.py     # Utilitários de I/O
-│   └── views.py        # Interface com o usuário (CLI)
-├── shared/             # Recursos Compartilhados
-│   ├── exceptions.py   # Exceções personalizadas
-│   └── validators.py   # Validadores de dados
-└── main.py             # Entrypoint e ciclo de vida da aplicação
+PyBank/
+├── app/                  # Camada de Aplicação (Casos de Uso)
+│   └── controllers.py    # Orquestração do fluxo, gestão de sessão e injeção de DTOs
+├── domain/               # Camada de Domínio (O Coração do Negócio - Zero dependências externas)
+│   ├── bank.py           # Aggregate Root, Regras de Segurança e AppSec
+│   ├── account.py        # Entidades base, Fábricas (Dispatchers) para Checking/Savings
+│   └── person.py         # Entidades de Cliente e credenciais de acesso
+├── infra/                # Camada de Infraestrutura (Adaptadores de Interface)
+│   ├── mysql_repository  # Repository Pattern, Unit of Work, ACL e queries SQL
+│   ├── io_utils.py       # Motor de validação de input dinâmico (Inversão de Controle)
+│   ├── config.py         # Mapeamento de regras de I/O
+│   ├── views.py          # Renderização de tela (Terminal)
+│   └── ui_messages.py    # Catálogo central de feedback ao usuário
+├── shared/               # Tipos globais e transporte de dados
+│   ├── dtos.py           # Data Transfer Objects
+│   ├── credentials.py    # Value Objects de Tokens HMAC
+│   └── exceptions.py     # Hierarquia customizada de erros do sistema
+├── main.py               # Composition Root (Dependency Injection Bottom-Up)
+├── init.sql              # Script de inicialização do schema relacional
+├── docker-compose.yaml   # Orquestração do banco de dados
+└── .env.example          # Variáveis de ambiente (12-Factor App)
 ```
 
-## 🛠️ Destaques Técnicos
-1. Persistência e Serialização (JSON)
-O sistema não perde dados ao ser fechado. Foi implementada uma camada de persistência (infra/repository.py) que serializa o estado complexo do banco (Contas, Clientes e Relacionamentos) para arquivos JSON, garantindo a continuidade das operações entre sessões.
+## 🛠️ Tecnologias Utilizadas
+* **Linguagem:** Python 3.12+ (Com tipagem estrita via typing / Mypy)
 
-2. Python Moderno e Dataclasses
-Substituição de estruturas rígidas por Dataclasses, facilitando a tipagem, a mutabilidade controlada e a serialização dos objetos de domínio. Uso extensivo de Type Hints (Python 3.12+).
+* **Persistência:** MySQL 8.0 (PyMySQL)
 
-3. Segurança e Tratamento de Erros
-Prevenção de Enumeração: O sistema trata tentativas de acesso cruzado (senha correta em conta errada) como "Conta não encontrada", impedindo que atacantes mapeiem credenciais válidas.
+* **Infraestrutura:** Docker & Docker Compose
 
-Blindagem de Sessão: O loop principal captura falhas críticas de integridade (RuntimeError), realizando o logout seguro do usuário em vez de derrubar a aplicação.
+* **Segurança:** Bcrypt, HMAC (Hash-based Message Authentication Code), Hashlib
 
-4. Design Patterns e UX
-Repository Pattern: Abstração da camada de salvamento de dados.
+* **Configuração:** python-dotenv (Seguindo princípios do 12-Factor App)
 
-Fail-Fast Strategy: Nos controladores, o sistema verifica o status da conta (Bloqueada/Ativa) antes de solicitar a senha ao usuário, evitando frustração e interações desnecessárias.
+## 💻 Funcionalidades Principais
+* **Identidade First:** Autenticação em duas camadas (Cartão/CPF -> Senha).
 
-Strategy & State: Para validações e gestão de sessão (Logado/Convidado).
+* **Operações Financeiras ACID:** Saques (com cálculo dinâmico de Cheque Especial), Depósitos e Extrato Cronológico com saldo retroativo.
 
-## 🚀 Como Executar
-Pré-requisitos: Python 3.12 ou superior.
+* **Sistema Kiosk Mode:** O Terminal nunca "crasha". Falhas de infraestrutura são capturadas pelo Global Exception Handler e o sistema retorna à tela inicial de forma segura.
 
-Clone o repositório:
+* **Recuperação e Bloqueio:** Congelamento automático de conta após 3 tentativas falhas de login. Recuperação de conta validada por KBA (Knowledge Based Authentication - Data de Nascimento).
 
+* **Alteração e Encerramento:** Troca de senhas com invalidação de token e fechamento de conta mediante regra de saldo zero.
+
+## ⚙️ Como Executar o Projeto
+**Pré-requisitos:** Python 3.12+ e Docker (com Docker Compose) instalados.
+
+**1. Clone o repositório e acesse a pasta:**
+```Bash
 git clone https://github.com/Joziel-Freitas/bank-system-python.git
-
-Entre na pasta do projeto:
-
 cd bank-system-python
+```
 
-Execute a aplicação (Nenhuma dependência externa necessária):
+**2. Configure o Ambiente:**
+Crie uma cópia do arquivo de configuração e edite as credenciais caso necessário:
+```Bash
+cp .env.example .env
+```
 
+**3. Suba o Banco de Dados (Docker):**
+Isso irá iniciar o MySQL e executar automaticamente o init.sql.
+```Bash
+docker-compose up -d
+```
+
+**4. Instale as dependências e rode a aplicação:**
+```Bash
+pip install -r requirements.txt
 python main.py
+```
 
-Nota: A pasta data/ será criada automaticamente na primeira execução para salvar seus dados.
-
-## 💻 Funcionalidades
-O sistema simula um terminal bancário completo:
-
-Autenticação: Login seguro via Token e Senha.
-
-Operações Financeiras: Saque e Depósito (com persistência automática).
-
-Gestão de Conta: Visualização de Saldo e Extrato.
-
-Segurança: Bloqueio automático após 3 tentativas falhas de senha.
-
-Recuperação: Fluxo de desbloqueio de conta (Unfreeze) com validação de dados pessoais (KBA - Knowledge Based Authentication).
-
-Autor: Joziel Freitas Projeto desenvolvido com foco em Backend Engineering, Clean Code e Segurança.
+---
+**Autor:** Joziel Freitas da Silva
+*Projeto desenvolvido do zero, guiado pela paixão por resolver problemas complexos através de Backend Engineering, Design Patterns e Clean Code.*
