@@ -14,13 +14,14 @@ from decimal import Decimal
 from os import environ
 from typing import Any
 
-import verify
-from domain.account import Account
-from domain.person import AccountHolder
 from dotenv import load_dotenv
 from pymysql import connect, cursors, err
 from pymysql.connections import Connection
 from pymysql.constants import CLIENT
+
+from domain.account import Account
+from domain.person import AccountHolder
+from infra import verify
 from shared.exceptions import (
     DataNotFoundError,
     DomainError,

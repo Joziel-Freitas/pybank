@@ -11,8 +11,9 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Callable, NotRequired, TypedDict
 
-import verify
 from inputimeout import TimeoutOccurred, inputimeout
+
+from infra import verify
 from settings import SYSTEM_TIMEOUT
 from shared.exceptions import InactiveUserError, UserAbortError
 from shared.validators import ValidatorCallback
