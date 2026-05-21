@@ -27,11 +27,11 @@ from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from functools import partial
-from typing import Any, Callable, ClassVar, Generic, TypeVar, cast
+from typing import Any, Callable, ClassVar, TypeVar, cast
 
 from domain.account import Account
 from domain.bank import Bank
-from domain.person import AccountHolder, Person
+from domain.person import Person
 from infra import config, io_utils, ui_messages, verify, views
 from infra.io_utils import CallbackReturn, InputType
 from settings import ADMIN_EXIT_CODE
@@ -71,11 +71,6 @@ from shared.types import (
     TransactionMenuType,
 )
 from shared.validators import ValidatorCallback
-
-CreatableT = TypeVar("CreatableT", bound=Person | Account)
-ClientDataT = TypeVar("ClientDataT", bound=AccountHolder | str)
-T = TypeVar("T", bound=Bank | Person | Account)
-R = TypeVar("R")
 
 UserInputT = TypeVar("UserInputT", bound=InputType)
 
@@ -194,7 +189,7 @@ class SharedPromptsMixin(ABC):
         return cpf
 
 
-class BaseController(ABC, Generic[T, R]):
+class BaseController(ABC):
     """
     Abstract Base Class for all Application Controllers.
 
@@ -202,39 +197,23 @@ class BaseController(ABC, Generic[T, R]):
     the 'run_controller' method to define the specific flow (creation or transaction).
     It also centralizes the construction of the input validation callback used across
     all controllers and the UI message mapping mechanism.
-
-    Attributes:
-        _model_class (Type[T]): The domain class managed by this controller.
-        _validation_mapper (ClassVar[dict]): Static dictionary mapping field names
-            to domain-level validation functions.
-        _controller_validator_cb (Callable): Pre-loaded callback for I/O validation.
-        _ui_message_map (dict): The specific message catalog for the controller.
     """
 
-    _model_class: type[T]
+    _bank_instance: Bank
     _validation_mapper: ClassVar[dict[str, ValidatorCallback]]
     _controller_validator_cb: Callable[[str, InputType], CallbackReturn]
     _ui_message_map: dict[str, dict[str, str]]
 
-    def __init__(self, model_class: type[T]):
+    def __init__(self, bank_instance: Bank):
         """
-        Initializes the controller with model type and error mapping rules.
+        Initializes the controller with the Domain's Aggregate Root and error mapping rules.
 
         Args:
-            model_class (Type[T]): The concrete domain class type.
-
-        Raises:
-            TypeError: If model_class is not a valid Domain Entity subclass.
+            bank_instance (Bank): The concrete domain aggregate root.
         """
-        verify.verify_instance(model_class, type)
+        verify.verify_instance(bank_instance, Bank)
 
-        if not issubclass(model_class, (Bank, Person, Account)):
-            raise TypeError(
-                f"model_class {model_class} must be a subclass of Bank, Person, or Account."
-            )
-
-        self._model_class = model_class
-
+        self._bank_instance = bank_instance
         self._controller_validator_cb = partial(
             io_utils.validate_entry, validation_mapper=self._validation_mapper
         )
@@ -242,10 +221,10 @@ class BaseController(ABC, Generic[T, R]):
     def __repr__(self) -> str:
         """Returns a string representation of the controller's runtime identity."""
         class_name = type(self).__name__
-        return f"{class_name}({self._model_class.__name__})"
+        return f"{class_name}({type(self._bank_instance).__name__})"
 
     @abstractmethod
-    def run_controller(self) -> R:
+    def run_controller(self) -> None:
 
         raise NotImplementedError()
 
@@ -288,7 +267,7 @@ class BaseController(ABC, Generic[T, R]):
         views.controller_output(info_msg)
 
 
-class OnboardingController(BaseController[Bank, None], SharedPromptsMixin):
+class OnboardingController(BaseController, SharedPromptsMixin):
     """
     Controller responsible for the registration of new clients and accounts.
 
@@ -320,17 +299,16 @@ class OnboardingController(BaseController[Bank, None], SharedPromptsMixin):
         bank_instance: Bank,
     ):
         """
-        Initializes the onboarding controller, injecting the Bank aggregate and UI configs.
+        Initializes the onboarding controller and UI configs.
+        Delegates the Aggregate Root (Bank) initialization to the BaseController.
         """
-        super().__init__(Bank)
+        super().__init__(bank_instance)
 
-        verify.verify_instance(bank_instance, Bank)
         io_utils.verify_config_map(config.auth_config)
         io_utils.verify_config_map(config.identification_config)
         io_utils.verify_config_map(config.new_account_config)
         _verify_message_map(ui_messages.ONBOARDING_MESSAGES)
 
-        self._bank_instance = bank_instance
         self._auth_config = config.auth_config
         self._identification_config = config.identification_config
         self._new_account_config = config.new_account_config
@@ -417,7 +395,7 @@ class OnboardingController(BaseController[Bank, None], SharedPromptsMixin):
             )
 
 
-class TransactionController(BaseController[Account, None]):
+class TransactionController(BaseController):
     """
     Controller responsible for executing banking transactions (Deposit, Withdraw, Statement).
 
@@ -448,7 +426,6 @@ class TransactionController(BaseController[Account, None]):
         ),
     }
 
-    _bank_instance: Bank
     _transaction_type: TransactionMenuType
     _access_token: AccessToken | None
     _controller_config: io_utils.ConfigMap
@@ -461,6 +438,7 @@ class TransactionController(BaseController[Account, None]):
     ):
         """
         Initializes the transaction controller for a specific operational context.
+        Delegates the Aggregate Root (Bank) initialization to the BaseController.
 
         Args:
             bank_instance (Bank): The core domain aggregate.
@@ -469,9 +447,8 @@ class TransactionController(BaseController[Account, None]):
                 for all operations except public deposits.
         """
 
-        super().__init__(Account)
+        super().__init__(bank_instance)
 
-        verify.verify_instance(bank_instance, Bank)
         verify.verify_instance(transaction_type, TransactionMenuType)
         io_utils.verify_config_map(config.auth_config)
         io_utils.verify_config_map(config.transaction_config)
@@ -485,14 +462,13 @@ class TransactionController(BaseController[Account, None]):
                 "AccessToken is required to perform the requested operation"
             )
 
-        self._bank_instance = bank_instance
         self._transaction_type = transaction_type
         self._access_token = access_token
         self._controller_config = config.auth_config | config.transaction_config
         self._ui_message_map = ui_messages.TRANSACTION_MESSAGES
 
     def __repr__(self) -> str:
-        """Returns the controller's runtime state, indicating the access level."""
+        """Returns the controller's runtime state, indicating the access level and account."""
         class_name = type(self).__name__
         access_status = "Authorized" if self._access_token else "Not authorized"
         account_accessed = (
@@ -501,9 +477,10 @@ class TransactionController(BaseController[Account, None]):
 
         return (
             f"{class_name}("
-            f"bank={self._bank_instance.bank_name!r},"
-            f"access_status={access_status!r})"
-            f"account_accessed={account_accessed!r},"
+            f"bank={self._bank_instance.bank_name!r}, "
+            f"access_status={access_status!r}, "
+            f"account_accessed={account_accessed!r}"
+            f")"
         )
 
     @property
@@ -667,7 +644,7 @@ class TransactionController(BaseController[Account, None]):
                 raise RuntimeError("Unmapped TransactionType")
 
 
-class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
+class BankSystemController(BaseController, SharedPromptsMixin):
     """
     The Main Application Controller (Maestro) for the PyBank terminal.
 
@@ -703,7 +680,6 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
         ),
     }
 
-    _bank_instance: Bank
     _auth_config: io_utils.ConfigMap
     _identification_config: io_utils.ConfigMap
     _menu_config: io_utils.ConfigMap
@@ -720,15 +696,13 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
         Args:
             bank_instance (Bank): The core domain aggregate root.
         """
-        super().__init__(Bank)
+        super().__init__(bank_instance)
 
-        verify.verify_instance(bank_instance, Bank)
         io_utils.verify_config_map(config.auth_config)
         io_utils.verify_config_map(config.identification_config)
         io_utils.verify_config_map(config.menu_config)
         _verify_message_map(ui_messages.SYSTEM_MESSAGES)
 
-        self._bank_instance = bank_instance
         self._auth_config = config.auth_config
         self._identification_config = config.identification_config
         self._menu_config = config.menu_config
@@ -748,9 +722,10 @@ class BankSystemController(BaseController[Bank, None], SharedPromptsMixin):
 
         return (
             f"{class_name}("
-            f"connected_to={self._bank_instance.bank_name!r}"
-            f"authentication_status={auth_status!r}"
+            f"connected_to={self._bank_instance.bank_name!r}, "
+            f"authentication_status={auth_status!r}, "
             f"access_status={access_status!r}"
+            f")"
         )
 
     def _select_card(self, cards_list: list[AccountCard]) -> AccountCard:
