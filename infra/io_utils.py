@@ -18,7 +18,7 @@ from settings import SYSTEM_TIMEOUT
 from shared.exceptions import InactiveUserError, UserAbortError
 from shared.validators import ValidatorCallback
 
-IO_KEYS = {"info", "prompt", "value_type", "error_msg"}
+IO_KEYS = {"info", "prompt", "input_type", "error_msg"}
 EXIT_CMD = "S"
 
 type InputType = str | int | float | Decimal | date
@@ -95,7 +95,9 @@ def verify_config_map(obj_config: ConfigMap) -> None:
             for k, v in inner_dict.items():
                 verify.verify_instance(k, str)
 
-                if k == "input_type" and not callable(v):
+                if k == "input_type":
+                    if callable(v):
+                        continue
                     raise TypeError("The key 'input_type' expects a callable")
 
                 verify.verify_instance(v, str)
