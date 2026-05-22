@@ -38,7 +38,7 @@ SYSTEM_MESSAGES: dict[str, dict[str, str]] = {
         "auth_failed": "Falha na autenticação. Verifique os seus dados com o banco",
         "bank_security": "Sessão encerrada por falha de segurança. Voltando à tela inicial",
         "ctrl_credentials": "Sessão encerrada. Voltando à tela inicial",
-        "ctrl_operations": "Operação cancelada",
+        "ctrl_operation": "Operação cancelada",
         "ctrl_register": "Falha ao registrar sua conta. Tente novamente",
         "exp_token": "Sessão expirada. Por favor, autentique-se novamente",
         "other_branch": "Operação negada. O encerramento de conta deve ser realizado presencialmente na sua agência de origem",
@@ -50,7 +50,7 @@ SYSTEM_MESSAGES: dict[str, dict[str, str]] = {
 TRANSACTION_MESSAGES: dict[str, dict[str, str]] = {
     "info": {
         "deposit_ok": "Depósito realizado com sucesso",
-        "min_value": "Valor mínimo para transação: {min_atm}",
+        "min_value": "Valor mínimo para transação: R$ {min_atm}",
         "withdraw_ok": "Saque realizado com sucesso",
     },
     "deposit_errors": {

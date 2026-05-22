@@ -11,10 +11,12 @@ decoupling from the application's internal states.
 import os
 import subprocess
 from datetime import datetime
+from decimal import Decimal
 from time import sleep
 from typing import Any
 
 from inputimeout import TimeoutOccurred, inputimeout
+
 from settings import BANK_NAME
 from shared.exceptions import InactiveUserError
 
@@ -32,19 +34,49 @@ def welcome() -> None:
 # Dictionary mapping internal status keys to user-friendly messages
 
 
-def controller_output(message: str) -> None:
+def _format_currency(value_raw: Decimal) -> str:
     """
-    Renders a standard system message to the terminal.
+    Formats a numeric monetary value into the Brazilian currency standard.
 
-    Acts as the primary output channel for Controllers to communicate
-    with the user. Includes a brief pause to ensure readability before
-    the console is refreshed or the next prompt appears.
+    Converts the raw value into a string with exactly two decimal places,
+    replacing the standard decimal point with a comma (e.g., '2,00' or '150,50').
 
     Args:
-        message (str): The pre-formatted text string to be displayed.
+        value_raw (Decimal): The raw monetary value to be formatted.
+
+    Returns:
+        str: The formatted currency string.
     """
+    fmt_value = f"{value_raw:.2f}".replace(".", ",")
+    return fmt_value
+
+
+def controller_output(message: str, kwargs: dict) -> None:
+    """
+    Renders a standardized, formatted system message to the terminal.
+
+    Acts as the primary output channel for the application. It intercepts dynamic
+    arguments (kwargs), applies presentation rules (like Brazilian currency formatting
+    for monetary values), formats the final string, and pauses briefly to ensure
+    readability before the console is refreshed.
+
+    Args:
+        message (str): The pre-formatted text string template containing placeholders.
+        kwargs (dict): A dictionary of dynamic values to be formatted and injected
+            into the message template.
+    """
+    msg = message
+
+    if kwargs:
+        for k, v in kwargs.items():
+            if isinstance(v, Decimal):
+                fmt_v = _format_currency(v)
+                kwargs[k] = fmt_v
+
+        msg = msg.format(**kwargs)
+
     print()
-    print(message)
+    print(msg)
     sleep(5)
     print()
 
@@ -101,11 +133,11 @@ def _balance_statement_footer(account_info: dict[str, Any]) -> None:
     available = account_info["available_overdraft"]
 
     print("\n" + "-" * 45)
-    print(f"{'SALDO ATUAL:':<25} R$ {balance:>16.2f}")
+    print(f"{'SALDO ATUAL:':<25} R$ {_format_currency(balance):>16}")
 
     if limit is not None and available is not None:
-        print(f"{'LIMITE CHEQUE ESPECIAL:':<25} R$ {limit:>16.2f}")
-        print(f"{'LIMITE DISPONÍVEL:':<25} R$ {available:>16.2f}")
+        print(f"{'LIMITE CHEQUE ESPECIAL:':<25} R$ {_format_currency(limit):>16}")
+        print(f"{'LIMITE DISPONÍVEL:':<25} R$ {_format_currency(available):>16}")
 
     print("-" * 45 + "\n")
 
@@ -152,9 +184,11 @@ def show_balance_statement(
     previous_balance = first_item["previous_balance"]
     first_date: datetime = first_item["created_at"].strftime("%d/%m")
 
-    print(f"{'DATA':<6}{'HISTÓRICO':<22}{'VALOR':17}")
+    print(f"{'DATA':<6}{'HISTÓRICO':<22}{'VALOR':>17}")
     print("\n" + "-" * 45)
-    print(f"{first_date:<6}{'Saldo anterior':<22}{previous_balance:17.2f}")
+    print(
+        f"{first_date:<6}{'Saldo anterior':<22}{_format_currency(previous_balance):>17}"
+    )
     print("\n" + "-" * 45)
 
     for t in transactions:
@@ -162,7 +196,7 @@ def show_balance_statement(
         t_type = transaction_type_map[t["transaction_type"]]
         t_amount = t["amount"]
 
-        print(f"{t_date:<6}{t_type:<22} {t_amount:17.2f}")
+        print(f"{t_date:<6}{t_type:<22} {_format_currency(t_amount):>17}")
 
     _balance_statement_footer(account_info)
 

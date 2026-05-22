@@ -235,36 +235,36 @@ class BaseController(ABC):
         **kwargs,
     ) -> None:
         """
-        Translates a caught backend exception into a standardized UI message.
+        Translates a caught backend exception into a standardized UI message template.
+
+        Delegates the actual string formatting and rendering to the presentation layer (Views),
+        passing along any dynamic arguments required to complete the message.
 
         Args:
             context_key (str): The category inside the message catalog (e.g., 'errors').
-            error (Exception): The exception raised by the domain/application logic.
-            **kwargs: Dynamic arguments to format into the resulting message.
+            error (ControllerError | DomainError | SecurityError): The exception raised by the domain/application logic.
+            **kwargs: Dynamic arguments (e.g., balances, limits) to be formatted and injected into the UI message by the View.
         """
         error_key = exceptions.map_exceptions(error)
         error_msg = self._ui_message_map[context_key][error_key]
 
-        if kwargs:
-            error_msg = error_msg.format(**kwargs)
-
-        views.controller_output(error_msg)
+        views.controller_output(error_msg, kwargs)
 
     def _handle_info_ui(self, context_key: str, info_key: str, **kwargs) -> None:
         """
-        Retrieves and outputs standard informative messages from the UI catalog.
+        Retrieves standard informative message templates from the UI catalog.
+
+        Delegates the actual string formatting and rendering to the presentation layer (Views),
+        passing along any dynamic arguments required to complete the message.
 
         Args:
             context_key (str): The category inside the message catalog (e.g., 'info').
             info_key (str): The specific lookup key for the message.
-            **kwargs: Dynamic arguments to format into the resulting message.
+            **kwargs: Dynamic arguments (e.g., names, transaction values) to be formatted and injected into the UI message by the View.
         """
         info_msg = self._ui_message_map[context_key][info_key]
 
-        if kwargs:
-            info_msg = info_msg.format(**kwargs)
-
-        views.controller_output(info_msg)
+        views.controller_output(info_msg, kwargs)
 
 
 class OnboardingController(BaseController, SharedPromptsMixin):
@@ -1114,5 +1114,11 @@ class BankSystemController(BaseController, SharedPromptsMixin):
                         self._lobby_hub()
                     case _:
                         raise RuntimeError("Critical error: Unmapped type")
-            except (BankUnavailableError, ControllerRegisterError) as e:
+            except InactiveUserError:
+                continue
+            except (
+                BankUnavailableError,
+                ControllerOperationError,
+                ControllerRegisterError,
+            ) as e:
                 self._handle_exception_ui("errors", e)
