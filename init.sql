@@ -13,7 +13,7 @@
 CREATE TABLE account_holders (
     id INT PRIMARY KEY AUTO_INCREMENT NOT NULL,
     cpf CHAR(11) NOT NULL UNIQUE,
-    name VARCHAR(50) NOT NULL,
+    holder_name VARCHAR(50) NOT NULL,
     birth_date DATE NOT NULL
 );
 

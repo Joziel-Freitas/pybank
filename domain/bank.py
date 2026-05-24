@@ -22,9 +22,10 @@ import hashlib
 import hmac
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import Any, ClassVar
+from typing import ClassVar
 
 import bcrypt
+
 from infra import verify
 from infra.mysql_repository import MySQLRepository
 from shared.credentials import AccessToken, AccountCard, AuthToken
@@ -203,50 +204,51 @@ class Bank:
         Validates the cryptographic integrity, Time-To-Live (TTL), and authenticity
         of a session token.
 
-        Operates seamlessly with both AuthToken (Lobby access) and AccessToken
-        (Vault access). It enforces a strict Zero Trust model by:
-        1. Checking the TTL to prevent the use of expired sessions (Fail-Fast).
-        2. Unconditionally verifying the account's existence in the repository
-           before checking the signature, mitigating Time-of-Check to Time-of-Use
-           (TOCTOU) race conditions.
+        Enforces a strict Zero Trust model by focusing solely on mathematical and
+        cryptographic validity.
+        It relies on signature verification to fail invalid or tampered states
+        rather than acting as an active database integrity checker.
 
-        For AccessTokens, it dynamically reconstructs the expected payload using
-        the client's CPF and the freshest password hash, acting as an automatic
-        session invalidator if the user's password was recently changed.
+        1. TTL Check: Prevents the use of expired sessions globally (Fail-Fast).
+        2. AuthToken (Lobby): Reconstructs the expected payload using the static
+           data embedded in the token.
+        3. AccessToken (Vault): Re-fetches the account's current password hash.
+           If the account no longer exists, the hash defaults to an empty string,
+           guaranteeing a cryptographic signature mismatch. This acts as an automatic
+           session invalidator if the user's password was changed or if the account
+           was deleted, mitigating TOCTOU (Time-of-Check to Time-of-Use) race conditions.
 
         Args:
-            token (AccessToken | AuthToken): The token instance to be validated.
+            token (AccessToken | AuthToken): The session token to be validated.
 
         Raises:
             ExpiredTokenError: If the token's TTL has passed.
-            BankSecurityError: If the token instance is unknown, if the account
-                no longer exists (TOCTOU mitigation), or if the cryptographic
-                signature has been tampered with or invalidated.
+            BankSecurityError: If the cryptographic signature has been tampered with,
+                invalidated by a password change, or if the account no longer exists.
+            TypeError: If the provided token object is not a valid recognized instance.
         """
         if datetime.now() > token.expires_at:
             raise ExpiredTokenError(
                 "This token is no longer valid because it has expired"
             )
 
-        try:
-            acc_credentials = self._get_account_credentials(
-                token.branch_code, token.account_num
-            )
-        except AccountNotFoundError as e:
-            raise BankSecurityError(
-                "Security breach or race condition: Account no longer exists"
-            ) from e
-
         match token:
             case AuthToken():
                 payload = f"{token.cpf}:{token.branch_code}:{token.account_num}"
             case AccessToken():
-                pwd_hash = acc_credentials["password_hash"]
+                try:
+                    account_info = self._repository.get_account_info(
+                        token.branch_code, token.account_num, access_info=True
+                    )
+                    pwd_hash = account_info["password_hash"]
+                except DataNotFoundError:
+                    pwd_hash = ""
+
                 payload = (
                     f"{token.cpf}:{token.branch_code}:{token.account_num}:{pwd_hash}"
                 )
             case _:
-                raise BankSecurityError("Security breach: Invalid token instance")
+                raise TypeError("Invalid token instance")
 
         bank_signature = self._sign_token_payload(payload)
 
@@ -391,53 +393,6 @@ class Bank:
             raise AccountHolderNotFoundError(
                 "No account holder registered under this CPF"
             ) from e
-
-    def _get_account_credentials(
-        self, branch_code: str, account_num: str, for_update: bool = False
-    ) -> dict[str, Any]:
-        """
-        Retrieves and validates the security credentials dictionary from the repository.
-
-        Acts as an internal checkpoint to ensure that all necessary security keys
-        (active status, password hash, failed attempts) are properly loaded before
-        any sensitive validation occurs. It supports exclusive concurrency control
-        to guarantee data consistency and state isolation during critical mutations
-        (e.g., brute-force mitigation).
-
-        Args:
-            branch_code (str): The branch code of the target account.
-            account_num (str): The target account number.
-            for_update (bool, optional): If True, signals the persistence mechanism
-                to grant exclusive read/write access to these records, preventing
-                concurrent modifications during the active Unit of Work. Defaults to False.
-
-        Returns:
-            dict[str, Any]: A validated dictionary containing the account credentials.
-
-        Raises:
-            TypeError: If the retrieved data is not a dictionary.
-            ValueError: If any strictly required security keys are missing.
-            AccountNotFoundError: If the account does not exist in the repository.
-            RuntimeError: If `for_update` is True but the method is called outside
-                an active Unit of Work context.
-        """
-        try:
-            acc_credentials = self._repository.get_account_credentials(
-                branch_code, account_num, for_update
-            )
-        except DataNotFoundError as e:
-            raise AccountNotFoundError(
-                "The requested account does not exist in our records."
-            ) from e
-
-        verify.verify_instance(acc_credentials, dict)
-
-        required_keys = {"is_active", "password_hash", "failed_login_attempts"}
-
-        if not required_keys.issubset(acc_credentials.keys()):
-            raise ValueError("Invalid credentials keys mapped from repository")
-
-        return acc_credentials
 
     def _get_account(
         self, branch_code: str, account_num: str, for_update: bool = False
@@ -665,10 +620,14 @@ class Bank:
             int: The number of remaining attempts before the account is frozen.
         """
         self._validate_token(auth_token)
-        acc_credentials = self._get_account_credentials(
-            auth_token.branch_code, auth_token.account_num
-        )
-        failed_attempts = acc_credentials["failed_login_attempts"]
+        try:
+            account_info = self._repository.get_account_info(
+                auth_token.branch_code, auth_token.account_num, access_info=True
+            )
+        except DataNotFoundError as e:
+            raise BankAuthenticationError
+
+        failed_attempts = account_info["failed_login_attempts"]
 
         return self.MAX_LOGIN_ATTEMPTS - failed_attempts
 
@@ -715,7 +674,7 @@ class Bank:
 
         with self._repository.unit_of_work():
             try:
-                acc_credentials = self._get_account_credentials(
+                account_info = self.(
                     auth_token.branch_code, auth_token.account_num, for_update=True
                 )
             except AccountNotFoundError as e:
@@ -723,9 +682,9 @@ class Bank:
                     "Security breach or race condition: Account no longer exists"
                 ) from e
 
-            is_active = acc_credentials["is_active"]
-            pwd_hash = acc_credentials["password_hash"]
-            failed_attempts = acc_credentials["failed_login_attempts"]
+            is_active = account_info["is_active"]
+            pwd_hash = account_info["password_hash"]
+            failed_attempts = account_info["failed_login_attempts"]
 
             if not is_active:
                 raise BankAccessError("This account is blocked and cannot be accessed")
@@ -742,7 +701,7 @@ class Bank:
                 if not failed_attempts:
                     return self._generate_access_token(
                         auth_token=auth_token,
-                        password_hash=acc_credentials["password_hash"],
+                        password_hash=account_info["password_hash"],
                     )
 
                 try:
@@ -751,7 +710,7 @@ class Bank:
                     )
                     return self._generate_access_token(
                         auth_token=auth_token,
-                        password_hash=acc_credentials["password_hash"],
+                        password_hash=account_info["password_hash"],
                     )
                 except DataNotFoundError as e:
                     raise BankSecurityError(

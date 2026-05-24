@@ -476,37 +476,49 @@ class MySQLRepository:
         holder_obj = AccountHolder.from_dict(holder_dict)
         return holder_obj
 
-    def get_account_credentials(
-        self, branch_code: str, account_num: str, for_update: bool = False
+    def get_account_info(
+        self,
+        branch_code: str,
+        account_num: str,
+        financial_info: bool = False,
+        access_info: bool = False,
+        holder_info: bool = False,
+        for_update: bool = False,
     ) -> dict[str, Any]:
         """
-        Fetches only the security metadata required for authentication.
+        Dynamic Query Builder for retrieving specific slices of account data.
 
-        This method is highly optimized. It executes a lightweight query to retrieve
-        strictly the necessary fields ('is_active', 'password_hash', 'failed_login_attempts'),
-        avoiding the overhead of hydrating the full Account entity or its transaction history.
-
-        It supports pessimistic locking via the `for_update` flag, which is crucial for
-        preventing Time-of-Check to Time-of-Use (TOCTOU) race conditions during sensitive
-        security operations (e.g., verifying passwords or incrementing failed attempts).
+        Acts as an optimized 'micro-ORM', allowing the Domain layer to request
+        strictly the data needed for a specific context without the overhead of
+        full Entity hydration. By default, it returns a lightweight baseline
+        of routing and status data. Additional data domains can be appended via
+        boolean flags.
 
         Args:
             branch_code (str): The 4-digit string representing the branch.
             account_num (str): The unique 8-digit string representing the account.
-            for_update (bool, optional): If True, applies a pessimistic lock (FOR UPDATE)
-                to the row, guaranteeing exclusive read/write access. Defaults to False.
+            financial_info (bool, optional): Appends 'balance' and 'used_overdraft'.
+            access_info (bool, optional): Appends 'password_hash' and 'failed_login_attempts'.
+            holder_info (bool, optional): Executes a JOIN to append 'holder_name', 'cpf', and 'birth_date'.
+            for_update (bool, optional): Applies a pessimistic lock (FOR UPDATE)
+                to prevent TOCTOU race conditions. Defaults to False.
 
         Returns:
-            dict[str, Any]: A dictionary containing the account's security credentials.
+            dict[str, Any]: A dictionary containing the requested data slice.
+                Baseline keys: 'branch_code', 'account_num', 'account_type', 'is_active'.
 
         Raises:
             TypeError: If the provided arguments are not of the expected types.
             RuntimeError: If `for_update` is True but the method is called outside
                 an active `unit_of_work()` block, preventing dangling database locks.
-            DataNotFoundError: If the requested account does not exist in the database.
+            DataNotFoundError: If the requested account does not exist.
         """
+
         verify.verify_instance(branch_code, str)
         verify.verify_instance(account_num, str)
+        verify.verify_instance(financial_info, bool)
+        verify.verify_instance(access_info, bool)
+        verify.verify_instance(holder_info, bool)
         verify.verify_instance(for_update, bool)
 
         if for_update and not self._in_transaction:
@@ -514,22 +526,47 @@ class MySQLRepository:
                 "Invalid method call. To update credentials, use the context manager MySQLRepository.unit_of_work()"
             )
 
+        columns = [
+            "a.branch_code",
+            "a.account_num",
+            "a.account_type",
+            "a.is_active",
+        ]
+
+        if financial_info:
+            columns.extend(["a.balance", "a.used_overdraft"])
+
+        if access_info:
+            columns.extend(["a.password_hash", "a.failed_login_attempts"])
+
+        if holder_info:
+            columns.extend(["ah.holder_name", "ah.cpf", "ah.birth_date"])
+
+        select_clause = ", ".join(columns)
+        from_clause = "FROM accounts AS a"
+
+        if holder_info:
+            from_clause += " JOIN account_holders AS ah ON a.account_holder_id = ah.id"
+
         lock_clause = "FOR UPDATE" if for_update else ""
+
         sql = (
-            "SELECT is_active, password_hash, failed_login_attempts "
-            "FROM accounts "
-            f"WHERE branch_code = %s AND account_num = %s {lock_clause}"
+            f"SELECT {select_clause} "
+            f"{from_clause} "
+            "WHERE a.branch_code = %s AND a.account_num = %s "
+            f"{lock_clause}"
         )
+
         with self._connection.cursor() as cursor:
             cursor.execute(sql, (branch_code, account_num))
             result = cursor.fetchone()
 
-            if not result:
-                raise DataNotFoundError(
-                    f"Data not found in the database for {branch_code=}, {account_num=}"
-                )
+        if not result:
+            raise DataNotFoundError(
+                f"Data not found in the database for {branch_code=}, {account_num=}"
+            )
 
-            return result
+        return result
 
     def get_account(
         self, branch_code: str, account_num: str, for_update: bool = False

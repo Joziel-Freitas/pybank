@@ -1061,7 +1061,11 @@ class BankSystemController(BaseController, SharedPromptsMixin):
             except BankUnavailableError:
                 self._end_session()
                 raise
-            except (ControllerCredentialsError, SecurityError) as e:
+            except (
+                BankAuthenticationError,
+                ControllerCredentialsError,
+                SecurityError,
+            ) as e:
                 self._end_session()
                 self._handle_exception_ui("errors", e)
 
