@@ -22,11 +22,17 @@ from pymysql.constants import CLIENT
 from domain.account import Account
 from domain.person import AccountHolder
 from infra import verify
+from shared.dtos import (
+    AccessProjectionDTO,
+    AccountProjectionDTO,
+    FinancialProjectionDTO,
+    HolderProjectionDTO,
+)
 from shared.exceptions import (
     DataNotFoundError,
-    DomainError,
     DuplicatedDataError,
     RepositoryError,
+    SystemBaseException,
 )
 from shared.types import TransactionType
 
@@ -81,17 +87,19 @@ class MySQLRepository:
             None: Yields control back to the caller's context block.
 
         Raises:
-            DomainError: Propagates domain business rules exceptions, triggering a rollback.
-            DataNotFoundError: Propagates expected missing data errors, triggering a rollback.
-            DuplicatedDataError: Propagates unique constraint violations, triggering a rollback.
-            RepositoryError: Catches any unexpected database infrastructure errors,
+            SystemBaseException: Propagates all expected domain, security, and validation
+                errors, triggering a safe rollback before continuing up the stack.
+            TypeError, ValueError, KeyError, RuntimeError: Propagates standard Python
+                exceptions (typically representing implementation bugs or strict state
+                validations), triggering a rollback and crashing the flow as expected.
+            RepositoryError: Catches unexpected infrastructure or database driver errors,
                 triggers a rollback to prevent zombie locks, and re-raises as a safe ACL exception.
         """
         try:
             self._in_transaction = True
             yield None
             self._connection.commit()
-        except (DomainError, DataNotFoundError, DuplicatedDataError):
+        except (SystemBaseException, TypeError, ValueError, KeyError, RuntimeError):
             self._connection.rollback()
             raise
         except Exception as e:
@@ -476,7 +484,7 @@ class MySQLRepository:
         holder_obj = AccountHolder.from_dict(holder_dict)
         return holder_obj
 
-    def get_account_info(
+    def get_account_projection(
         self,
         branch_code: str,
         account_num: str,
@@ -484,7 +492,7 @@ class MySQLRepository:
         access_info: bool = False,
         holder_info: bool = False,
         for_update: bool = False,
-    ) -> dict[str, Any]:
+    ) -> AccountProjectionDTO:
         """
         Dynamic Query Builder for retrieving specific slices of account data.
 
@@ -504,8 +512,9 @@ class MySQLRepository:
                 to prevent TOCTOU race conditions. Defaults to False.
 
         Returns:
-            dict[str, Any]: A dictionary containing the requested data slice.
-                Baseline keys: 'branch_code', 'account_num', 'account_type', 'is_active'.
+            AccountProjectionDTO: An immutable nested DTO containing the requested data slice.
+                Baseline fields always guaranteed: 'branch_code', 'account_num',
+                'account_type', 'is_active'.
 
         Raises:
             TypeError: If the provided arguments are not of the expected types.
@@ -537,10 +546,12 @@ class MySQLRepository:
             columns.extend(["a.balance", "a.used_overdraft"])
 
         if access_info:
-            columns.extend(["a.password_hash", "a.failed_login_attempts"])
+            columns.extend(
+                ["a.password_hash", "a.failed_login_attempts AS failed_attempts"]
+            )
 
         if holder_info:
-            columns.extend(["ah.holder_name", "ah.cpf", "ah.birth_date"])
+            columns.extend(["ah.holder_name AS name", "ah.cpf", "ah.birth_date"])
 
         select_clause = ", ".join(columns)
         from_clause = "FROM accounts AS a"
@@ -566,7 +577,33 @@ class MySQLRepository:
                 f"Data not found in the database for {branch_code=}, {account_num=}"
             )
 
-        return result
+        financial_dto = access_dto = holder_dto = None
+
+        if financial_info:
+            financial_dto = FinancialProjectionDTO(
+                balance=result["balance"], used_overdraft=result["used_overdraft"]
+            )
+
+        if access_info:
+            access_dto = AccessProjectionDTO(
+                password_hash=result["password_hash"],
+                failed_attempts=result["failed_attempts"],
+            )
+
+        if holder_info:
+            holder_dto = HolderProjectionDTO(
+                name=result["name"], cpf=result["cpf"], birth_date=result["birth_date"]
+            )
+
+        return AccountProjectionDTO(
+            branch_code=result["branch_code"],
+            account_num=result["account_num"],
+            account_type=result["account_type"],
+            is_active=result["is_active"],
+            financial_info=financial_dto,
+            access_info=access_dto,
+            holder_info=holder_dto,
+        )
 
     def get_account(
         self, branch_code: str, account_num: str, for_update: bool = False

@@ -30,7 +30,7 @@ from infra import verify
 from infra.mysql_repository import MySQLRepository
 from shared.credentials import AccessToken, AccountCard, AuthToken
 from shared.dtos import (
-    AccountInfoDTO,
+    AccountFinancialDTO,
     AccountSummaryDTO,
     NewAccountDTO,
     NewAccountHolderDTO,
@@ -199,32 +199,32 @@ class Bank:
                 "Given password doesn't match with registered password"
             )
 
-    def _validate_token(self, token: AccessToken | AuthToken) -> None:
+    def _validate_token_integrity(
+        self, token: AccessToken | AuthToken, pwd_hash: str = ""
+    ) -> None:
         """
-        Validates the cryptographic integrity, Time-To-Live (TTL), and authenticity
-        of a session token.
+        Validates the cryptographic integrity and Time-To-Live (TTL) of a session token.
 
         Enforces a strict Zero Trust model by focusing solely on mathematical and
-        cryptographic validity.
-        It relies on signature verification to fail invalid or tampered states
-        rather than acting as an active database integrity checker.
+        cryptographic validity, adhering to the Single Responsibility Principle.
+        It does not interact with the database; instead, it relies on the injected
+        'pwd_hash' (for Vault access) to reconstruct and verify the expected signature.
 
         1. TTL Check: Prevents the use of expired sessions globally (Fail-Fast).
-        2. AuthToken (Lobby): Reconstructs the expected payload using the static
-           data embedded in the token.
-        3. AccessToken (Vault): Re-fetches the account's current password hash.
-           If the account no longer exists, the hash defaults to an empty string,
-           guaranteeing a cryptographic signature mismatch. This acts as an automatic
-           session invalidator if the user's password was changed or if the account
-           was deleted, mitigating TOCTOU (Time-of-Check to Time-of-Use) race conditions.
+        2. AuthToken (Lobby): Reconstructs the payload using static embedded data.
+        3. AccessToken (Vault): Reconstructs the payload using the injected password
+           hash. If the hash provided by the caller is empty or changed, the
+           cryptographic signature will naturally mismatch, invalidating the session.
 
         Args:
             token (AccessToken | AuthToken): The session token to be validated.
+            pwd_hash (str, optional): The current password hash provided by the caller.
+                Required for AccessToken validation; ignored for AuthToken. Defaults to "".
 
         Raises:
             ExpiredTokenError: If the token's TTL has passed.
-            BankSecurityError: If the cryptographic signature has been tampered with,
-                invalidated by a password change, or if the account no longer exists.
+            BankSecurityError: If the cryptographic signature has been tampered with
+                or if the provided hash causes a signature mismatch.
             TypeError: If the provided token object is not a valid recognized instance.
         """
         if datetime.now() > token.expires_at:
@@ -236,14 +236,6 @@ class Bank:
             case AuthToken():
                 payload = f"{token.cpf}:{token.branch_code}:{token.account_num}"
             case AccessToken():
-                try:
-                    account_info = self._repository.get_account_info(
-                        token.branch_code, token.account_num, access_info=True
-                    )
-                    pwd_hash = account_info["password_hash"]
-                except DataNotFoundError:
-                    pwd_hash = ""
-
                 payload = (
                     f"{token.cpf}:{token.branch_code}:{token.account_num}:{pwd_hash}"
                 )
@@ -394,40 +386,6 @@ class Bank:
                 "No account holder registered under this CPF"
             ) from e
 
-    def _get_account(
-        self, branch_code: str, account_num: str, for_update: bool = False
-    ) -> Account:
-        """
-        Internal gateway to fetch an active, fully hydrated Account entity.
-
-        This is an internal Trust Zone method. It acts as a neutral data provider,
-        translating infrastructure misses into domain-specific misses. It relies
-        on the calling public method to determine the security implications of
-        a missing account.
-
-        Args:
-            branch_code (str): The branch code.
-            account_num (str): The account number.
-            for_update (bool): If True, signals the persistence mechanism to grant
-                exclusive access to this entity for state mutation, preventing
-                race conditions during an active Unit of Work. Defaults to False.
-
-        Returns:
-            Account: The fully hydrated Account domain entity.
-
-        Raises:
-            AccountNotFoundError: If the account does not exist in the repository.
-            RuntimeError: If `for_update` is True but the method is called outside
-                an active repository transaction.
-        """
-
-        try:
-            return self._repository.get_account(branch_code, account_num, for_update)
-        except DataNotFoundError as e:
-            raise AccountNotFoundError(
-                "The requested account does not exist in our records"
-            ) from e
-
     def register_account(
         self,
         account_dto: NewAccountDTO,
@@ -569,8 +527,10 @@ class Bank:
 
         This is the "Lobby" access. It does not open the vault or check if the
         account is frozen. It merely verifies ownership and issues an AuthToken
-        that can be used for subsequent secure operations. This method securely
-        hydrates the AccountHolder entity internally to prevent domain leakage.
+        that can be used for subsequent secure operations.
+
+        Operates using optimized data fetching via the micro-ORM, completely bypassing
+        domain entity hydration to ensure maximum throughput during read-only logins.
 
         Args:
             cpf (str): The 11-digit string representing the account holder's CPF.
@@ -582,27 +542,34 @@ class Bank:
 
         Raises:
             TypeError: If any of the provided arguments are not strings.
-            BankAuthenticationError: If the provided CPF is not registered, or if the
-                requested account does not belong to the account holder (prevents user enumeration).
+            BankAuthenticationError: If the account does not exist, or if the
+                requested account does not belong to the provided CPF (prevents
+                user enumeration).
+            RuntimeError: If the repository fails to return the requested DTO state.
         """
         verify.verify_instance(cpf, str)
         verify.verify_instance(branch_code, str)
         verify.verify_instance(account_num, str)
 
         try:
-            holder = self._get_account_holder(cpf)
-        except AccountHolderNotFoundError as e:
-            raise BankAuthenticationError("Holder not found in system register") from e
-
-        temp_card = AccountCard(holder.cpf, branch_code, account_num)
-
-        if not holder.has_account(temp_card):
+            account_info = self._repository.get_account_projection(
+                branch_code, account_num, holder_info=True
+            )
+        except DataNotFoundError:
             raise BankAuthenticationError(
-                "Account card not found between account holder's cards"
+                "Authentication failed: Account not found in system register"
+            )
+
+        if not account_info.holder_info:
+            raise RuntimeError("Invalid DTO state")
+
+        if account_info.holder_info.cpf != cpf:
+            raise BankAuthenticationError(
+                "Authentication failed: Account not linked to this client"
             )
 
         return self._generate_auth_token(
-            cpf=holder.cpf, branch_code=branch_code, account_num=account_num
+            cpf=cpf, branch_code=branch_code, account_num=account_num
         )
 
     def get_remaining_login_attempts(self, auth_token: AuthToken) -> int:
@@ -618,18 +585,26 @@ class Bank:
 
         Returns:
             int: The number of remaining attempts before the account is frozen.
+
+        Raises:
+            ExpiredTokenError: If the token's TTL has passed.
+            BankSecurityError: If the cryptographic signature of the token is invalid
+                or has been tampered with.
+            BankAuthenticationError: If the account no longer exists in the repository.
+            RuntimeError: If the repository fails to return the requested DTO state.
         """
-        self._validate_token(auth_token)
+        self._validate_token_integrity(auth_token)
         try:
-            account_info = self._repository.get_account_info(
+            account_info = self._repository.get_account_projection(
                 auth_token.branch_code, auth_token.account_num, access_info=True
             )
         except DataNotFoundError as e:
-            raise BankAuthenticationError
+            raise BankAuthenticationError("Account no longer exists") from e
 
-        failed_attempts = account_info["failed_login_attempts"]
+        if not account_info.access_info:
+            raise RuntimeError("Invalid DTO state")
 
-        return self.MAX_LOGIN_ATTEMPTS - failed_attempts
+        return self.MAX_LOGIN_ATTEMPTS - account_info.access_info.failed_attempts
 
     def authorize_vault_access(
         self, auth_token: AuthToken, password: str
@@ -670,16 +645,19 @@ class Bank:
                 be persisted due to an internal infrastructure error.
         """
         Bank.validate_password(password)
-        self._validate_token(auth_token)
+        self._validate_token_integrity(auth_token)
 
         with self._repository.unit_of_work():
             try:
-                account_info = self.(
-                    auth_token.branch_code, auth_token.account_num, for_update=True
+                account_info = self._repository.get_account_projection(
+                    auth_token.branch_code,
+                    auth_token.account_num,
+                    access_info=True,
+                    for_update=True,
                 )
-            except AccountNotFoundError as e:
-                raise BankSecurityError(
-                    "Security breach or race condition: Account no longer exists"
+            except DataNotFoundError as e:
+                raise BankAuthenticationError(
+                    "Authentication failed: Account no longer exists"
                 ) from e
 
             is_active = account_info["is_active"]
@@ -770,76 +748,86 @@ class Bank:
                 state has been compromised during the session (TOCTOU mitigation).
             BankAuthenticationError: If the underlying account or holder no longer exists
                 in the repository, invalidating the session state.
+            RuntimeError: If the repository fails to return the requested DTO state.
         """
-        self._validate_token(auth_token)
-
+        self._validate_token_integrity(auth_token)
         try:
-            holder = self._get_account_holder(auth_token.cpf)
-            account = self._get_account(auth_token.branch_code, auth_token.account_num)
-        except (AccountHolderNotFoundError, AccountNotFoundError) as e:
+            account_info = self._repository.get_account_projection(
+                auth_token.branch_code, auth_token.account_num, holder_info=True
+            )
+        except DataNotFoundError:
             raise BankAuthenticationError(
-                "Authentication is no longer valid for this token due to inconsistent data"
-            ) from e
+                "Authentication failed: Account no longer exists"
+            )
+
+        if not account_info.holder_info:
+            raise RuntimeError("Invalid DTO state")
 
         return AccountSummaryDTO(
-            holder_name=holder.name,
-            branch_code=account.branch_code,
-            account_num=account.account_num,
-            account_type=type(account).__name__,
-            is_active=account.is_active,
+            holder_name=account_info.holder_info.name,
+            branch_code=account_info.branch_code,
+            account_num=account_info.account_num,
+            account_type=account_info.account_type,
+            is_active=account_info.is_active,
         )
 
-    def get_account_info(self, access_token: AccessToken) -> AccountInfoDTO:
+    def get_financial_summary(self, access_token: AccessToken) -> AccountFinancialDTO:
         """
-        Safely retrieves a read-only snapshot of an authenticated account's current state.
+        Safely retrieves a read-only snapshot of an authenticated account's current financial state.
 
-        Operates under a strict Zero Trust model. It fetches both the account and the
-        account holder using the securely validated AccessToken, projecting this cross-entity
-        state into an immutable AccountInfoDTO. This acts as a secure read-only facade,
-        preventing full domain entities (Account and AccountHolder) from leaking into external
-        layers (Controllers/Views).
+        Operates under a strict Zero Trust model. It fetches the necessary projection and
+        full account entity using the securely validated AccessToken, combining this data
+        into an immutable AccountFinancialDTO. This acts as a secure read-only facade,
+        preventing full domain entities from leaking into external layers.
 
         Args:
             access_token (AccessToken): A valid, securely signed vault token containing
-                the account holder's CPF for identity resolution.
+                the account holder's identity for resolution.
 
         Returns:
-            AccountInfoDTO: An immutable snapshot containing the holder's name, account
-                branch, number, raw account type (e.g., 'CheckingAccount'), balance,
-                active status, and overdraft information (if applicable).
+            AccountFinancialDTO: An immutable snapshot containing the holder's name, account
+                branch, number, raw account type, balance, and overdraft information.
 
         Raises:
             ExpiredTokenError: If the token's TTL has passed.
-            BankSecurityError: If the token is invalid, tampered with, or if the
-                account/holder no longer exists during the active session (TOCTOU mitigation).
+            BankSecurityError: If the token is invalid or tampered with.
+            BankAuthenticationError: If the account or holder no longer exists in the
+                repository (TOCTOU mitigation).
+            RuntimeError: If the repository fails to return the requested DTO state.
         """
-        self._validate_token(access_token)
-
         try:
-            holder = self._get_account_holder(access_token.cpf)
-            account = self._get_account(
+            account_info = self._repository.get_account_projection(
+                access_token.branch_code,
+                access_token.account_num,
+                access_info=True,
+                holder_info=True,
+            )
+            account_obj = self._repository.get_account(
                 access_token.branch_code, access_token.account_num
             )
-        except (AccountHolderNotFoundError, AccountNotFoundError):
-            raise BankSecurityError(
-                "Security breach or race condition: Account or Holder no longer exists"
+        except DataNotFoundError:
+            raise BankAuthenticationError(
+                "Authentication failed: Account no longer exists"
             )
 
-        account_type = type(account).__name__
-        overdraft_limit = None
-        available_overdraft = None
+        if not account_info.access_info or not account_info.holder_info:
+            raise RuntimeError("Invalid DTO state")
 
-        if isinstance(account, CheckingAccount):
-            overdraft_limit = account.OVERDRAFT_LIMIT
-            available_overdraft = account.available_overdraft
+        pwd_hash = account_info.access_info.password_hash
+        self._validate_token_integrity(access_token, pwd_hash)
 
-        return AccountInfoDTO(
-            holder_name=holder.name,
-            branch_code=account.branch_code,
-            account_num=account.account_num,
-            account_type=account_type,
-            balance=account.balance,
-            is_active=account.is_active,
+        overdraft_limit = available_overdraft = None
+
+        if isinstance(account_obj, CheckingAccount):
+            overdraft_limit = account_obj.OVERDRAFT_LIMIT
+            available_overdraft = account_obj.available_overdraft
+
+        return AccountFinancialDTO(
+            holder_name=account_info.holder_info.name,
+            branch_code=account_info.branch_code,
+            account_num=account_info.account_num,
+            account_type=account_info.account_type,
+            balance=account_obj.balance,
             overdraft_limit=overdraft_limit,
             available_overdraft=available_overdraft,
         )
@@ -879,12 +867,19 @@ class Bank:
 
         try:
             with self._repository.unit_of_work():
-                account = self._get_account(branch_code, account_num, for_update=True)
-                transaction_type = account.deposit(amount)
-                self._repository.save_transaction(account, amount, transaction_type)
-        except BlockedAccountError as e:
-            raise BankAccessError(
-                "Invalid operation for the current Account status"
+                account_obj = self._repository.get_account(
+                    branch_code, account_num, for_update=True
+                )
+                try:
+                    transaction_type = account_obj.deposit(amount)
+                except BlockedAccountError as e:
+                    raise BankAccessError(
+                        "Invalid operation for the current Account status"
+                    ) from e
+                self._repository.save_transaction(account_obj, amount, transaction_type)
+        except DataNotFoundError as e:
+            raise AccountNotFoundError(
+                "The requested account does not exist in our records"
             ) from e
         except RepositoryError as e:
             raise BankUnavailableError(
@@ -904,7 +899,7 @@ class Bank:
 
         It utilizes a Unit of Work with a pessimistic lock to guarantee exclusive
         access during the transaction. It delegates the mathematical evaluation,
-        status checks, and limit usage directly to the Account instance.
+        status checks, and limit usage directly to the hydrated Account instance.
 
         Args:
             access_token (AccessToken): A valid, securely signed vault token.
@@ -916,8 +911,10 @@ class Bank:
         Raises:
             TypeError: If the arguments are not of the expected types.
             ExpiredTokenError: If the token's TTL has passed.
-            BankSecurityError: If the token is invalid, tampered with, or if
-                the account was deleted during the active session (TOCTOU mitigation).
+            BankSecurityError: If the cryptographic signature of the token is invalid
+                or has been tampered with.
+            BankAuthenticationError: If the account was deleted during the active
+                session (TOCTOU mitigation).
             BankAccessError: If the target account is frozen during the operation.
             OverdraftRequiredError: If the requested amount exceeds the balance
                 and explicit overdraft consent (`use_overdraft=True`) was not provided.
@@ -925,25 +922,44 @@ class Bank:
                 (e.g., negative amount, exceeds total available funds).
             BankUnavailableError: If the transaction could not be persisted due to an
                 internal database error.
+            RuntimeError: If the repository fails to return the requested DTO state.
         """
         verify.verify_instance(amount, Decimal)
         verify.verify_instance(use_overdraft, bool)
-        self._validate_token(access_token)
+
+        try:
+            account_info = self._repository.get_account_projection(
+                access_token.branch_code, access_token.account_num, access_info=True
+            )
+        except DataNotFoundError as e:
+            raise BankAuthenticationError(
+                "Authentication failed: Account no longer exists"
+            ) from e
+
+        if not account_info.access_info:
+            raise RuntimeError("Invalid DTO state")
+
+        self._validate_token_integrity(
+            access_token, account_info.access_info.password_hash
+        )
 
         try:
             with self._repository.unit_of_work():
-                account = self._get_account(
+                account = self._repository.get_account(
                     access_token.branch_code, access_token.account_num, for_update=True
                 )
-                transaction_type = account.withdraw(amount, use_overdraft=use_overdraft)
+                try:
+                    transaction_type = account.withdraw(
+                        amount, use_overdraft=use_overdraft
+                    )
+                except BlockedAccountError:
+                    raise BankAccessError(
+                        "Invalid operation for the current Account status"
+                    )
                 self._repository.save_transaction(account, -amount, transaction_type)
-        except AccountNotFoundError as e:
-            raise BankSecurityError(
-                "Security breach or race condition: Account no longer exists"
-            ) from e
-        except BlockedAccountError as e:
-            raise BankAccessError(
-                "Invalid operation for the current Account status"
+        except DataNotFoundError as e:
+            raise BankAuthenticationError(
+                "Authentication failed: Account no longer exists"
             ) from e
         except RepositoryError as e:
             raise BankUnavailableError(
@@ -957,7 +973,7 @@ class Bank:
         Retrieves a mathematically consistent, chronologically ordered bank statement.
 
         Operates under a Zero Trust model for data privacy. It employs a read-only
-        Unit of Work to guarantee that the account balance (via AccountInfoDTO) and
+        Unit of Work to guarantee that the account balance (via AccountFinancialDTO) and
         the transaction history are evaluated with strict temporal consistency,
         reflecting the exact same moment in time. It incorporates TOCTOU mitigation
         to ensure the account has not been deleted mid-session.
@@ -967,28 +983,31 @@ class Bank:
             start_date (datetime): The cutoff date for filtering transactions.
 
         Returns:
-            StatementDTO: An immutable snapshot combining the account's details,
+            StatementDTO: An immutable snapshot combining the account's financial details,
                 current balance, and chronological transaction history.
 
         Raises:
             TypeError: If the arguments do not match the expected types.
             ExpiredTokenError: If the token's TTL has passed.
-            BankSecurityError: If the AccessToken is tampered with, invalid, or if the
-                account was deleted during the active session (race condition).
+            BankSecurityError: If the AccessToken's cryptographic signature is invalid
+                or has been tampered with.
+            BankAuthenticationError: If the account was deleted during the active session
+                (TOCTOU mitigation).
+            RuntimeError: If the repository fails to return the requested DTO state.
         """
         verify.verify_instance(start_date, datetime)
         try:
             with self._repository.unit_of_work():
-                info_dto = self.get_account_info(access_token)
+                financial_info_dto = self.get_financial_summary(access_token)
                 transactions = self._repository.get_transactions(
                     access_token.branch_code, access_token.account_num, start_date
                 )
         except DataNotFoundError as e:
-            raise BankSecurityError(
-                "Security breach or race condition: Account no longer exists"
+            raise BankAuthenticationError(
+                "Authentication failed: Account no longer exists"
             ) from e
 
-        return StatementDTO(account_info=info_dto, transactions=transactions)
+        return StatementDTO(account_info=financial_info_dto, transactions=transactions)
 
     def update_password(self, access_token: AccessToken, new_password: str) -> None:
         """
@@ -999,8 +1018,8 @@ class Bank:
         accounts to maintain strict security boundaries.
 
         It employs an isolated state transaction (Unit of Work) with exclusive
-        access control to prevent concurrent modifications or account deletions
-        (TOCTOU) during the validation and update process. Due to the architecture
+        access control (Pessimistic Lock) to prevent concurrent modifications or
+        brute-force attacks during the password hashing process. Due to the architecture
         of the AccessToken (which embeds the current password hash in its signature),
         successfully executing this method will immediately invalidate the active
         token, requiring the client to re-authenticate for future operations.
@@ -1013,20 +1032,33 @@ class Bank:
             TypeError: If the new password is not a string.
             BankPasswordError: If the new password format is invalid (e.g., not 6 digits).
             ExpiredTokenError: If the token's TTL has passed.
-            BankSecurityError: If the token is invalid, tampered with, or if the account
-                no longer exists (TOCTOU mitigation).
+            BankSecurityError: If the token's cryptographic signature is invalid
+                or has been tampered with.
+            BankAuthenticationError: If the account no longer exists during the active
+                session (TOCTOU mitigation).
             BankAccessError: If the account is currently frozen, blocking the update.
             BankUnavailableError: If the update could not be persisted due to an internal error.
+            RuntimeError: If the repository fails to return the requested DTO state.
         """
         Bank.validate_password(new_password)
-        self._validate_token(access_token)
 
-        with self._repository.unit_of_work():
-            try:
-                acc_credentials = self._get_account_credentials(
-                    access_token.branch_code, access_token.account_num, for_update=True
+
+        try:
+            with self._repository.unit_of_work():
+                account_info = self._repository.get_account_projection(
+                    access_token.branch_code,
+                    access_token.account_num,
+                    access_info=True,
+                    for_update=True,
                 )
-                if not acc_credentials["is_active"]:
+                if not account_info.access_info:
+                    raise RuntimeError("Invalid DTO state")
+
+                self._validate_token_integrity(
+                    access_token, account_info.access_info.password_hash
+                )
+
+                if not account_info.is_active:
                     raise BankAccessError(
                         "Invalid operation for the current Account status"
                     )
@@ -1035,14 +1067,14 @@ class Bank:
                 self._repository.update_password(
                     access_token.branch_code, access_token.account_num, hashed_pwd
                 )
-            except (AccountNotFoundError, DataNotFoundError) as e:
-                raise BankSecurityError(
-                    "Security breach or race condition: Account no longer exists"
-                ) from e
-            except RepositoryError as e:
-                raise BankUnavailableError(
-                    "The intended operation could not be persisted due to an internal error"
-                ) from e
+        except DataNotFoundError as e:
+            raise BankAuthenticationError(
+                "Authentication failed: Account no longer exists"
+            ) from e
+        except RepositoryError as e:
+            raise BankUnavailableError(
+                "The intended operation could not be persisted due to an internal error"
+            ) from e
 
     def unfreeze_account(
         self, auth_token: AuthToken, birth_date: date, new_password: str
@@ -1078,23 +1110,17 @@ class Bank:
         """
         Bank.validate_password(new_password)
         verify.verify_instance(birth_date, date)
-        self._validate_token(auth_token)
+        self._validate_token_integrity(auth_token)
 
         with self._repository.unit_of_work():
             try:
-                holder = self._get_account_holder(auth_token.cpf)
-                account = self._get_account(
-                    auth_token.branch_code, auth_token.account_num, for_update=True
+                account_info = self._repository.get_account_projection(
+                    auth_token.branch_code, auth_token.account_num, holder_info=True
                 )
-            except AccountHolderNotFoundError as e:
-                raise BankAuthenticationError(
-                    "Holder not found in system register"
-                ) from e
-            except AccountNotFoundError as e:
-                raise BankAuthenticationError(
-                    "The account related to this token no longer exists"
-                ) from e
+            except DataNotFoundError as e:
+                raise BankAuthenticationError("Authentication failed: Account no longer exists") from e
 
+            if
             if account.is_active:
                 raise AccountAlreadyActiveError(
                     "Impossible to unfreeze an operational account"
@@ -1156,7 +1182,7 @@ class Bank:
             BankUnavailableError: If the deletion could not be executed due to
                 an internal database error.
         """
-        self._validate_token(access_token)
+        self._validate_token_integrity(access_token)
 
         if access_token.branch_code != self._branch_code:
             raise HomeBranchRestrictionError(

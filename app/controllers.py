@@ -604,7 +604,7 @@ class TransactionController(BaseController):
            StatementDTO, and delegates the final rendering of the chronological
            ledger to the presentation layer.
         """
-        account_info_dto = self._bank_instance.get_account_info(
+        account_info_dto = self._bank_instance.get_financial_summary(
             self._active_access_token
         )
         account_info_dict = asdict(account_info_dto)
@@ -936,7 +936,9 @@ class BankSystemController(BaseController, SharedPromptsMixin):
             self._handle_info_ui("info", "close_acc_ok")
             raise ControllerCredentialsError
         except NotEmptyAccountError:
-            account_info_dto = self._bank_instance.get_account_info(self._access_token)
+            account_info_dto = self._bank_instance.get_financial_summary(
+                self._access_token
+            )
             key = (
                 "close_acc_positive"
                 if account_info_dto.balance > 0
