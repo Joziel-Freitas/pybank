@@ -14,7 +14,7 @@ from typing import Any, ClassVar, cast
 
 from infra import verify
 from shared.exceptions import (
-    BlockedAccountError,
+    FrozenAccountError,
     InvalidAccountError,
     InvalidBalanceError,
     InvalidBranchError,
@@ -45,7 +45,7 @@ class Account(ABC):
     _branch_code: str
     _account_num: str
     _balance: Decimal
-    _is_active: bool
+    _is_frozen: bool
 
     def __init__(self, branch_code: str, account_num: str):
         """
@@ -62,7 +62,7 @@ class Account(ABC):
         self._branch_code = Account.validate_branch_code(branch_code)
         self._account_num = Account.validate_account_number(account_num)
         self._balance = Decimal("0.00")
-        self._is_active = True
+        self._is_frozen = False
 
     def __repr__(self) -> str:
         """Returns the canonical string representation of the Account instance."""
@@ -118,9 +118,9 @@ class Account(ABC):
         return self._balance
 
     @property
-    def is_active(self) -> bool:
+    def is_frozen(self) -> bool:
         """Returns the current status of the account"""
-        return self._is_active
+        return self._is_frozen
 
     @abstractmethod
     def withdraw(self, amount: Decimal, use_overdraft: bool = False) -> TransactionType:
@@ -249,7 +249,7 @@ class Account(ABC):
             "branch_code": self._branch_code,
             "account_num": self._account_num,
             "balance": self._balance,
-            "is_active": self._is_active,
+            "is_frozen": self._is_frozen,
             "type": type(self).__name__,
         }
 
@@ -294,7 +294,7 @@ class Account(ABC):
             account_num=data["account_num"],
         )
         instance._balance = data["balance"]
-        instance._is_active = data["is_active"]
+        instance._is_frozen = data["is_frozen"]
         return instance
 
     def freeze(self) -> None:
@@ -305,7 +305,7 @@ class Account(ABC):
         its current balance and history but outright rejects any state-mutating
         financial operations (like deposits or withdrawals) until explicitly unfrozen.
         """
-        self._is_active = False
+        self._is_frozen = True
 
     def unfreeze(self) -> None:
         """
@@ -314,7 +314,7 @@ class Account(ABC):
         Lifts the Read-Only restriction, allowing standard balance-mutating
         financial operations to resume.
         """
-        self._is_active = True
+        self._is_frozen = False
 
     def deposit(self, value: Decimal) -> TransactionType:
         """
@@ -332,11 +332,11 @@ class Account(ABC):
             TransactionType: A Value Object indicating the operation was a standard deposit.
 
         Raises:
-            BlockedAccountError: If the account is currently frozen.
+            FrozenAccountError: If the account is currently frozen.
             InvalidDepositError: If the value is not a Decimal or is less than 2.00.
         """
-        if not self._is_active:
-            raise BlockedAccountError(
+        if self._is_frozen:
+            raise FrozenAccountError(
                 "Impossible to perform deposit operation on a frozen account"
             )
 
@@ -377,12 +377,12 @@ class SavingsAccount(Account):
             TransactionType: A Value Object indicating a standard withdrawal event.
 
         Raises:
-            BlockedAccountError: If the account is currently frozen.
+            FrozenAccountError: If the account is currently frozen.
             RuntimeError: If explicit overdraft usage is requested (use_overdraft=True).
             InvalidWithdrawError: If the withdrawal amount is invalid or exceeds the current balance.
         """
-        if not self._is_active:
-            raise BlockedAccountError(
+        if self._is_frozen:
+            raise FrozenAccountError(
                 "Impossible to perform withdraw operation on a frozen account"
             )
 
@@ -470,7 +470,7 @@ class CheckingAccount(Account):
 
         Raises:
             InvalidDepositError: If the deposit amount is invalid (propagated from base).
-            BlockedAccountError: If the account is currently frozen (propagated from base).
+            FrozenAccountError: If the account is currently frozen (propagated from base).
         """
         super().deposit(value)
 
@@ -499,14 +499,14 @@ class CheckingAccount(Account):
                              (WITHDRAWAL) or a credit limit usage event (OVERDRAFT_WITHDRAWAL).
 
         Raises:
-            BlockedAccountError: If the account is currently frozen.
+            FrozenAccountError: If the account is currently frozen.
             OverdraftRequiredError: If the requested amount exceeds the current balance
                 but `use_overdraft` was not explicitly set to True.
             InvalidWithdrawError: If the withdrawal amount is invalid or exceeds the total
                 available funds (balance + overdraft limit).
         """
-        if not self._is_active:
-            raise BlockedAccountError(
+        if self._is_frozen:
+            raise FrozenAccountError(
                 "Impossible to perform withdraw operation on a frozen account"
             )
 

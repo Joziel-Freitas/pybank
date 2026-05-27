@@ -217,8 +217,8 @@ class AccountError(DomainError):
     """Base exception for errors related to the Account entity."""
 
 
-class BlockedAccountError(AccountError):
-    """Raised when an operation is attempted on a frozen/blocked account."""
+class FrozenAccountError(AccountError):
+    """Raised when an operation is attempted on a frozen account."""
 
 
 class InvalidAccountError(AccountError):
@@ -263,7 +263,7 @@ DOMAIN_ERROR_MAP = {
     BankNameError: "name",
     BankPasswordError: "password",
     BankUnavailableError: "unavailable",
-    BlockedAccountError: "acc_blocked",
+    FrozenAccountError: "acc_frozen",
     DuplicatedAccountError: "acc_duplicated",
     DuplicatedAccountHolderError: "already_account_holder",
     HomeBranchRestrictionError: "other_branch",

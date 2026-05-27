@@ -70,14 +70,14 @@ class AccountSummaryDTO:
         branch_code (str): The branch code where the account is registered.
         account_num (str): The unique account identifier.
         account_type (str): The class name representing the account type (e.g., 'CheckingAccount').
-        is_active (bool): Flag indicating if the account is active or frozen.
+        is_frozen (bool): Flag indicating if the account is active or frozen.
     """
 
     holder_name: str
     branch_code: str
     account_num: str
     account_type: str
-    is_active: bool
+    is_frozen: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,7 +184,7 @@ class HolderProjectionDTO:
 
     name: str
     cpf: str
-    birth_date: str
+    birth_date: date
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,7 +202,7 @@ class AccountProjectionDTO:
         branch_code (str): The baseline 4-digit branch code.
         account_num (str): The baseline 8-digit account number.
         account_type (str): The baseline classification of the account.
-        is_active (bool): The baseline operational status of the account.
+        is_frozen (bool): The baseline operational status of the account.
         financial_info (FinancialProjectionDTO | None): The nested financial context, or None.
         access_info (AccessProjectionDTO | None): The nested security context, or None.
         holder_info (HolderProjectionDTO | None): The nested identity context, or None.
@@ -211,7 +211,7 @@ class AccountProjectionDTO:
     branch_code: str
     account_num: str
     account_type: str
-    is_active: bool
+    is_frozen: bool
     financial_info: FinancialProjectionDTO | None
     access_info: AccessProjectionDTO | None
     holder_info: HolderProjectionDTO | None

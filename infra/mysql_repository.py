@@ -89,7 +89,7 @@ class MySQLRepository:
         Raises:
             SystemBaseException: Propagates all expected domain, security, and validation
                 errors, triggering a safe rollback before continuing up the stack.
-            TypeError, ValueError, KeyError, RuntimeError: Propagates standard Python
+            KeyError, RuntimeError, TypeError, ValueError: Propagates standard Python
                 exceptions (typically representing implementation bugs or strict state
                 validations), triggering a rollback and crashing the flow as expected.
             RepositoryError: Catches unexpected infrastructure or database driver errors,
@@ -99,7 +99,7 @@ class MySQLRepository:
             self._in_transaction = True
             yield None
             self._connection.commit()
-        except (SystemBaseException, TypeError, ValueError, KeyError, RuntimeError):
+        except (SystemBaseException, KeyError, RuntimeError, TypeError, ValueError):
             self._connection.rollback()
             raise
         except Exception as e:
@@ -220,7 +220,7 @@ class MySQLRepository:
             "account_num, "
             "account_type, "
             "balance, "
-            "is_active, "
+            "is_frozen, "
             "used_overdraft, "
             "password_hash, "
             "account_holder_id) "
@@ -232,7 +232,7 @@ class MySQLRepository:
             acc_dict["account_num"],
             acc_dict["type"],
             acc_dict["balance"],
-            acc_dict["is_active"],
+            acc_dict["is_frozen"],
             acc_dict.get("used_overdraft", None),
             password_hash,
             holder_id,
@@ -244,32 +244,6 @@ class MySQLRepository:
                 f"Duplicated data in the database for {account.branch_code}, {account.account_num}",
                 account,
             ) from e
-
-    def _update_account_status(
-        self, cursor: cursors.DictCursor, account: Account
-    ) -> None:
-        """
-        Internal helper to execute the active status update for an account.
-
-        This method maps the domain entity's state to the SQL parameters
-        and executes the statement within the provided cursor's transaction scope.
-        It does not manage commits, rollbacks, or rowcount validations.
-
-        Args:
-            cursor (cursors.DictCursor): The active database cursor.
-            account (Account): The domain Account entity containing the updated status.
-        """
-        acc_dict = account.to_dict()
-        branch_code = acc_dict["branch_code"]
-        account_num = acc_dict["account_num"]
-        status = acc_dict["is_active"]
-
-        sql = (
-            "UPDATE accounts SET is_active = %s "
-            "WHERE branch_code = %s AND account_num = %s"
-        )
-
-        cursor.execute(sql, (status, branch_code, account_num))
 
     def register_account_bundle(
         self, account: Account, holder_or_cpf: AccountHolder | str, password_hash: str
@@ -514,7 +488,7 @@ class MySQLRepository:
         Returns:
             AccountProjectionDTO: An immutable nested DTO containing the requested data slice.
                 Baseline fields always guaranteed: 'branch_code', 'account_num',
-                'account_type', 'is_active'.
+                'account_type', 'is_frozen'.
 
         Raises:
             TypeError: If the provided arguments are not of the expected types.
@@ -539,7 +513,7 @@ class MySQLRepository:
             "a.branch_code",
             "a.account_num",
             "a.account_type",
-            "a.is_active",
+            "a.is_frozen",
         ]
 
         if financial_info:
@@ -599,7 +573,7 @@ class MySQLRepository:
             branch_code=result["branch_code"],
             account_num=result["account_num"],
             account_type=result["account_type"],
-            is_active=result["is_active"],
+            is_frozen=result["is_frozen"],
             financial_info=financial_dto,
             access_info=access_dto,
             holder_info=holder_dto,
@@ -647,7 +621,7 @@ class MySQLRepository:
             "account_num": "account_num",
             "account_type": "type",
             "balance": "balance",
-            "is_active": "is_active",
+            "is_frozen": "is_frozen",
             "used_overdraft": "used_overdraft",
         }
         sql = f"SELECT * FROM accounts WHERE branch_code = %s AND account_num = %s {lock_clause}"
@@ -812,14 +786,14 @@ class MySQLRepository:
 
     def update_account_status(self, account: Account) -> None:
         """
-        Updates the active status (frozen/unfrozen) of a specific account.
+        Updates the frozen status (frozen/unfrozen) of a specific account.
 
         This method is a subordinate operation and strictly requires an active
         Unit of Work. It MUST be executed within a `with self.unit_of_work():` block.
 
         Args:
             account (Account): The domain Account entity containing the target branch,
-                account number, and the new active status.
+                account number, and the new frozen status.
 
         Raises:
             RuntimeError: If called outside an active `unit_of_work()` block, enforcing the Unit of Work.
@@ -835,9 +809,15 @@ class MySQLRepository:
 
         verify.verify_instance(account, Account)
 
-        with self._connection.cursor() as cursor:
-            self._update_account_status(cursor, account)
+        sql = (
+            "UPDATE accounts SET is_frozen = %s "
+            "WHERE branch_code = %s AND account_num = %s"
+        )
 
+        with self._connection.cursor() as cursor:
+            cursor.execute(
+                sql, (account.is_frozen, account.branch_code, account.account_num)
+            )
             if cursor.rowcount == 0:
                 raise DataNotFoundError(
                     f"Data not found in the database for {account.branch_code=}, {account.account_num=}"
@@ -886,7 +866,7 @@ class MySQLRepository:
                     f"Data not found in the database for {branch_code=}, {account_num=}"
                 )
 
-    def delete_account(self, account: Account) -> None:
+    def delete_account(self, branch_code: str, account_num: str) -> None:
         """
         Permanently removes an account and its transaction history from the database.
 
@@ -897,20 +877,22 @@ class MySQLRepository:
         deleting the parent record in the 'accounts' table.
 
         Args:
-            account (Account): The fully hydrated domain Account entity to be deleted.
+            branch_code (str): The string representing the branch of the target account.
+            account_num (str): The unique string representing the target account number.
 
         Raises:
+            TypeError: If the provided arguments are not of the expected types.
             RuntimeError: If called outside an active `unit_of_work()` block, enforcing the Unit of Work.
             DataNotFoundError: If the account to be deleted does not exist.
             RepositoryError: If a database error occurs during the deletion process.
         """
+        verify.verify_instance(branch_code, str)
+        verify.verify_instance(account_num, str)
+
         if not self._in_transaction:
             raise RuntimeError(
                 "Invalid method call. Use the context manager MySQLRepository.unit_of_work()"
             )
-
-        branch_code = account.branch_code
-        account_num = account.account_num
 
         del_trans_sql = (
             "DELETE t FROM transactions as t "
@@ -927,5 +909,5 @@ class MySQLRepository:
 
             if cursor.rowcount == 0:
                 raise DataNotFoundError(
-                    f"Data not found in the database for {account.branch_code=}, {account.account_num=}"
+                    f"Data not found in the database for {branch_code=}, {account_num=}"
                 )

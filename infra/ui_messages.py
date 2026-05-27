@@ -54,11 +54,11 @@ TRANSACTION_MESSAGES: dict[str, dict[str, str]] = {
         "withdraw_ok": "Saque realizado com sucesso",
     },
     "deposit_errors": {
-        "acc_blocked": "Transação não permitida para esta conta no momento. Entre em contato com o titular",
+        "acc_frozen": "Transação não permitida para esta conta no momento. Entre em contato com o titular",
         "acc_not_found": "Conta inexistente no sistema do PyBank",
     },
     "withdraw_errors": {
-        "acc_blocked": "Sua conta foi BLOQUEADA por segurança. Desbloqueie a conta pra usá-la novamente",
+        "acc_frozen": "Sua conta foi BLOQUEADA por segurança. Desbloqueie a conta pra usá-la novamente",
         "value": "Valor indisponível para saque. Transação não autorizada",
         "use_limit": "Valor insuficiente em conta. Para sacar essa quantia autorize o uso do limite especial",
     },

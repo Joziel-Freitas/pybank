@@ -28,7 +28,7 @@ CREATE TABLE accounts (
     account_num CHAR(8) NOT NULL,
     account_type VARCHAR(20) NOT NULL,
     balance DECIMAL(13, 2) NOT NULL,
-    is_active BOOLEAN NOT NULL,
+    is_frozen BOOLEAN NOT NULL,
     used_overdraft DECIMAL(10, 2),
     password_hash VARCHAR(255) NOT NULL,
     failed_login_attempts INT DEFAULT 0,

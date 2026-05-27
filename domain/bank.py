@@ -45,12 +45,12 @@ from shared.exceptions import (
     BankPasswordError,
     BankSecurityError,
     BankUnavailableError,
-    BlockedAccountError,
     DataNotFoundError,
     DuplicatedAccountError,
     DuplicatedAccountHolderError,
     DuplicatedDataError,
     ExpiredTokenError,
+    FrozenAccountError,
     HomeBranchRestrictionError,
     NotEmptyAccountError,
     RepositoryError,
@@ -660,11 +660,11 @@ class Bank:
                     "Authentication failed: Account no longer exists"
                 ) from e
 
-            is_active = account_info["is_active"]
+            is_frozen = account_info["is_frozen"]
             pwd_hash = account_info["password_hash"]
             failed_attempts = account_info["failed_login_attempts"]
 
-            if not is_active:
+            if is_frozen:
                 raise BankAccessError("This account is blocked and cannot be accessed")
 
             auth_exception = None
@@ -768,7 +768,7 @@ class Bank:
             branch_code=account_info.branch_code,
             account_num=account_info.account_num,
             account_type=account_info.account_type,
-            is_active=account_info.is_active,
+            is_frozen=account_info.is_frozen,
         )
 
     def get_financial_summary(self, access_token: AccessToken) -> AccountFinancialDTO:
@@ -872,9 +872,9 @@ class Bank:
                 )
                 try:
                     transaction_type = account_obj.deposit(amount)
-                except BlockedAccountError as e:
+                except FrozenAccountError as e:
                     raise BankAccessError(
-                        "Invalid operation for the current Account status"
+                        "This account is frozen and cannot be accessed"
                     ) from e
                 self._repository.save_transaction(account_obj, amount, transaction_type)
         except DataNotFoundError as e:
@@ -952,9 +952,9 @@ class Bank:
                     transaction_type = account.withdraw(
                         amount, use_overdraft=use_overdraft
                     )
-                except BlockedAccountError:
+                except FrozenAccountError:
                     raise BankAccessError(
-                        "Invalid operation for the current Account status"
+                        "This account is frozen and cannot be accessed"
                     )
                 self._repository.save_transaction(account, -amount, transaction_type)
         except DataNotFoundError as e:
@@ -1042,7 +1042,6 @@ class Bank:
         """
         Bank.validate_password(new_password)
 
-
         try:
             with self._repository.unit_of_work():
                 account_info = self._repository.get_account_projection(
@@ -1058,9 +1057,9 @@ class Bank:
                     access_token, account_info.access_info.password_hash
                 )
 
-                if not account_info.is_active:
+                if account_info.is_frozen:
                     raise BankAccessError(
-                        "Invalid operation for the current Account status"
+                        "This account is frozen and cannot be accessed"
                     )
                 hashed_pwd = self._generate_password_hash(new_password)
 
@@ -1080,17 +1079,17 @@ class Bank:
         self, auth_token: AuthToken, birth_date: date, new_password: str
     ) -> None:
         """
-        Recovers and unfreezes a blocked account using strict identity verification.
+        Recovers and unfreezes a frozen account using strict identity verification.
 
         This method upgrades a standard authentication attempt into a recovery
         operation. It enforces strict state isolation (Unit of Work with exclusive
         access control) to ensure the account cannot be mutated or deleted by
         concurrent processes during the recovery.
 
-        It verifies the provided birth date against the registered account holder's
-        data. Upon success, it delegates the state change to the Account entity,
-        applies a new secure password, resets the login attempts counter, and
-        persists the active status.
+        It utilizes a micro-ORM projection for rapid validation before hydrating
+        the full Domain entity. It verifies the provided birth date, delegates the
+        state change to the Account, applies a new secure password, resets the login
+        attempts counter, and persists the active status.
 
         Args:
             auth_token (AuthToken): A valid, securely signed authentication token.
@@ -1100,56 +1099,65 @@ class Bank:
         Raises:
             TypeError: If the arguments are not of the expected types.
             ExpiredTokenError: If the token's TTL has passed.
+            BankSecurityError: If the cryptographic signature of the token is invalid
+                or has been tampered with.
             BankAuthenticationError: If the provided birth date is incorrect, or if
-                the account/holder no longer exists (translating infrastructure misses
-                into authentication failures for Lobby access).
+                the account/holder no longer exists (TOCTOU mitigation).
             BankPasswordError: If the new password format is invalid.
             AccountAlreadyActiveError: If the account is already operational.
             BankUnavailableError: If the operation could not be persisted due to
                 an internal database error.
+            RuntimeError: If the repository fails to return the requested DTO state.
         """
         Bank.validate_password(new_password)
         verify.verify_instance(birth_date, date)
         self._validate_token_integrity(auth_token)
 
-        with self._repository.unit_of_work():
-            try:
+        try:
+            with self._repository.unit_of_work():
                 account_info = self._repository.get_account_projection(
-                    auth_token.branch_code, auth_token.account_num, holder_info=True
-                )
-            except DataNotFoundError as e:
-                raise BankAuthenticationError("Authentication failed: Account no longer exists") from e
-
-            if
-            if account.is_active:
-                raise AccountAlreadyActiveError(
-                    "Impossible to unfreeze an operational account"
+                    auth_token.branch_code,
+                    auth_token.account_num,
+                    holder_info=True,
+                    for_update=True,
                 )
 
-            if holder.birth_date != birth_date:
-                raise BankAuthenticationError(
-                    "The given birth date doesn't match with registered birth date"
-                )
+                if not account_info.holder_info:
+                    raise RuntimeError("Invalid DTO state")
 
-            pwd_hash = self._generate_password_hash(new_password)
-            account.unfreeze()
+                if not account_info.is_frozen:
+                    raise AccountAlreadyActiveError(
+                        "Operational accounts cannot be unfrozen"
+                    )
 
-            try:
+                if account_info.holder_info.birth_date != birth_date:
+                    raise BankAuthenticationError(
+                        "The given birth date doesn't match with registered birth date"
+                    )
+
+                new_hash = self._generate_password_hash(new_password)
+
                 self._repository.update_password(
-                    account.branch_code, account.account_num, pwd_hash
+                    auth_token.branch_code, auth_token.account_num, new_hash
                 )
                 self._repository.reset_login_attempts(
-                    account.branch_code, account.account_num
+                    auth_token.branch_code, auth_token.account_num
                 )
+
+                account = self._repository.get_account(
+                    auth_token.branch_code, auth_token.account_num, for_update=True
+                )
+
+                account.unfreeze()
                 self._repository.update_account_status(account)
-            except DataNotFoundError:
-                raise BankAuthenticationError(
-                    "The account related to this token no longer exists"
-                )
-            except RepositoryError as e:
-                raise BankUnavailableError(
-                    "The intended operation could not be persisted due to an internal error"
-                ) from e
+        except DataNotFoundError as e:
+            raise BankAuthenticationError(
+                "Authentication failed: Account no longer exists"
+            ) from e
+        except RepositoryError as e:
+            raise BankUnavailableError(
+                "The intended operation could not be persisted due to an internal error"
+            ) from e
 
     def close_account(self, access_token: AccessToken) -> None:
         """
@@ -1177,45 +1185,52 @@ class Bank:
                 the current terminal's branch.
             BankAccessError: If the account is currently frozen, blocking the closure.
             NotEmptyAccountError: If the account has a positive or negative balance.
-            BankSecurityError: If the token is invalid, tampered with, or if the
-                account no longer exists (TOCTOU mitigation).
+            BankSecurityError: If the token's cryptographic signature is invalid
+                or has been tampered with.
+            BankAuthenticationError: If the account no longer exists in the
+                repository (TOCTOU mitigation).
+            RuntimeError: If the repository fails to return the requested DTO state.
             BankUnavailableError: If the deletion could not be executed due to
                 an internal database error.
         """
-        self._validate_token_integrity(access_token)
-
         if access_token.branch_code != self._branch_code:
             raise HomeBranchRestrictionError(
                 "Account closure can only be performed at the home branch"
             )
 
-        with self._repository.unit_of_work():
-            try:
-                account = self._get_account(
-                    access_token.branch_code, access_token.account_num, for_update=True
-                )
-            except AccountNotFoundError as e:
-                raise BankSecurityError(
-                    "Security breach or race condition: Account no longer exists"
-                ) from e
-
-            if not account.is_active:
-                raise BankAccessError(
-                    "Invalid operation for the current Account status"
+        try:
+            with self._repository.unit_of_work():
+                account_info = self._repository.get_account_projection(
+                    access_token.branch_code,
+                    access_token.account_num,
+                    access_info=True,
+                    financial_info=True,
+                    for_update=True,
                 )
 
-            if account.balance != 0:
-                raise NotEmptyAccountError(
-                    "The account cannot be closed because it has a non-zero balance"
+                if not account_info.financial_info or not account_info.access_info:
+                    raise RuntimeError("Invalid DTO state")
+
+                self._validate_token_integrity(
+                    access_token, account_info.access_info.password_hash
                 )
 
-            try:
-                self._repository.delete_account(account)
-            except DataNotFoundError as e:
-                raise BankSecurityError(
-                    "Security breach or race condition: Account no longer exists"
-                ) from e
-            except RepositoryError as e:
-                raise BankUnavailableError(
-                    "The intended operation could not be persisted due to an internal error"
-                ) from e
+                if account_info.is_frozen:
+                    raise BankAccessError("This account is frozen and cannot be closed")
+
+                if account_info.financial_info.balance != 0:
+                    raise NotEmptyAccountError(
+                        "The account cannot be closed because it has a non-zero balance"
+                    )
+
+                self._repository.delete_account(
+                    access_token.branch_code, access_token.account_num
+                )
+        except DataNotFoundError as e:
+            raise BankAuthenticationError(
+                "Authentication failed: Account no longer exists"
+            ) from e
+        except RepositoryError as e:
+            raise BankUnavailableError(
+                "The intended operation could not be persisted due to an internal error"
+            ) from e
