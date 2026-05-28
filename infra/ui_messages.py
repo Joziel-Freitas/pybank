@@ -21,7 +21,7 @@ SYSTEM_MESSAGES: dict[str, dict[str, str]] = {
         "close_acc_positive": "Você possui saldo de R${balance}. Realize o SAQUE do valor total antes de encerrar a conta",
         "close_acc_ok": "Sua conta foi encerrada corretamente e seus dados removidos do sistema",
         "lobby_hello": "Olá, {user_name}! Seja bem-vindo ao PyBank",
-        "lobby_restrict": "Sua conta {acc_type} está bloqueada. Seu acesso ao menu está restringido}",
+        "lobby_restrict": "Sua conta {acc_type} está bloqueada. Seu acesso ao menu foi restringido",
         "pwd_confirm": "Confirme a sua nova senha",
         "pwd_error": "As senhas não conferem. Tente novamente",
         "pwd_wrong": "Senha incorreta. Tente novamente",

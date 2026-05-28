@@ -137,7 +137,7 @@ def validate_entry(
         KeyError: If the field is not found within the provided validation mapper.
     """
     verify.verify_instance(attr_field, str)
-    verify.verify_instance(attr_value, (str, int, float, Decimal))
+    verify.verify_instance(attr_value, (str, int, float, date, Decimal))
     verify.verify_instance(validation_mapper, dict)
 
     if attr_field not in validation_mapper:

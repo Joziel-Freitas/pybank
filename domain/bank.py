@@ -434,15 +434,14 @@ class Bank:
         except DuplicatedDataError as e:
             error_argument = e.argument
 
-            if isinstance(error_argument, (AccountHolder, str)):
+            if error_argument is holder_or_cpf:
                 raise DuplicatedAccountHolderError(
                     "Account holder already registered in the system"
                 ) from e
 
-            if isinstance(error_argument, Account):
-                raise DuplicatedAccountError(
-                    "Account already registered in the system"
-                ) from e
+            raise DuplicatedAccountError(
+                "Account already registered in the system"
+            ) from e
         except DataNotFoundError:
             raise AccountHolderNotFoundError(
                 "No account holder registered under this CPF"
@@ -636,95 +635,85 @@ class Bank:
         Raises:
             ExpiredTokenError: If the provided AuthToken has passed its Time-To-Live (TTL).
             BankPasswordError: If the provided password format is invalid.
-            BankSecurityError: If the AuthToken is tampered with, or if the account
-                no longer exists (TOCTOU mitigation).
+            BankSecurityError: If the AuthToken is tampered with.
             BankAccessError: If the account is already frozen, or if it reaches
                 the maximum allowed failed login attempts during this check.
-            BankAuthenticationError: If the provided password does not match the hash.
+            BankAuthenticationError: If the provided password does not match the hash
+                (returns the 'password' object reference in the 'argument' attribute),
+                or if the account no longer exists during the active session (TOCTOU
+                mitigation, 'argument' is not set).
+            RuntimeError: If the repository fails to return the requested DTO state.
             BankUnavailableError: If the validation or security updates could not
                 be persisted due to an internal infrastructure error.
         """
         Bank.validate_password(password)
         self._validate_token_integrity(auth_token)
 
-        with self._repository.unit_of_work():
-            try:
+        try:
+            with self._repository.unit_of_work():
                 account_info = self._repository.get_account_projection(
                     auth_token.branch_code,
                     auth_token.account_num,
                     access_info=True,
                     for_update=True,
                 )
-            except DataNotFoundError as e:
-                raise BankAuthenticationError(
-                    "Authentication failed: Account no longer exists"
-                ) from e
 
-            is_frozen = account_info["is_frozen"]
-            pwd_hash = account_info["password_hash"]
-            failed_attempts = account_info["failed_login_attempts"]
+                if not account_info.access_info:
+                    raise RuntimeError("Invalid DTO state")
 
-            if is_frozen:
-                raise BankAccessError("This account is blocked and cannot be accessed")
-
-            auth_exception = None
-            access_exception = None
-
-            try:
-                self._check_password(password, pwd_hash)
-            except BankAuthenticationError as e:
-                auth_exception = e
-
-            if not auth_exception:
-                if not failed_attempts:
-                    return self._generate_access_token(
-                        auth_token=auth_token,
-                        password_hash=account_info["password_hash"],
+                if account_info.is_frozen:
+                    raise BankAccessError(
+                        "This account is blocked and cannot be accessed"
                     )
+
+                auth_exception = None
+                access_exception = None
 
                 try:
-                    self._repository.reset_login_attempts(
-                        auth_token.branch_code, auth_token.account_num
+                    self._check_password(
+                        password, account_info.access_info.password_hash
                     )
+                except BankAuthenticationError as e:
+                    e.argument = password
+                    auth_exception = e
+
+                if not auth_exception:
+                    if account_info.access_info.failed_attempts:
+                        self._repository.reset_login_attempts(
+                            auth_token.branch_code, auth_token.account_num
+                        )
+
                     return self._generate_access_token(
                         auth_token=auth_token,
-                        password_hash=account_info["password_hash"],
+                        password_hash=account_info.access_info.password_hash,
                     )
-                except DataNotFoundError as e:
-                    raise BankSecurityError(
-                        "Security breach or race condition: Account no longer exists"
-                    ) from e
-                except RepositoryError as e:
-                    raise BankUnavailableError(
-                        "The intended operation could not be persisted due to an internal error"
-                    ) from e
 
-            try:
                 self._repository.register_failed_login(
                     auth_token.branch_code, auth_token.account_num
                 )
-                if (failed_attempts + 1) >= self.MAX_LOGIN_ATTEMPTS:
-                    account = self._get_account(
+                if (
+                    account_info.access_info.failed_attempts + 1
+                ) >= self.MAX_LOGIN_ATTEMPTS:
+                    account = self._repository.get_account(
                         auth_token.branch_code,
                         auth_token.account_num,
                         for_update=True,
                     )
+
                     account.freeze()
                     self._repository.update_account_status(account)
-
                     access_exception = BankAccessError(
                         "The account was frozen due to 3 consecutive failed login attempts"
                     )
-            except (AccountNotFoundError, DataNotFoundError) as e:
-                raise BankSecurityError(
-                    "Security breach or race condition: Account no longer exists"
-                ) from e
-            except RepositoryError as e:
-                raise BankUnavailableError(
-                    "The intended operation could not be persisted due to an internal error"
-                ) from e
-
-        raise access_exception or auth_exception
+            raise access_exception or auth_exception
+        except DataNotFoundError as e:
+            raise BankAuthenticationError(
+                "Authentication failed: Account no longer exists"
+            ) from e
+        except RepositoryError as e:
+            raise BankUnavailableError(
+                "The intended operation could not be persisted due to an internal error"
+            ) from e
 
     def get_account_summary(self, auth_token: AuthToken) -> AccountSummaryDTO:
         """

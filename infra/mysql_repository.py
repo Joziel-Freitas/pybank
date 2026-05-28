@@ -124,7 +124,7 @@ class MySQLRepository:
         Raises:
             DuplicatedDataError: If an account holder with the same CPF already exists.
         """
-        query = "INSERT INTO account_holders (cpf, name, birth_date) VALUES (%(cpf)s, %(name)s, %(birth_date)s)"
+        query = "INSERT INTO account_holders (cpf, holder_name, birth_date) VALUES (%(cpf)s, %(name)s, %(birth_date)s)"
         data = holder.to_dict()
 
         try:
@@ -212,8 +212,6 @@ class MySQLRepository:
         Raises:
             DuplicatedDataError: If an account with the same branch code and account_num already exists.
         """
-        acc_dict = account.to_dict()
-
         sql = (
             "INSERT INTO accounts ( "
             "branch_code, "
@@ -224,21 +222,27 @@ class MySQLRepository:
             "used_overdraft, "
             "password_hash, "
             "account_holder_id) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+            "VALUES ("
+            "%(branch_code)s, "
+            "%(account_num)s, "
+            "%(type)s, "
+            "%(balance)s, "
+            "%(is_frozen)s, "
+            "%(used_overdraft)s, "
+            "%(password_hash)s, "
+            "%(holder_id)s)"
         )
 
-        values = (
-            acc_dict["branch_code"],
-            acc_dict["account_num"],
-            acc_dict["type"],
-            acc_dict["balance"],
-            acc_dict["is_frozen"],
-            acc_dict.get("used_overdraft", None),
-            password_hash,
-            holder_id,
-        )
+        data_dict = {
+            "holder_id": holder_id,
+            "password_hash": password_hash,
+            "used_overdraft": None,
+        }
+        acc_dict = account.to_dict()
+        data_dict.update(acc_dict)
+
         try:
-            cursor.execute(sql, values)
+            cursor.execute(sql, data_dict)
         except err.IntegrityError as e:
             raise DuplicatedDataError(
                 f"Duplicated data in the database for {account.branch_code}, {account.account_num}",
@@ -270,9 +274,8 @@ class MySQLRepository:
         verify.verify_instance(holder_or_cpf, (AccountHolder, str))
         verify.verify_instance(password_hash, str)
 
-        try:
+        with self.unit_of_work():
             with self._connection.cursor() as cursor:
-
                 if isinstance(holder_or_cpf, AccountHolder):
                     holder_id = self._insert_account_holder_record(
                         cursor, holder_or_cpf
@@ -281,16 +284,6 @@ class MySQLRepository:
                     holder_id = self._get_account_holder_id(cursor, holder_or_cpf)
 
                 self._insert_account_record(cursor, account, holder_id, password_hash)
-                self._connection.commit()
-        except Exception as e:
-            self._connection.rollback()
-
-            if not isinstance(e, RepositoryError):
-                raise RepositoryError(
-                    f"Data persistence failed due DB error: {e}"
-                ) from e
-
-            raise
 
     def save_transaction(
         self, account: Account, amount: Decimal, transaction_type: TransactionType
@@ -440,12 +433,12 @@ class MySQLRepository:
 
         with self._connection.cursor() as cursor:
             cursor.execute(holder_sql, (cpf,))
-            holder_dict = cursor.fetchone()
+            result = cursor.fetchone()
 
-            if not holder_dict:
+            if not result:
                 raise DataNotFoundError(f"Data not found in the database for {cpf=}")
 
-            holder_id = holder_dict.pop("id")
+            holder_id = result.pop("id")
             cursor.execute(account_sql, (holder_id,))
             rows = cursor.fetchall()
 
@@ -454,6 +447,11 @@ class MySQLRepository:
             row["cpf"] = cpf
             cards_list.append(row)
 
+        holder_dict = {}
+
+        holder_dict["cpf"] = result["cpf"]
+        holder_dict["name"] = result["holder_name"]
+        holder_dict["birth_date"] = result["birth_date"]
         holder_dict["account_cards"] = cards_list
         holder_obj = AccountHolder.from_dict(holder_dict)
         return holder_obj

@@ -280,7 +280,7 @@ class OnboardingController(BaseController, SharedPromptsMixin):
         "name": validators.boolean_validator_dec(Person.validate_name),
         "cpf": validators.boolean_validator_dec(Person.validate_cpf),
         "birth_date": validators.boolean_validator_dec(Person.validate_birth_date),
-        "acc_type": validators.boolean_validator_dec(
+        "account_type": validators.boolean_validator_dec(
             partial(verify.verify_interval, min_val=1, max_val=2)
         ),
         "account_num": validators.boolean_validator_dec(
@@ -667,7 +667,7 @@ class BankSystemController(BaseController, SharedPromptsMixin):
             )
         ),
         "operations_menu": validators.boolean_validator_dec(OperationMenuType),
-        "restrict_menu": validators.boolean_validator_dec(RestrictedMenuType),
+        "restricted_menu": validators.boolean_validator_dec(RestrictedMenuType),
         "cpf": validators.boolean_validator_dec(validators.validate_cpf),
         "password": validators.boolean_validator_dec(Bank.validate_password),
         "birth_date": validators.boolean_validator_dec(Person.validate_birth_date),
@@ -815,7 +815,7 @@ class BankSystemController(BaseController, SharedPromptsMixin):
             AccountHolderNotFoundError,
             BankAuthenticationError,
         ) as e:
-            self._handle_info_ui("error", "auth_failed")
+            self._handle_info_ui("errors", "auth_failed")
             raise ControllerCredentialsError from e
 
     def _ensure_vault_access(self) -> AccessToken:
@@ -824,14 +824,20 @@ class BankSystemController(BaseController, SharedPromptsMixin):
 
         Requests the user's password, tracking remaining attempts, and dispatches
         to the Bank domain for brute-force mitigation and cryptographic token upgrades.
+        Routine authentication errors (wrong password) are caught and handled
+        internally via a retry loop.
 
         Returns:
             AccessToken: A secure token granting vault access.
 
         Raises:
-            RuntimeError: If called without first obtaining an AuthToken.
-            ControllerCredentialsError: If authentication fails, the account freezes,
-                or the user aborts.
+            RuntimeError: If called without first obtaining an AuthToken, or if
+                a critical error occurs in the I/O password validation logic.
+            ControllerCredentialsError: If access is blocked (account frozen)
+                or if the user explicitly aborts the operation.
+            BankAuthenticationError: If a structural authentication failure occurs
+                (e.g., the account is deleted mid-session/TOCTOU), this exception
+                is bubbled up to the Lobby Hub for session termination.
         """
         if not self._auth_token:
             raise RuntimeError(
@@ -846,6 +852,7 @@ class BankSystemController(BaseController, SharedPromptsMixin):
             if attempt == 1:
                 self._handle_info_ui("info", "pwd_last_try")
 
+            password = None
             try:
                 raw_password = io_utils.get_single_input(
                     "password", self._auth_config, self._controller_validator_cb
@@ -854,8 +861,11 @@ class BankSystemController(BaseController, SharedPromptsMixin):
                 return self._bank_instance.authorize_vault_access(
                     self._auth_token, password=password
                 )
-            except BankAuthenticationError:
-                self._handle_info_ui("info", "pwd_wrong")
+            except BankAuthenticationError as e:
+                if e.argument is password:
+                    self._handle_info_ui("info", "pwd_wrong")
+                    continue
+                raise
             except BankAccessError as e:
                 self._handle_exception_ui("errors", e)
                 raise ControllerCredentialsError from e
@@ -973,7 +983,7 @@ class BankSystemController(BaseController, SharedPromptsMixin):
             "info", "lobby_restrict", acc_type=acc_type_map[acc_summary.account_type]
         )
         user_in_raw = io_utils.get_single_input(
-            "restrict_menu", self._menu_config, self._controller_validator_cb
+            "restricted_menu", self._menu_config, self._controller_validator_cb
         )
         user_in_int = _assert_input(user_in_raw, int)
 
@@ -982,7 +992,7 @@ class BankSystemController(BaseController, SharedPromptsMixin):
     def _operations_menu(self) -> OperationMenuType:
         """Shows the standard UI operations menu."""
         user_in_raw = io_utils.get_single_input(
-            "operations", self._menu_config, self._controller_validator_cb
+            "operations_menu", self._menu_config, self._controller_validator_cb
         )
         user_in_int = _assert_input(user_in_raw, int)
 
@@ -1037,9 +1047,9 @@ class BankSystemController(BaseController, SharedPromptsMixin):
                     "info", "lobby_hello", user_name=account_summary.holder_name
                 )
                 operation = (
-                    self._operations_menu()
-                    if account_summary.is_active
-                    else self._restrict_operations_menu(account_summary)
+                    self._restrict_operations_menu(account_summary)
+                    if account_summary.is_frozen
+                    else self._operations_menu()
                 )
                 match operation:
                     case OperationMenuType.DEPOSIT:
@@ -1120,6 +1130,8 @@ class BankSystemController(BaseController, SharedPromptsMixin):
                         self._lobby_hub()
                     case _:
                         raise RuntimeError("Critical error: Unmapped type")
+            except UserAbortError:
+                self._handle_info_ui("info", "user_cancel")
             except InactiveUserError:
                 continue
             except (

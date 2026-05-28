@@ -19,7 +19,7 @@ menu_config: io_utils.ConfigMap = {
     },
     "restricted_menu": {
         "info": "Acesso restrito",
-        "prompt": "1 - Desbloquear conta",
+        "prompt": "1 - Desbloquear conta\nSua opção: ",
         "input_type": int,
         "error_msg": "Opção inválida. Escolha 1 para desbloquear a conta ou 'S' para sair",
     },
