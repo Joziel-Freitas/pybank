@@ -7,12 +7,12 @@ for UI navigation states and operation routing, promoting type safety and
 eliminating the use of magic numbers in the user interface menus.
 """
 
-from enum import IntEnum, StrEnum
+from enum import Enum, StrEnum
 
 from settings import ADMIN_EXIT_CODE
 
 
-class AdminCodeType(IntEnum):
+class AdminCodeType(Enum):
     """
     Enumeration representing hidden administrative commands for the PyBank Terminal.
 
@@ -28,7 +28,7 @@ class AdminCodeType(IntEnum):
     EXIT_CODE = ADMIN_EXIT_CODE
 
 
-class MenuType(IntEnum):
+class MenuType(Enum):
     """
     Base enumeration for all UI navigation menus.
 
