@@ -25,7 +25,7 @@ def welcome() -> None:
     """Displays the application's startup banner and initial instructions."""
     subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
     print("*" * 45)
-    print(f"{' PyBank System 3.0':*^45}")
+    print(f"{' PyBank System 3.0 ':*^45}")
     print("*" * 45)
     print(f"{'Escolha uma das opções no menu': ^45}")
     print("-" * 45)
@@ -51,19 +51,24 @@ def _format_currency(value_raw: Decimal) -> str:
     return fmt_value
 
 
-def controller_output(message: str, kwargs: dict) -> None:
+def controller_output(
+    message: str, kwargs: dict[str, Any], wait: bool = False, clean: bool = False
+) -> None:
     """
     Renders a standardized, formatted system message to the terminal.
 
-    Acts as the primary output channel for the application. It intercepts dynamic
-    arguments (kwargs), applies presentation rules (like Brazilian currency formatting
-    for monetary values), formats the final string, and pauses briefly to ensure
-    readability before the console is refreshed.
+    Acts as the primary output channel for the application. It applies
+    presentation rules (like currency formatting), formats the final
+    string, and handles terminal screen state and timing.
 
     Args:
-        message (str): The pre-formatted text string template containing placeholders.
-        kwargs (dict): A dictionary of dynamic values to be formatted and injected
-            into the message template.
+        message (str): The pre-formatted text string template.
+        kwargs (dict, optional): Dynamic values for the message template.
+            Defaults to None.
+        wait (bool): If True, pauses execution for 5 seconds to ensure
+            readability of important messages. Defaults to False.
+        clean (bool): If True, clears the terminal screen before rendering
+            the message. Defaults to False.
     """
     msg = message
 
@@ -75,9 +80,15 @@ def controller_output(message: str, kwargs: dict) -> None:
 
         msg = msg.format(**kwargs)
 
+    if clean:
+        subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
+
     print()
     print(msg)
-    sleep(5)
+
+    if wait:
+        sleep(5)
+
     print()
 
 

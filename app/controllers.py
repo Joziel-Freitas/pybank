@@ -354,9 +354,21 @@ class OnboardingController(BaseController, SharedPromptsMixin):
         obj_attr = io_utils.config_loop(
             self._new_account_config, self._controller_validator_cb
         )
-        obj_attr["branch_code"] = self._bank_instance.bank_branch_code
-        obj_attr = cast(dict[str, Any], obj_attr)
-        return NewAccountDTO(**obj_attr)
+
+        acc_type = _assert_input(obj_attr["account_type"], int)
+        acc_num = _assert_input(obj_attr["account_num"], str)
+
+        if self._bank_instance.check_account_exists(
+            self._bank_instance.bank_branch_code, acc_num
+        ):
+            self._handle_info_ui("errors", "acc_duplicated")
+            raise ControllerRegisterError
+
+        return NewAccountDTO(
+            account_type=acc_type,
+            branch_code=self._bank_instance.bank_branch_code,
+            account_num=acc_num,
+        )
 
     def run_controller(self) -> None:
         """
@@ -898,11 +910,12 @@ class BankSystemController(BaseController, SharedPromptsMixin):
         new_password = self._prompt_new_password()
         try:
             self._bank_instance.update_password(self._access_token, new_password)
-            self._access_token = None
             self._handle_info_ui("info", "pwd_update_ok")
+            raise ControllerCredentialsError
         except BankAccessError as e:
-            self._handle_exception_ui("errors", e)
-            raise ControllerOperationError from e
+            raise RuntimeError(
+                "Critical routing failure: Vault operation reached by an unauthorized/blocked session."
+            ) from e
         except BankPasswordError as e:
             raise RuntimeError("Critical error in I/O password validation logic") from e
 
@@ -927,6 +940,7 @@ class BankSystemController(BaseController, SharedPromptsMixin):
                 self._auth_token, birth_date, new_password
             )
             self._handle_info_ui("info", "unfreeze_acc_ok")
+            raise ControllerCredentialsError
         except (BankAuthenticationError, AccountAlreadyActiveError) as e:
             self._handle_exception_ui("errors", e)
             raise ControllerOperationError
@@ -956,9 +970,13 @@ class BankSystemController(BaseController, SharedPromptsMixin):
             )
             self._handle_info_ui("info", key, balance=account_info_dto.balance)
             raise ControllerOperationError
-        except (HomeBranchRestrictionError, BankAccessError) as e:
+        except HomeBranchRestrictionError as e:
             self._handle_exception_ui("errors", e)
             raise ControllerOperationError
+        except BankAccessError as e:
+            raise RuntimeError(
+                "Critical routing failure: Vault operation reached by an unauthorized/blocked session."
+            ) from e
 
     def _run_transaction_controller(
         self, transaction_type: TransactionMenuType
@@ -1038,14 +1056,16 @@ class BankSystemController(BaseController, SharedPromptsMixin):
             self._handle_exception_ui("errors", e)
             self._end_session()
 
+        greeted = False
         while type(self._auth_token) is AuthToken:
             try:
                 account_summary = self._bank_instance.get_account_summary(
                     self._auth_token
                 )
-                self._handle_info_ui(
-                    "info", "lobby_hello", user_name=account_summary.holder_name
-                )
+                if not greeted:
+                    first_name = account_summary.holder_name.split()[0]
+                    self._handle_info_ui("info", "lobby_hello", user_name=first_name)
+                    greeted = True
                 operation = (
                     self._restrict_operations_menu(account_summary)
                     if account_summary.is_frozen

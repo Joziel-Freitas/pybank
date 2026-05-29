@@ -17,8 +17,8 @@ SYSTEM_MESSAGES: dict[str, dict[str, str]] = {
     "info": {
         "auth_ok": "Autenticado com sucesso",
         "access_ok": "Acesso Concedido",
-        "close_acc_negative": "Você possui dívida de R${balance}. Realize o DEPÓSITO do valor total antes de encerrar a conta.",
-        "close_acc_positive": "Você possui saldo de R${balance}. Realize o SAQUE do valor total antes de encerrar a conta",
+        "close_acc_negative": "Você possui dívida de R$ {balance}. Realize o DEPÓSITO do valor total antes de encerrar a conta.",
+        "close_acc_positive": "Você possui saldo de R$ {balance}. Realize o SAQUE do valor total antes de encerrar a conta",
         "close_acc_ok": "Sua conta foi encerrada corretamente e seus dados removidos do sistema",
         "lobby_hello": "Olá, {user_name}! Seja bem-vindo ao PyBank",
         "lobby_restrict": "Sua conta {acc_type} está bloqueada. Seu acesso ao menu foi restringido",
@@ -29,7 +29,7 @@ SYSTEM_MESSAGES: dict[str, dict[str, str]] = {
         "pwd_last_try": "Atenção: Última tentativa. Se errar a senha, a conta será bloqueada",
         "pwd_ok": "Senha criada com sucesso",
         "pwd_update_ok": "Senha alterada com sucesso",
-        "unfreeze_acc_ok": "Conta desbloqueada com sucesso. Sessão atual invalidada",
+        "unfreeze_acc_ok": "Conta desbloqueada com sucesso",
         "user_cancel": "Operação cancelada pelo usuário",
     },
     "errors": {
