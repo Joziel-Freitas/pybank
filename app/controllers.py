@@ -69,6 +69,7 @@ from shared.types import (
     OperationMenuType,
     RestrictedMenuType,
     TransactionMenuType,
+    UserConfirmType,
 )
 from shared.validators import ValidatorCallback
 
@@ -237,8 +238,9 @@ class BaseController(ABC):
         """
         Translates a caught backend exception into a standardized UI message template.
 
-        Delegates the actual string formatting and rendering to the presentation layer (Views),
-        passing along any dynamic arguments required to complete the message.
+        Delegates the actual string formatting and rendering to the presentation layer (Views).
+        By design, this method forces a screen clear and execution pause (clean=True, wait=True)
+        to guarantee that critical error messages capture the user's full attention.
 
         Args:
             context_key (str): The category inside the message catalog (e.g., 'errors').
@@ -248,23 +250,33 @@ class BaseController(ABC):
         error_key = exceptions.map_exceptions(error)
         error_msg = self._ui_message_map[context_key][error_key]
 
-        views.controller_output(error_msg, kwargs)
+        views.system_output(error_msg, kwargs=kwargs, wait=True, clean=True)
 
-    def _handle_info_ui(self, context_key: str, info_key: str, **kwargs) -> None:
+    def _handle_info_ui(
+        self,
+        context_key: str,
+        info_key: str,
+        wait: bool = False,
+        clean: bool = False,
+        **kwargs,
+    ) -> None:
         """
         Retrieves standard informative message templates from the UI catalog.
 
-        Delegates the actual string formatting and rendering to the presentation layer (Views),
-        passing along any dynamic arguments required to complete the message.
+        Delegates the actual string formatting and rendering to the presentation layer (Views).
+        Exposes UI state controls ('wait' and 'clean') to the caller, allowing specific controllers
+        to orchestrate terminal transitions and pacing dynamically.
 
         Args:
             context_key (str): The category inside the message catalog (e.g., 'info').
             info_key (str): The specific lookup key for the message.
+            wait (bool, optional): If True, pauses execution to ensure readability. Defaults to False.
+            clean (bool, optional): If True, clears the terminal screen before rendering. Defaults to False.
             **kwargs: Dynamic arguments (e.g., names, transaction values) to be formatted and injected into the UI message by the View.
         """
         info_msg = self._ui_message_map[context_key][info_key]
 
-        views.controller_output(info_msg, kwargs)
+        views.system_output(info_msg, kwargs=kwargs, wait=wait, clean=clean)
 
 
 class OnboardingController(BaseController, SharedPromptsMixin):
@@ -331,10 +343,12 @@ class OnboardingController(BaseController, SharedPromptsMixin):
         is_holder = self._bank_instance.check_account_holder_exists(cpf)
 
         if is_holder:
-            self._handle_info_ui("info", "already_account_holder")
+            self._handle_info_ui(
+                "info", "already_account_holder", wait=True, clean=True
+            )
             return cpf
 
-        self._handle_info_ui("info", "new_account_holder")
+        self._handle_info_ui("info", "new_account_holder", wait=True, clean=True)
         obj_attr = io_utils.config_loop(
             self._identification_config,
             self._controller_validator_cb,
@@ -361,7 +375,7 @@ class OnboardingController(BaseController, SharedPromptsMixin):
         if self._bank_instance.check_account_exists(
             self._bank_instance.bank_branch_code, acc_num
         ):
-            self._handle_info_ui("errors", "acc_duplicated")
+            self._handle_info_ui("errors", "acc_duplicated", wait=True, clean=True)
             raise ControllerRegisterError
 
         return NewAccountDTO(
@@ -391,9 +405,9 @@ class OnboardingController(BaseController, SharedPromptsMixin):
                 holder_dto_or_cpf=holder_dto_or_cpf,
                 password=password,
             )
-            self._handle_info_ui("info", "register_ok")
+            self._handle_info_ui("info", "register_ok", wait=True)
         except UserAbortError:
-            self._handle_info_ui("info", "user_cancel")
+            self._handle_info_ui("info", "user_cancel", wait=True)
         except DuplicatedAccountError as e:
             self._handle_exception_ui("errors", e)
             raise ControllerRegisterError from e
@@ -411,10 +425,11 @@ class TransactionController(BaseController):
     """
     Controller responsible for executing banking transactions (Deposit, Withdraw, Statement).
 
-    Operates in a hybrid manner: it can perform public, stateless operations
-    (like third-party deposits) or highly secure, stateful operations (like
-    withdrawals and statements) utilizing an injected AccessToken representing
-    the active vault session.
+    Operates in a hybrid state model based on the provided token:
+    - Public Mode (None): Executes anonymous third-party deposits.
+    - Lobby Mode (AuthToken): Executes authenticated deposits, bypassing account identification.
+    - Vault Mode (AccessToken): Executes highly secure, stateful operations (withdrawals
+      and statements) requiring full cryptographic clearance.
     """
 
     _validation_mapper = {
@@ -430,23 +445,22 @@ class TransactionController(BaseController):
                 max_val=None,
             )
         ),
-        "limit": validators.boolean_validator_dec(
-            partial(verify.verify_interval, min_val=1, max_val=2)
-        ),
+        "limit": validators.boolean_validator_dec(UserConfirmType),
         "statement": validators.boolean_validator_dec(
             partial(verify.verify_interval, min_val=1, max_val=3)
         ),
+        "confirmation": validators.boolean_validator_dec(UserConfirmType),
     }
 
     _transaction_type: TransactionMenuType
-    _access_token: AccessToken | None
+    _token: AuthToken | AccessToken | None
     _controller_config: io_utils.ConfigMap
 
     def __init__(
         self,
         bank_instance: Bank,
         transaction_type: TransactionMenuType,
-        access_token: AccessToken | None = None,
+        token: AuthToken | AccessToken | None = None,
     ):
         """
         Initializes the transaction controller for a specific operational context.
@@ -455,8 +469,12 @@ class TransactionController(BaseController):
         Args:
             bank_instance (Bank): The core domain aggregate.
             transaction_type (TransactionMenuType): The specific operation to perform.
-            access_token (AccessToken, optional): The secure vault token. Must be provided
-                for all operations except public deposits.
+            token (AuthToken | AccessToken, optional): The session token. Determines the
+                controller's clearance level. Must be an AccessToken for vault-level
+                operations (Withdrawal, Statement). Defaults to None.
+
+        Raises:
+            RuntimeError: If a vault-level operation is requested without an AccessToken.
         """
 
         super().__init__(bank_instance)
@@ -466,26 +484,32 @@ class TransactionController(BaseController):
         io_utils.verify_config_map(config.transaction_config)
         _verify_message_map(ui_messages.TRANSACTION_MESSAGES)
 
-        if access_token is not None:
-            verify.verify_instance(access_token, AccessToken)
+        if token is not None:
+            verify.verify_instance(token, (AuthToken, AccessToken))
 
-        if transaction_type is not TransactionMenuType.DEPOSIT and access_token is None:
+        if transaction_type is not TransactionMenuType.DEPOSIT and not isinstance(
+            token, AccessToken
+        ):
             raise RuntimeError(
                 "AccessToken is required to perform the requested operation"
             )
 
         self._transaction_type = transaction_type
-        self._access_token = access_token
+        self._token = token
         self._controller_config = config.auth_config | config.transaction_config
         self._ui_message_map = ui_messages.TRANSACTION_MESSAGES
 
     def __repr__(self) -> str:
         """Returns the controller's runtime state, indicating the access level and account."""
         class_name = type(self).__name__
-        access_status = "Authorized" if self._access_token else "Not authorized"
-        account_accessed = (
-            self._access_token.account_num if self._access_token else None
-        )
+        access_status = "Not Authorized"
+
+        if isinstance(self._token, AuthToken):
+            access_status = "Authenticated"
+        elif isinstance(self._token, AccessToken):
+            access_status = "Authorized"
+
+        account_accessed = self._token.account_num if self._token else None
 
         return (
             f"{class_name}("
@@ -498,18 +522,14 @@ class TransactionController(BaseController):
     @property
     def _active_access_token(self) -> AccessToken:
         """
-        Safe getter for the vault access token. Acts as a guard clause.
-
-        Returns:
-            AccessToken: The active vault token.
-
-        Raises:
-            RuntimeError: If called during an unauthenticated flow.
+        Guard clause for Vault operations (Withdraw, Statement).
+        Guarantees that the token is specifically an AccessToken.
         """
-        if self._access_token is None:
-            raise RuntimeError("Getter called without an AccessToken")
-
-        return self._access_token
+        if not isinstance(self._token, AccessToken):
+            raise RuntimeError(
+                "Vault clearance (AccessToken) required for this operation."
+            )
+        return self._token
 
     def _get_transaction_value(self) -> Decimal:
         """
@@ -527,7 +547,9 @@ class TransactionController(BaseController):
             raise RuntimeError(
                 f"Method doesn't handle {self._transaction_type} operation"
             )
-        self._handle_info_ui("info", "min_value", min_atm=Account.MIN_ATM_TRANSACTION)
+        self._handle_info_ui(
+            "info", "min_value", min_atm=Account.MIN_ATM_TRANSACTION, clean=True
+        )
         transaction_key = transaction_mapper[self._transaction_type]
         value_raw = io_utils.get_single_input(
             transaction_key, self._controller_config, self._controller_validator_cb
@@ -535,19 +557,18 @@ class TransactionController(BaseController):
         value = _assert_input(value_raw, Decimal)
         return value
 
-    def _confirm_overdraft(self) -> bool:
+    def _confirm_overdraft(self) -> UserConfirmType:
         """
         Prompts for explicit client authorization to utilize the account's credit limit.
 
         Returns:
             bool: True if authorized, False if denied.
         """
-        use_overdraft_mapper = {1: True, 2: False}
         user_in_raw = io_utils.get_single_input(
             "limit", self._controller_config, self._controller_validator_cb
         )
         int_user_in = _assert_input(user_in_raw, int)
-        return use_overdraft_mapper[int_user_in]
+        return UserConfirmType(int_user_in)
 
     def _handle_withdraw(self) -> None:
         """
@@ -564,13 +585,13 @@ class TransactionController(BaseController):
                 self._bank_instance.execute_withdraw(
                     self._active_access_token, amount, use_overdraft=use_overdraft
                 )
-                self._handle_info_ui("info", "withdraw_ok")
+                self._handle_info_ui("info", "withdraw_ok", wait=True)
                 break
             except OverdraftRequiredError as e:
                 self._handle_exception_ui("withdraw_errors", e)
                 proceed = self._confirm_overdraft()
 
-                if not proceed:
+                if proceed == UserConfirmType.NO:
                     raise UserAbortError
 
                 use_overdraft = True
@@ -578,25 +599,56 @@ class TransactionController(BaseController):
                 self._handle_exception_ui("withdraw_errors", e)
                 raise ControllerOperationError
 
-    def _handle_public_deposit(self) -> None:
+    def _handle_deposit(self) -> None:
         """
-        Manages the stateless, public-facing deposit workflow.
+        Manages the hybrid deposit workflow (Smart Deposit).
 
-        Requires target routing info (branch and account) instead of a token,
-        translating UI entries into a dispatch request to the Bank.
+        Operates seamlessly in two modes:
+        - Authenticated (Lobby/Vault): Extracts target routing info directly from
+          the active session token, bypassing manual input.
+        - Unauthenticated (Public): Prompts the user to manually input the target
+          branch and account.
+
+        Collects the deposit amount, presents a confirmation summary, and dispatches
+        the transaction request to the core Bank aggregate.
         """
-        user_in_dict = io_utils.get_selected_inputs(
-            ("branch_code", "account_num"),
-            self._controller_config,
-            self._controller_validator_cb,
-        )
-        branch_code = _assert_input(user_in_dict["branch_code"], str)
-        account_num = _assert_input(user_in_dict["account_num"], str)
+        if self._token:
+            branch_code = self._token.branch_code
+            account_num = self._token.account_num
+        else:
+            user_in_dict = io_utils.get_selected_inputs(
+                ("branch_code", "account_num"),
+                self._controller_config,
+                self._controller_validator_cb,
+            )
+            branch_code = _assert_input(user_in_dict["branch_code"], str)
+            account_num = _assert_input(user_in_dict["account_num"], str)
+
         amount = self._get_transaction_value()
 
         try:
+            target_info = self._bank_instance.get_deposit_target_info(
+                branch_code, account_num
+            )
+            info_dict = asdict(target_info)
+            views.confirm_deposit(info_dict, amount)
+        except AccountHolderNotFoundError as e:
+            self._handle_exception_ui("deposit_errors", e)
+            raise ControllerOperationError
+
+        user_in = io_utils.get_single_input(
+            "confirmation", self._controller_config, self._controller_validator_cb
+        )
+
+        user_in_int = _assert_input(user_in, int)
+        confirm_operation = UserConfirmType(user_in_int)
+
+        if confirm_operation == UserConfirmType.NO:
+            raise UserAbortError
+
+        try:
             self._bank_instance.execute_deposit(branch_code, account_num, amount)
-            self._handle_info_ui("info", "deposit_ok")
+            self._handle_info_ui("info", "deposit_ok", wait=True)
         except (AccountNotFoundError, BankAccessError) as e:
             self._handle_exception_ui("deposit_errors", e)
             raise ControllerOperationError
@@ -647,7 +699,7 @@ class TransactionController(BaseController):
         """
         match self._transaction_type:
             case TransactionMenuType.DEPOSIT:
-                self._handle_public_deposit()
+                self._handle_deposit()
             case TransactionMenuType.WITHDRAW:
                 self._handle_withdraw()
             case TransactionMenuType.STATEMENT:
@@ -683,9 +735,7 @@ class BankSystemController(BaseController, SharedPromptsMixin):
         "cpf": validators.boolean_validator_dec(validators.validate_cpf),
         "password": validators.boolean_validator_dec(Bank.validate_password),
         "birth_date": validators.boolean_validator_dec(Person.validate_birth_date),
-        "use_card_menu": validators.boolean_validator_dec(
-            partial(verify.verify_interval, min_val=1, max_val=2)
-        ),
+        "use_card_menu": validators.boolean_validator_dec(UserConfirmType),
         "branch_code": validators.boolean_validator_dec(Account.validate_branch_code),
         "account_num": validators.boolean_validator_dec(
             Account.validate_account_number
@@ -821,13 +871,13 @@ class BankSystemController(BaseController, SharedPromptsMixin):
 
             return self._bank_instance.authenticate(cpf, branch_code, account_num)
         except UserAbortError:
-            self._handle_info_ui("info", "user_cancel")
+            self._handle_info_ui("info", "user_cancel", wait=True)
             raise ControllerCredentialsError
         except (
             AccountHolderNotFoundError,
             BankAuthenticationError,
         ) as e:
-            self._handle_info_ui("errors", "auth_failed")
+            self._handle_info_ui("errors", "auth_failed", wait=True, clean=True)
             raise ControllerCredentialsError from e
 
     def _ensure_vault_access(self) -> AccessToken:
@@ -862,7 +912,7 @@ class BankSystemController(BaseController, SharedPromptsMixin):
 
         for attempt in range(attempts_left, 0, -1):
             if attempt == 1:
-                self._handle_info_ui("info", "pwd_last_try")
+                self._handle_info_ui("info", "pwd_last_try", wait=True, clean=True)
 
             password = None
             try:
@@ -882,7 +932,7 @@ class BankSystemController(BaseController, SharedPromptsMixin):
                 self._handle_exception_ui("errors", e)
                 raise ControllerCredentialsError from e
             except UserAbortError:
-                self._handle_info_ui("info", "user_cancel")
+                self._handle_info_ui("info", "user_cancel", wait=True)
                 raise ControllerCredentialsError
             except BankPasswordError:
                 raise RuntimeError("Critical error in I/O password validation logic")
@@ -939,7 +989,7 @@ class BankSystemController(BaseController, SharedPromptsMixin):
             self._bank_instance.unfreeze_account(
                 self._auth_token, birth_date, new_password
             )
-            self._handle_info_ui("info", "unfreeze_acc_ok")
+            self._handle_info_ui("info", "unfreeze_acc_ok", wait=True, clean=True)
             raise ControllerCredentialsError
         except (BankAuthenticationError, AccountAlreadyActiveError) as e:
             self._handle_exception_ui("errors", e)
@@ -957,7 +1007,7 @@ class BankSystemController(BaseController, SharedPromptsMixin):
 
         try:
             self._bank_instance.close_account(self._access_token)
-            self._handle_info_ui("info", "close_acc_ok")
+            self._handle_info_ui("info", "close_acc_ok", wait=True, clean=True)
             raise ControllerCredentialsError
         except NotEmptyAccountError:
             account_info_dto = self._bank_instance.get_financial_summary(
@@ -968,7 +1018,9 @@ class BankSystemController(BaseController, SharedPromptsMixin):
                 if account_info_dto.balance > 0
                 else "close_acc_negative"
             )
-            self._handle_info_ui("info", key, balance=account_info_dto.balance)
+            self._handle_info_ui(
+                "info", key, balance=account_info_dto.balance, wait=True, clean=True
+            )
             raise ControllerOperationError
         except HomeBranchRestrictionError as e:
             self._handle_exception_ui("errors", e)
@@ -985,7 +1037,7 @@ class BankSystemController(BaseController, SharedPromptsMixin):
         controller_obj = TransactionController(
             self._bank_instance,
             transaction_type,
-            self._access_token,
+            self._access_token or self._auth_token,
         )
         controller_obj.run_controller()
 
@@ -1023,7 +1075,6 @@ class BankSystemController(BaseController, SharedPromptsMixin):
         """
         if not self._access_token:
             self._access_token = self._ensure_vault_access()
-            self._handle_info_ui("info", "access_ok")
 
         match operation:
             case OperationMenuType.WITHDRAW:
@@ -1051,7 +1102,7 @@ class BankSystemController(BaseController, SharedPromptsMixin):
         try:
             if not self._auth_token:
                 self._auth_token = self._ensure_lobby_access()
-                self._handle_info_ui("info", "auth_ok")
+
         except ControllerCredentialsError as e:
             self._handle_exception_ui("errors", e)
             self._end_session()
@@ -1064,13 +1115,21 @@ class BankSystemController(BaseController, SharedPromptsMixin):
                 )
                 if not greeted:
                     first_name = account_summary.holder_name.split()[0]
-                    self._handle_info_ui("info", "lobby_hello", user_name=first_name)
+                    self._handle_info_ui(
+                        "info",
+                        "lobby_hello",
+                        clean=True,
+                        user_name=first_name,
+                    )
                     greeted = True
-                operation = (
-                    self._restrict_operations_menu(account_summary)
-                    if account_summary.is_frozen
-                    else self._operations_menu()
-                )
+                try:
+                    operation = (
+                        self._restrict_operations_menu(account_summary)
+                        if account_summary.is_frozen
+                        else self._operations_menu()
+                    )
+                except UserAbortError:
+                    raise ControllerCredentialsError
                 match operation:
                     case OperationMenuType.DEPOSIT:
                         self._run_transaction_controller(TransactionMenuType.DEPOSIT)
@@ -1083,7 +1142,7 @@ class BankSystemController(BaseController, SharedPromptsMixin):
                     case _:
                         raise RuntimeError("Critical error: Unmapped type")
             except UserAbortError:
-                self._handle_info_ui("info", "user_cancel")
+                self._handle_info_ui("info", "user_cancel", wait=True)
                 continue
             except InactiveUserError:
                 self._end_session()
@@ -1151,7 +1210,7 @@ class BankSystemController(BaseController, SharedPromptsMixin):
                     case _:
                         raise RuntimeError("Critical error: Unmapped type")
             except UserAbortError:
-                self._handle_info_ui("info", "user_cancel")
+                self._handle_info_ui("info", "user_cancel", wait=True)
             except InactiveUserError:
                 continue
             except (

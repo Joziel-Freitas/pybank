@@ -13,7 +13,7 @@ from typing import Callable, NotRequired, TypedDict
 
 from inputimeout import TimeoutOccurred, inputimeout
 
-from infra import verify
+from infra import verify, views
 from settings import SYSTEM_TIMEOUT
 from shared.exceptions import InactiveUserError, UserAbortError
 from shared.validators import ValidatorCallback
@@ -175,7 +175,10 @@ def _get_user_input(field_config: InnerConfig, use_timeout: bool) -> InputType:
     input_type = field_config["input_type"]
     error_msg = field_config["error_msg"]
 
-    print(f"\n--- {info} ---\t>> 'S' para sair <<")
+    print()
+    print(f"{info:^45}")
+    print(f"{">> 'S' para sair <<":^45}")
+    print("-" * 45)
 
     while True:
         try:
@@ -189,9 +192,8 @@ def _get_user_input(field_config: InnerConfig, use_timeout: bool) -> InputType:
 
             return input_type(user_in)
         except (ValueError, InvalidOperation):
-            print()
-            print(error_msg)
-            print(f"\nTente novamente ou digite {EXIT_CMD} para sair")
+            views.system_output(error_msg)
+            views.system_output(f"Tente novamente ou digite {EXIT_CMD} para sair")
         except TimeoutOccurred as e:
             raise InactiveUserError from e
 
@@ -264,7 +266,8 @@ def config_loop(
                 user_inputs[field] = user_in
                 break
             elif result is False:
-                print(config_map[field]["error_msg"])
+                msg = config_map[field]["error_msg"]
+                views.system_output(msg)
                 continue
 
             raise RuntimeError(f"Unexpected callback return: {callback_return}")

@@ -41,6 +41,25 @@ class MenuType(Enum):
     pass
 
 
+class UserConfirmType(MenuType):
+    """
+    Enumeration representing a standard boolean-like user confirmation.
+
+    Used across the system to formalize binary decisions (Yes/No) submitted
+    by the user, replacing magic numbers with explicit, typed identifiers.
+    Commonly applied in critical workflow checkpoints, such as verifying
+    target deposit information or accepting overdraft usage.
+
+    Attributes:
+        YES (1): Represents an affirmative user confirmation to proceed.
+        NO (2): Represents a negative response, typically leading to an abort
+            or fallback action.
+    """
+
+    YES = 1
+    NO = 2
+
+
 class MainMenuType(MenuType):
     """
     Enumeration representing the root navigation menu of the banking system.

@@ -1,7 +1,7 @@
 ONBOARDING_MESSAGES: dict[str, dict[str, str]] = {
     "info": {
-        "already_account_holder": "Bem-vindo de volta ao PyBank",
-        "new_account_holder": "Bem vindo ao PyBank. Faça o seu cadastro de titular",
+        "already_account_holder": "Bem-vindo de volta ao PyBank!",
+        "new_account_holder": "Bem vindo ao PyBank! Faça o seu cadastro de titular",
         "pwd_confirm": "Confirme a sua nova senha",
         "pwd_error": "As senhas não conferem. Tente novamente",
         "pwd_input": "Insira a sua nova senha (6 dígitos)",

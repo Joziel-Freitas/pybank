@@ -56,6 +56,23 @@ class NewAccountDTO:
 
 
 @dataclass(frozen=True, slots=True)
+class DepositTargetDTO:
+    """
+    A read-only, sanitized snapshot of an account intended exclusively
+    for public deposit confirmation screens.
+
+    Contains masked sensitive information (like CPF) to prevent data leaks
+    during unauthenticated queries, adhering to Zero Trust principles.
+    """
+
+    holder_name: str
+    holder_cpf: str
+    branch_code: str
+    account_num: str
+    account_type: str
+
+
+@dataclass(frozen=True, slots=True)
 class AccountSummaryDTO:
     """
     A read-only, non-sensitive snapshot of an account's basic state.

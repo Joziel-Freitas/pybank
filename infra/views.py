@@ -10,6 +10,7 @@ decoupling from the application's internal states.
 
 import os
 import subprocess
+import textwrap
 from datetime import datetime
 from decimal import Decimal
 from time import sleep
@@ -19,6 +20,8 @@ from inputimeout import TimeoutOccurred, inputimeout
 
 from settings import BANK_NAME
 from shared.exceptions import InactiveUserError
+
+SCREEN_WIDTH = 45
 
 
 def welcome() -> None:
@@ -51,15 +54,19 @@ def _format_currency(value_raw: Decimal) -> str:
     return fmt_value
 
 
-def controller_output(
-    message: str, kwargs: dict[str, Any], wait: bool = False, clean: bool = False
+def system_output(
+    message: str,
+    kwargs: dict[str, Any] | None = None,
+    wait: bool = False,
+    clean: bool = False,
 ) -> None:
     """
     Renders a standardized, formatted system message to the terminal.
 
     Acts as the primary output channel for the application. It applies
-    presentation rules (like currency formatting), formats the final
-    string, and handles terminal screen state and timing.
+    presentation rules (like currency formatting and text wrapping to
+    fit the standard ATM screen width), formats the final string, and
+    handles terminal screen state and timing.
 
     Args:
         message (str): The pre-formatted text string template.
@@ -84,12 +91,65 @@ def controller_output(
         subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
 
     print()
-    print(msg)
+
+    wrapped_lines = textwrap.wrap(msg, width=SCREEN_WIDTH)
+    for line in wrapped_lines:
+        print(line)
 
     if wait:
-        sleep(5)
+        for i in (1, 5, 11, 13, 15):
+            print(i * ".", end="", flush=True)
+            sleep(1)
 
-    print()
+
+def confirm_deposit(account_info: dict[str, Any], amount: Decimal) -> None:
+    """
+    Renders the deposit confirmation screen for the ATM terminal.
+
+    Displays a formatted, read-only summary of the target account and the
+    transaction amount. Applies dynamic abbreviation to the account holder's
+    middle names to ensure visual compliance with the 45-character screen limit.
+    Relies on the upstream Domain layer to provide pre-sanitized sensitive
+    data (e.g., masked CPF).
+
+    Args:
+        account_info (dict[str, Any]): A dictionary representation of the
+            DepositTargetDTO containing the target routing and identity data.
+        amount (Decimal): The exact financial value to be deposited.
+    """
+    account_type_mapper = {
+        "CheckingAccount": "CONTA CORRENTE",
+        "SavingsAccount": "CONTA POUPANÇA",
+    }
+
+    raw_name = account_info["holder_name"]
+    raw_cpf = account_info["holder_cpf"]
+
+    name = raw_name
+    names_list = raw_name.split()
+    if len(names_list) > 2:
+        first_name = names_list[0]
+        last_name = names_list[-1]
+
+        edited_list = [
+            n if n in (first_name, last_name) or len(n) <= 3 else n[0] + "."
+            for n in names_list
+        ]
+
+        name = " ".join(edited_list)
+
+    cpf = f"{raw_cpf[:3]}.{raw_cpf[3:6]}.{raw_cpf[6:9]}-{raw_cpf[9:]}"
+
+    print("-" * 45)
+    print(f"{'DEPÓSITO':^45}")
+    print("-" * 45)
+    print(f"FAVORECIDO: {name[:32]}")
+    print(f"CPF DO FAVORECIDO: {cpf}")
+    print(f"AGÊNCIA: {account_info['branch_code']}")
+    print(
+        f"CONTA: {account_info['account_num']} | {account_type_mapper[account_info['account_type']]}"
+    )
+    print(f"VALOR: R$ {_format_currency(amount)}")
 
 
 def _balance_statement_header(account_info: dict[str, Any]) -> None:
@@ -225,6 +285,6 @@ def show_cards(client_cards: list[str]) -> None:
                                   of each card available to the client.
     """
     subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
-    print(f"{' Escolha seu cartão ':-^50}")
+    print(f"{' Escolha seu cartão ':-^45}")
     for idx, card in enumerate(client_cards):
         print(f"{idx}: {card}")

@@ -34,7 +34,7 @@ class AccountCard:
 
     def __str__(self) -> str:
         """User-friendly string representation for UI/Menus."""
-        return f"CPF: {self.cpf} | Ag: {self.branch_code} Conta: {self.account_num}"
+        return f"CPF {self.cpf} | Ag {self.branch_code} Conta {self.account_num}"
 
 
 @dataclass(frozen=True)

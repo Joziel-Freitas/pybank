@@ -120,4 +120,10 @@ transaction_config: io_utils.ConfigMap = {
         "input_type": int,
         "error_msg": "Opção inválida. Escolha entre as opções disponíveis no menu",
     },
+    "confirmation": {
+        "info": "Transação - Confirmação",
+        "prompt": "1 - Confirmar\n2 - Cancelar\nSua opção: ",
+        "input_type": int,
+        "error_msg": "Opção inválida. Escolha entre as opções 1 ou 2",
+    },
 }

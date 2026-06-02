@@ -32,6 +32,7 @@ from shared.credentials import AccessToken, AccountCard, AuthToken
 from shared.dtos import (
     AccountFinancialDTO,
     AccountSummaryDTO,
+    DepositTargetDTO,
     NewAccountDTO,
     NewAccountHolderDTO,
     StatementDTO,
@@ -714,6 +715,52 @@ class Bank:
             raise BankUnavailableError(
                 "The intended operation could not be persisted due to an internal error"
             ) from e
+
+    def get_deposit_target_info(
+        self, branch_code: str, account_num: str
+    ) -> DepositTargetDTO:
+        """
+        Retrieves sanitized target account information for public deposits.
+
+        This is a public, unauthenticated endpoint. To prevent data scraping
+        and preserve privacy, it masks sensitive identity fields (like CPF)
+        before returning the DTO.
+
+        Args:
+            branch_code (str): The target branch.
+            account_num (str): The target account.
+
+        Returns:
+            DepositTargetDTO: Sanitized routing and identity information.
+
+        Raises:
+            AccountNotFoundError: If the account does not exist.
+        """
+        verify.verify_instance(branch_code, str)
+        verify.verify_instance(account_num, str)
+
+        try:
+            account_info = self._repository.get_account_projection(
+                branch_code, account_num, holder_info=True
+            )
+        except DataNotFoundError as e:
+            raise AccountNotFoundError(
+                "The requested account does not exist in our records"
+            ) from e
+
+        if not account_info.holder_info:
+            raise RuntimeError("Invalid DTO state")
+
+        raw_cpf = account_info.holder_info.cpf
+        masked_cpf = f"***{raw_cpf[3:9]}**"
+
+        return DepositTargetDTO(
+            holder_name=account_info.holder_info.name,
+            holder_cpf=masked_cpf,
+            branch_code=account_info.branch_code,
+            account_num=account_info.account_num,
+            account_type=account_info.account_type,
+        )
 
     def get_account_summary(self, auth_token: AuthToken) -> AccountSummaryDTO:
         """
