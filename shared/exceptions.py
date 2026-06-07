@@ -233,16 +233,8 @@ class InvalidBranchError(AccountError):
     """Raised for an invalid branch code format."""
 
 
-class InvalidDepositError(AccountError):
-    """Raised when a deposit value is non-positive."""
-
-
-class InvalidWithdrawError(AccountError):
-    """Raised when a withdrawal violates business rules (e.g., funds, negative value)."""
-
-
-class OverdraftRequiredError(AccountError):
-    """Raised when requested amount exceeds account balance"""
+class InsufficientFundsError(AccountError):
+    """Raised when a given withdrawal amount exceeds the account total funds."""
 
 
 # --- Error Metadata Mappers ---
@@ -267,16 +259,14 @@ DOMAIN_ERROR_MAP = {
     DuplicatedAccountError: "acc_duplicated",
     DuplicatedAccountHolderError: "already_account_holder",
     HomeBranchRestrictionError: "other_branch",
+    InsufficientFundsError: "value",
     InvalidAccountError: "account_num",
     InvalidBalanceError: "balance",
     InvalidBirthDateError: "birth_date",
     InvalidBranchError: "branch_code",
     InvalidCpfError: "cpf",
-    InvalidDepositError: "value",
     InvalidNameError: "name",
-    InvalidWithdrawError: "value",
     NotEmptyAccountError: "non_zero_value",
-    OverdraftRequiredError: "use_limit",
 }
 
 SECURITY_ERROR_MAP = {

@@ -13,6 +13,8 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
+from shared.types import TransactionType
+
 
 @dataclass(frozen=True, slots=True)
 class NewAccountHolderDTO:
@@ -70,6 +72,56 @@ class DepositTargetDTO:
     branch_code: str
     account_num: str
     account_type: str
+
+
+@dataclass(frozen=True, slots=True)
+class WithdrawalSimulationDTO:
+    """
+    Data Transfer Object representing the projected outcome of a withdrawal.
+
+    This DTO is utilized by the application layer (Controllers) to safely evaluate
+    the financial and operational impact of a withdrawal before committing to the
+    state mutation. It provides the necessary data to prompt the user for explicit
+    consent when credit limits are involved.
+
+    Attributes:
+        authorized (bool): Indicates if the operation is mathematically and operationally
+            possible (e.g., account is active and the requested amount does not exceed
+            the total available funds).
+        use_overdraft (bool | None): True if the requested amount exceeds the standard positive
+            balance, requiring the use of the account's credit limit. False if the limit
+            exists but won't be used. None if the account type does not support overdraft.
+        overdraft_required (Decimal | None): The exact monetary value that will be drawn from
+            the overdraft limit if the transaction proceeds. Expected to be Decimal("0.00")
+            if `use_overdraft` is False. Expected to be None if the account type does not
+            support overdraft (`use_overdraft` is None).
+    """
+
+    authorized: bool
+    use_overdraft: bool | None
+    overdraft_required: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class TransactionEventDTO:
+    """
+    Data Transfer Object representing a discrete financial event.
+
+    Designed to decompose complex account operations (such as a withdrawal
+    that crosses into overdraft limits) into immutable, atomic segments.
+    This ensures accurate ledger tracking, precise auditing, and correct
+    statement generation for the end user without exposing internal
+    domain logic to the outer layers.
+
+    Attributes:
+        amount (Decimal): The specific monetary amount associated with this
+            discrete segment of the operation.
+        transaction (TransactionType): The semantic label (e.g., WITHDRAWAL,
+            OVERDRAFT_WITHDRAWAL) categorizing the nature of the event.
+    """
+
+    amount: Decimal
+    transaction: TransactionType
 
 
 @dataclass(frozen=True, slots=True)

@@ -89,11 +89,11 @@ def verify_interval(
     if max_val is not None and type(max_val) is not target_type:
         raise TypeError("max_val must be of the exact same type as target_value")
 
-    if min_val and target_value < min_val:
+    if min_val is not None and target_value < min_val:
         raise ValueError(
             f"Value {target_value} must be greater than or equal to {min_val}"
         )
-    if max_val and target_value > max_val:
+    if max_val is not None and target_value > max_val:
         raise ValueError(
             f"Value {target_value} must be less than or equal to {max_val}"
         )

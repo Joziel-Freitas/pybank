@@ -9,18 +9,17 @@ attribute validation, and core banking mathematical operations (deposit and with
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, ClassVar, cast
 
 from infra import verify
+from shared.dtos import TransactionEventDTO, WithdrawalSimulationDTO
 from shared.exceptions import (
     FrozenAccountError,
+    InsufficientFundsError,
     InvalidAccountError,
-    InvalidBalanceError,
     InvalidBranchError,
-    InvalidDepositError,
-    InvalidWithdrawError,
-    OverdraftRequiredError,
 )
 from shared.types import TransactionType
 
@@ -123,7 +122,28 @@ class Account(ABC):
         return self._is_frozen
 
     @abstractmethod
-    def withdraw(self, amount: Decimal, use_overdraft: bool = False) -> TransactionType:
+    def simulate_withdrawal(self, amount: Decimal) -> WithdrawalSimulationDTO:
+        """
+        Simulates the financial projection of a withdrawal without mutating state.
+
+        This method acts as a financial oracle, calculating the viability of a
+        transaction strictly based on the available funds and specific credit rules
+        of the concrete account type. It assumes the orchestrating layer has already
+        validated external conditions (e.g., account frozen status) and basic
+        input rules (e.g., minimum ATM transaction values).
+
+        Args:
+            amount (Decimal): The intended monetary amount to be withdrawn.
+
+        Returns:
+            WithdrawalSimulationDTO: A Data Transfer Object detailing the projected
+                authorization status based on funds, the necessity of an overdraft,
+                and the exact overdraft amount required.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def withdrawal(self, amount: Decimal) -> tuple[TransactionEventDTO, ...]:
         """
         Abstract method for withdrawing an amount from the account.
 
@@ -133,8 +153,6 @@ class Account(ABC):
 
         Args:
             amount (Decimal): The amount to withdraw.
-            use_overdraft (bool, optional): Explicit authorization to dip into
-                credit limits, if applicable to the account type. Defaults to False.
 
         Returns:
             TransactionType: A Value Object representing the semantic nature of the withdrawal.
@@ -190,49 +208,46 @@ class Account(ABC):
             raise InvalidAccountError(f"Invalid account number. Cause: {e}") from e
 
     @staticmethod
-    def validate_account_deposit(val: Decimal) -> None:
+    def validate_amount_entry(amount: Decimal) -> None:
         """
-        Validates the deposit value.
+        Validates the basic structural and monetary rules for a financial entry.
 
-        The deposit must be a Decimal greater than or equal to the MIN_ATM_TRANSACTION (R$ 2.00).
+        Acts as a strict fail-fast mechanism for incoming transactions (such as
+        deposits or withdrawals). It ensures the input is strictly of the correct
+        type and meets the institution's minimum operational threshold, preventing
+        invalid or zero/negative values from reaching the domain logic.
 
         Args:
-            val (Decimal): The deposit amount.
+            amount (Decimal): The monetary amount to be evaluated.
 
         Raises:
-            TypeError: If the value is not a Decimal instance.
-            InvalidDepositError: If the deposit amount is less than the minimum ATM transaction allowed.
+            TypeError: If the provided amount is not an instance of Decimal.
+            ValueError: If the amount is less than the MIN_ATM_TRANSACTION limit.
         """
-        verify.verify_instance(val, Decimal)
-        try:
-            verify.verify_interval(val, min_val=Decimal(Account.MIN_ATM_TRANSACTION))
-        except ValueError as e:
-            raise InvalidDepositError(f"Invalid deposit value. Cause: {e}") from e
+        verify.verify_instance(amount, Decimal)
+        verify.verify_interval(target_value=amount, min_val=Account.MIN_ATM_TRANSACTION)
 
     @staticmethod
-    def _validate_account_withdraw(val: Decimal, available_val: Decimal) -> None:
+    def _validate_account_withdrawal(val: Decimal, available_val: Decimal) -> None:
         """
-        Validates a withdrawal value against availability rules.
+        Validates a withdrawal request strictly against the account's available funds.
 
-        The withdrawal value must be a Decimal greater than or equal to the MIN_ATM_TRANSACTION (R$ 2.00)
-        and must not exceed the `available_val`.
+        This method enforces the core business rule that an account cannot disburse
+        more money than its total available capacity (balance plus any applicable credit
+        limits). It assumes that basic structural validation (like type checks and
+        minimum withdrawal limits) has already been handled by `validate_amount_entry`.
 
         Args:
-            val (Decimal): The amount requested for withdrawal.
-            available_val (Decimal): The total funds available for withdrawal (e.g., balance + limit).
+            val (Decimal): The intended monetary amount to be withdrawn.
+            available_val (Decimal): The maximum total funds currently available to the account.
 
         Raises:
-            TypeError: If the withdrawal value is not a Decimal instance.
-            InvalidWithdrawError: If the value is less than the minimum ATM transaction,
-                                  or if it exceeds the available funds.
+            InsufficientFundsError: If the requested amount exceeds the total available funds.
         """
-        verify.verify_instance(val, Decimal)
-        try:
-            verify.verify_interval(
-                val, min_val=Decimal(Account.MIN_ATM_TRANSACTION), max_val=available_val
+        if val > available_val:
+            raise InsufficientFundsError(
+                "The given amount exceeds the account's available funds"
             )
-        except ValueError as e:
-            raise InvalidWithdrawError(f"Invalid withdraw value: Cause: {e}") from e
 
     def to_dict(self) -> dict[str, Any]:
         """
@@ -304,7 +319,13 @@ class Account(ABC):
         A frozen account operates in a strict Read-Only mode. It preserves
         its current balance and history but outright rejects any state-mutating
         financial operations (like deposits or withdrawals) until explicitly unfrozen.
+
+        Raises:
+            RuntimeError: If the account is already frozen.
         """
+        if self._is_frozen:
+            raise RuntimeError("This account is already frozen")
+
         self._is_frozen = True
 
     def unfreeze(self) -> None:
@@ -313,10 +334,16 @@ class Account(ABC):
 
         Lifts the Read-Only restriction, allowing standard balance-mutating
         financial operations to resume.
+
+        Raises:
+            RuntimeError: If the account is not frozen.
         """
+        if not self._is_frozen:
+            raise RuntimeError("This account is not frozen")
+
         self._is_frozen = False
 
-    def deposit(self, value: Decimal) -> TransactionType:
+    def deposit(self, amount: Decimal) -> tuple[TransactionEventDTO]:
         """
         Performs a standard deposit operation.
 
@@ -326,24 +353,28 @@ class Account(ABC):
         and is extended by CheckingAccount.
 
         Args:
-            value (Decimal): The amount to deposit.
+            amount (Decimal): The amount to deposit.
 
         Returns:
-            TransactionType: A Value Object indicating the operation was a standard deposit.
+            tuple[TransactionEventDTO]: A single-element tuple containing the DTO
+                that represents the standard deposit event.
 
         Raises:
             FrozenAccountError: If the account is currently frozen.
-            InvalidDepositError: If the value is not a Decimal or is less than 2.00.
+            TypeError: If the value is not a Decimal instance.
+            ValueError: If the deposit amount is less than the MIN_ATM_TRANSACTION limit.
         """
         if self._is_frozen:
             raise FrozenAccountError(
                 "Impossible to perform deposit operation on a frozen account"
             )
 
-        Account.validate_account_deposit(value)
-        self._balance += value
+        Account.validate_amount_entry(amount)
+        self._balance += amount
 
-        return TransactionType.DEPOSIT
+        return (
+            TransactionEventDTO(amount=amount, transaction=TransactionType.DEPOSIT),
+        )
 
 
 class SavingsAccount(Account):
@@ -354,16 +385,84 @@ class SavingsAccount(Account):
     It does not support overdraft or credit limits.
     """
 
+    DAILY_EARNINGS_RATE: ClassVar[Decimal] = Decimal("0.00016")
+
+    _accrual: Decimal
+
+    def __init__(self, branch_code: str, account_num: str):
+        super().__init__(branch_code, account_num)
+
+        self._accrual = Decimal("0.00")
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SavingsAccount:
-        if data["balance"] < 0:
-            raise InvalidBalanceError("SavingsAccount do not allow negative balance")
-
-        return cast(SavingsAccount, super().from_dict(data))
-
-    def withdraw(self, amount: Decimal, use_overdraft: bool = False) -> TransactionType:
         """
-        Withdraws a given amount from the account balance.
+        Reconstructs a SavingsAccount instance from a dictionary.
+
+        Extends the base Account hydration process by enforcing a strict
+        data integrity check: Savings accounts cannot have negative balances.
+
+        Raises:
+            RuntimeError: If the database state reflects a negative balance.
+        """
+        if data["balance"] < 0:
+            raise RuntimeError(
+                "SavingsAccount does not allow negative balance. Database state might be corrupted."
+            )
+
+        current_balance = data["balance"]
+        last_update = data["balance_update_at"]
+
+        instance = cast(SavingsAccount, super().from_dict(data))
+        new_balance = instance._calculate_yield(current_balance, last_update)
+        instance._balance = new_balance
+
+        return instance
+
+    def _calculate_yield(
+        self, current_balance: Decimal, balance_date: datetime
+    ) -> Decimal:
+        time_delta = datetime.today() - balance_date
+        new_balance = (
+            current_balance * (1 + self.DAILY_EARNINGS_RATE) ** time_delta.days
+        )
+
+        self._accrual = new_balance - current_balance
+
+        return new_balance
+
+    def simulate_withdrawal(self, amount: Decimal) -> WithdrawalSimulationDTO:
+        """
+        Simulates a withdrawal strictly based on the available positive balance.
+
+        Since a Savings Account does not support credit limits, the simulation
+        only evaluates if the requested amount is lesser than or equal to the
+        current balance. It enforces structural input validation before evaluation.
+
+        Args:
+            amount (Decimal): The intended monetary amount to be withdrawn.
+
+        Returns:
+            WithdrawalSimulationDTO: A detailed projection of the transaction,
+                indicating authorization status. Overdraft fields will strictly be None,
+                as this account type does not support credit limits.
+
+        Raises:
+            TypeError: If the value is not a Decimal instance.
+            ValueError: If the withdrawal amount is less than the MIN_ATM_TRANSACTION limit.
+        """
+
+        Account.validate_amount_entry(amount)
+
+        authorized = amount <= self._balance
+
+        return WithdrawalSimulationDTO(
+            authorized=authorized, use_overdraft=None, overdraft_required=None
+        )
+
+    def withdrawal(self, amount: Decimal) -> tuple[TransactionEventDTO]:
+        """
+        Withdraws a given amount from the savings account balance.
 
         Enforces the strict domain rule that an account must be active to dispense funds.
         For a SavingsAccount, the available value is strictly the current positive balance.
@@ -371,139 +470,161 @@ class SavingsAccount(Account):
 
         Args:
             amount (Decimal): The amount to withdraw.
-            use_overdraft (bool, optional): Must remain False for Savings Accounts.
 
         Returns:
-            TransactionType: A Value Object indicating a standard withdrawal event.
+            tuple[TransactionEventDTO]: A single-element tuple containing the DTO
+                that represents the standard withdrawal event, with a negative amount.
 
         Raises:
             FrozenAccountError: If the account is currently frozen.
-            RuntimeError: If explicit overdraft usage is requested (use_overdraft=True).
-            InvalidWithdrawError: If the withdrawal amount is invalid or exceeds the current balance.
+            TypeError: If the value is not a Decimal instance.
+            ValueError: If the withdrawal amount is less than the MIN_ATM_TRANSACTION limit.
+            InsufficientFundsError: If the requested amount exceeds the current balance.
         """
         if self._is_frozen:
             raise FrozenAccountError(
                 "Impossible to perform withdraw operation on a frozen account"
             )
 
-        if use_overdraft is True:
-            raise RuntimeError("Savings Accounts do not possess an overdraft limit.")
+        Account.validate_amount_entry(amount)
+        Account._validate_account_withdrawal(val=amount, available_val=self._balance)
 
-        Account._validate_account_withdraw(val=amount, available_val=self._balance)
         self._balance -= amount
-        return TransactionType.WITHDRAWAL
+
+        return (
+            TransactionEventDTO(amount=-amount, transaction=TransactionType.WITHDRAWAL),
+        )
 
 
 class CheckingAccount(Account):
     """
-    Represents a Checking Account with an optional overdraft limit.
+    Represents a Checking Account with an integration for overdraft limits.
 
-    Allows withdrawals that exceed the balance, up to the defined OVERDRAFT_LIMIT.
-    Tracks the amount of overdraft used (`_used_overdraft`).
+    Allows withdrawal operations that exceed the standard positive balance,
+    up to a statically defined OVERDRAFT_LIMIT. Instead of tracking credit
+    usage in an isolated attribute, this class derives its operational credit
+    state dynamically from a negative balance, enforcing a single source of truth.
     """
 
     OVERDRAFT_LIMIT: ClassVar[Decimal] = Decimal("3000.00")
-    _used_overdraft: Decimal
+    DAILY_INTEREST_RATE: ClassVar[Decimal] = Decimal("0.0025")
+
+    _accrual: Decimal
 
     def __init__(self, branch_code: str, account_num: str):
-        """
-        Initializes a CheckingAccount.
-
-        Sets `_used_overdraft` to 0.0.
-        """
         super().__init__(branch_code, account_num)
-        self._used_overdraft = Decimal("0.00")
+
+        self._accrual = Decimal("0.00")
 
     @property
     def available_overdraft(self) -> Decimal:
-        """Returns the available overdraft (OVERDRAFT_LIMIT minus used overdraft)."""
-        return CheckingAccount.OVERDRAFT_LIMIT - self._used_overdraft
-
-    def to_dict(self) -> dict[str, Any]:
         """
-        Serializes the CheckingAccount, extending the base serialization.
+        Calculates the remaining available credit limit dynamically.
 
-        Adds specific overdraft attributes (`OVERDRAFT_LIMIT` and `used_overdraft`) to the
-        dictionary. Note that `OVERDRAFT_LIMIT` is strictly informational, as the
-        value is defined as a class constant.
+        If the account operates with a positive balance or is exactly zero,
+        the full OVERDRAFT_LIMIT is available. If the account is operating in
+        the negative, the current debt is deducted directly from the limit to
+        reflect the remaining capacity.
 
         Returns:
-            dict: The complete dictionary with base account data plus overdraft info.
+            Decimal: The exact monetary value available for credit operations.
         """
-        obj_data = super().to_dict()
-        obj_data["used_overdraft"] = self._used_overdraft
+        total_overdraft = self.OVERDRAFT_LIMIT
 
-        return obj_data
+        return (
+            total_overdraft if self._balance >= 0 else total_overdraft + self._balance
+        )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CheckingAccount:
-        """
-        Reconstructs a CheckingAccount instance.
 
-        Delegates the core hydration to the parent class and then populates the
-        specific `_used_overdraft` attribute.
+        current_balance = data["balance"]
+        last_update = data["balance_update_at"]
 
-        Args:
-            data (dict): The dictionary containing account data.
-
-        Returns:
-            CheckingAccount: The restored instance with the correct overdraft usage state.
-        """
         instance = cast(CheckingAccount, super().from_dict(data))
-        instance._used_overdraft = data["used_overdraft"]
+        new_balance = instance._calculate_overdraft_interest(
+            current_balance, last_update
+        )
+        instance._balance = new_balance
 
         return instance
 
-    def deposit(self, value: Decimal) -> TransactionType:
-        """
-        Deposits an amount and adjusts the used overdraft.
+    def _calculate_overdraft_interest(
+        self, current_balance: Decimal, balance_date: datetime
+    ) -> Decimal:
 
-        Extends the base Account.deposit logic. After the funds are added to
-        the balance, this method recalculates the `_used_overdraft`. If the
-        deposit restores the balance to positive, `_used_overdraft` is reset to zero.
+        if current_balance >= 0:
+            return self.balance
+
+        time_delta = datetime.today() - balance_date
+
+        interest = abs(current_balance) * (
+            (1 + self.DAILY_INTEREST_RATE) ** time_delta.days - 1
+        )
+
+        self._accrual = -interest
+        new_balance = current_balance - interest
+
+        return new_balance
+
+    def simulate_withdrawal(self, amount: Decimal) -> WithdrawalSimulationDTO:
+        """
+        Simulates a withdrawal evaluating both positive balance and overdraft limit.
+
+        Calculates whether the transaction is possible and exactly how much of
+        the credit limit would be consumed. Since Checking Accounts inherently
+        support overdraft, the `use_overdraft` property will strictly be a boolean.
 
         Args:
-            value (Decimal): The amount to deposit.
+            amount (Decimal): The intended monetary amount to be withdrawn.
 
         Returns:
-            TransactionType: A Value Object indicating the operation was a standard deposit.
+            WithdrawalSimulationDTO: A detailed projection indicating authorization
+                status, overdraft necessity, and the precise required credit amount.
 
         Raises:
-            InvalidDepositError: If the deposit amount is invalid (propagated from base).
-            FrozenAccountError: If the account is currently frozen (propagated from base).
+            TypeError: If the value is not a Decimal instance.
+            ValueError: If the withdrawal amount is less than the MIN_ATM_TRANSACTION limit.
         """
-        super().deposit(value)
 
-        # If balance is still negative, update used overdraft. Otherwise, reset to 0.
-        self._used_overdraft = (
-            abs(self._balance) if self._balance < 0 else Decimal("0.00")
+        Account.validate_amount_entry(amount)
+
+        authorized = amount <= (CheckingAccount.OVERDRAFT_LIMIT + self.balance)
+        use_overdraft = amount > self._balance
+
+        if use_overdraft:
+            required = amount - self._balance if self._balance > 0 else amount
+        else:
+            required = Decimal("0.00")
+
+        return WithdrawalSimulationDTO(
+            authorized=authorized,
+            use_overdraft=use_overdraft,
+            overdraft_required=required,
         )
-        return TransactionType.DEPOSIT
 
-    def withdraw(self, amount: Decimal, use_overdraft: bool = False) -> TransactionType:
+    def withdrawal(self, amount: Decimal) -> tuple[TransactionEventDTO, ...]:
         """
-        Withdraws an amount, utilizing the overdraft limit if authorized and necessary.
+        Withdraws an amount, automatically utilizing the overdraft limit if necessary.
 
         Enforces the strict domain rule that an account must be active to dispense funds.
         The total available funds are calculated as `balance + OVERDRAFT_LIMIT`.
-        If the withdrawal drives the balance below zero, `_used_overdraft` is updated
-        and the semantic type of the event changes to reflect the limit usage.
+        If the withdrawal crosses the zero-balance threshold, the event is split into
+        two distinct DTOs to accurately reflect standard withdrawal and credit limit usage.
 
         Args:
             amount (Decimal): The amount to withdraw.
-            use_overdraft (bool, optional): Explicit authorization to dip into the
-                overdraft limit if the requested amount exceeds the standard balance. Defaults to False.
 
         Returns:
-            TransactionType: A Value Object indicating either a standard withdrawal
-                             (WITHDRAWAL) or a credit limit usage event (OVERDRAFT_WITHDRAWAL).
+            tuple[TransactionEventDTO, ...]: A tuple containing one or two event DTOs,
+                categorized as WITHDRAWAL and/or OVERDRAFT_WITHDRAWAL, with negative amounts.
 
         Raises:
             FrozenAccountError: If the account is currently frozen.
-            OverdraftRequiredError: If the requested amount exceeds the current balance
-                but `use_overdraft` was not explicitly set to True.
-            InvalidWithdrawError: If the withdrawal amount is invalid or exceeds the total
-                available funds (balance + overdraft limit).
+            TypeError: If the value is not a Decimal instance.
+            ValueError: If the withdrawal amount is less than the MIN_ATM_TRANSACTION limit.
+            InsufficientFundsError: If the amount exceeds the total available funds
+                                    (balance + overdraft limit).
         """
         if self._is_frozen:
             raise FrozenAccountError(
@@ -511,18 +632,34 @@ class CheckingAccount(Account):
             )
 
         available = CheckingAccount.OVERDRAFT_LIMIT + self._balance
-        Account._validate_account_withdraw(val=amount, available_val=available)
+        Account._validate_account_withdrawal(val=amount, available_val=available)
 
-        if amount > self._balance and not use_overdraft:
-            raise OverdraftRequiredError(
-                "The requested amount exceeds the standard balance. Explicit overdraft consent required."
-            )
-
+        balance = self._balance
         self._balance -= amount
 
-        # Update used overdraft if we enter or remain in overdraft
-        if self._balance < 0:
-            self._used_overdraft = abs(self._balance)
-            return TransactionType.OVERDRAFT_WITHDRAWAL
+        # Case 1: Fully covered by positive balance (including exact withdrawal)
+        if amount <= balance:
+            return (
+                TransactionEventDTO(
+                    amount=-amount, transaction=TransactionType.WITHDRAWAL
+                ),
+            )
 
-        return TransactionType.WITHDRAWAL
+        # Case 2: Fully operating within overdraft limits (including starting exactly at zero)
+        if balance <= 0:
+            return (
+                TransactionEventDTO(
+                    amount=-amount, transaction=TransactionType.OVERDRAFT_WITHDRAWAL
+                ),
+            )
+
+        # Case 3: Zero-crossing (Partial standard, partial overdraft)
+        return (
+            TransactionEventDTO(
+                amount=-balance, transaction=TransactionType.WITHDRAWAL
+            ),
+            TransactionEventDTO(
+                amount=self._balance,
+                transaction=TransactionType.OVERDRAFT_WITHDRAWAL,
+            ),
+        )
