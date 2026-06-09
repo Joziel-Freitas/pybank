@@ -38,7 +38,16 @@ class MenuType(Enum):
     while rejecting arbitrary integers or unrelated enums.
     """
 
-    pass
+
+class FinancialType(StrEnum):
+    """
+    Base enumeration for all domain-level financial event classifiers.
+
+    Acts as a polymorphic marker class for enumerations that represent
+    immutable, historical financial events (such as transactions or accruals).
+    Ensures that event labels persisted in the database or transported via DTOs
+    belong to a strictly defined set of business categories.
+    """
 
 
 class UserConfirmType(MenuType):
@@ -129,7 +138,7 @@ class TransactionMenuType(MenuType):
     STATEMENT = 3
 
 
-class TransactionType(StrEnum):
+class TransactionType(FinancialType):
     """
     Value Object representing the semantic business event of a financial operation.
 
@@ -142,3 +151,20 @@ class TransactionType(StrEnum):
     DEPOSIT = "DEPOSIT"
     WITHDRAWAL = "WITHDRAWAL"
     OVERDRAFT_WITHDRAWAL = "OVERDRAFT_WITHDRAWAL"
+
+
+class AccrualType(FinancialType):
+    """
+    Value Object representing the semantic classification of a time-based financial adjustment.
+
+    Categorizes the automatic mathematical operations applied to an account
+    based on the passage of time, distinguishing between positive remuneration
+    and negative debt charges.
+
+    Attributes:
+        YIELD: Represents positive earnings applied to a positive balance (e.g., Savings interest).
+        INTEREST: Represents negative charges applied to a utilized credit limit (e.g., Overdraft fees).
+    """
+
+    YIELD = "YIELD"
+    INTEREST = "INTEREST"

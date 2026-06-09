@@ -2,8 +2,13 @@
 Account Management Module.
 
 Defines the abstract base class Account and its concrete implementations:
-SavingsAccount and CheckingAccount. This module handles account initialization,
-attribute validation, and core banking mathematical operations (deposit and withdraw).
+SavingsAccount and CheckingAccount. This module orchestrates the core domain logic
+of the banking system, including account initialization, strict structural validation,
+state-safe withdrawal simulations, and time-based financial adjustments (accruals).
+
+It employs Domain-Driven Design (DDD) principles to return immutable ledger events
+(LedgerEventDTO) instead of simple primitives, ensuring a robust, append-only
+audit trail for the repository layer.
 """
 
 from __future__ import annotations
@@ -14,28 +19,32 @@ from decimal import Decimal
 from typing import Any, ClassVar, cast
 
 from infra import verify
-from shared.dtos import TransactionEventDTO, WithdrawalSimulationDTO
+from shared.dtos import AccrualEventDTO, LedgerEventDTO, WithdrawalSimulationDTO
 from shared.exceptions import (
     FrozenAccountError,
     InsufficientFundsError,
     InvalidAccountError,
     InvalidBranchError,
 )
-from shared.types import TransactionType
+from shared.types import AccrualType, TransactionType
 
 
 class Account(ABC):
     """
     Abstract Base Class (ABC) for all bank accounts.
 
-    Enforces mandatory attributes and mathematical behaviors (deposit, withdraw)
-    across all concrete account types. Handles initial attribute validation
-    via static methods.
+    Enforces mandatory attributes, temporal state tracking, and polymorphic
+    mathematical behaviors (deposit, withdrawal, accruals) across all concrete
+    account types. Acts as the orchestrator for state mutation, ensuring that
+    any financial change simultaneously updates the domain clock.
 
     Attributes:
-        _branch_code (str): The validated branch code.
-        _account_num (str): The validated account number.
-        _balance (Decimal): The current account balance.
+        _branch_code (str): The validated bank branch code.
+        _account_num (str): The validated unique account number.
+        _is_frozen (bool): The operational status of the account (True if blocked).
+        _balance (Decimal): The current authoritative account balance.
+        _balance_updated_at (datetime): The exact temporal anchor of the last
+            balance mutation, used for calculating precise daily accruals.
     """
 
     MIN_ATM_TRANSACTION: ClassVar[Decimal] = Decimal(2.00)
@@ -43,12 +52,17 @@ class Account(ABC):
     # Type hints for the instance's variables
     _branch_code: str
     _account_num: str
-    _balance: Decimal
     _is_frozen: bool
+    _balance: Decimal
+    _balance_updated_at: datetime
 
     def __init__(self, branch_code: str, account_num: str):
         """
-        Initializes a new Account instance with validated attributes.
+        Initializes a new Account instance with validated identifiers.
+
+        Sets the initial financial state to zero and initializes the domain
+        clock to the current datetime. The account is created in an active
+        (unfrozen) state by default.
 
         Args:
             branch_code (str): The code of the bank branch (validated for format).
@@ -60,8 +74,9 @@ class Account(ABC):
         """
         self._branch_code = Account.validate_branch_code(branch_code)
         self._account_num = Account.validate_account_number(account_num)
-        self._balance = Decimal("0.00")
         self._is_frozen = False
+        self._balance = Decimal("0.00")
+        self._balance_updated_at = datetime.now()
 
     def __repr__(self) -> str:
         """Returns the canonical string representation of the Account instance."""
@@ -69,7 +84,10 @@ class Account(ABC):
 
         return (
             f"{class_name}("
-            f"account_num={self._account_num!r}, balance={self._balance!r})"
+            f"branch_code={self._branch_code!r}, "
+            f"account_num={self._account_num!r}, "
+            f"balance={self._balance!r}, "
+            f"balance_updated_at={self._balance_updated_at!r})"
         )
 
     def __eq__(self, other: object) -> bool:
@@ -112,14 +130,50 @@ class Account(ABC):
         return self._account_num
 
     @property
+    def is_frozen(self) -> bool:
+        """Returns the current status of the account"""
+        return self._is_frozen
+
+    @property
     def balance(self) -> Decimal:
         """Returns the current balance of the account."""
         return self._balance
 
     @property
-    def is_frozen(self) -> bool:
-        """Returns the current status of the account"""
-        return self._is_frozen
+    @abstractmethod
+    def _pending_accrual(self) -> Decimal:
+        """
+        Represents the raw monetary value of time-based financial adjustments.
+
+        This abstract property enforces the Template Method Pattern, requiring
+        concrete account subclasses to define the specific state of their
+        pending mathematics (e.g., compound interest for overdrafts or yield
+        for savings) based on the elapsed calendar days since the last balance update.
+
+        Returns:
+            Decimal: The accumulated accrual amount. Expected to be positive for
+                yields, negative for interest charges, and exactly Decimal("0.00")
+                if no accruals apply.
+        """
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def project_accrual(self) -> AccrualEventDTO:
+        """
+        Calculates and projects the time-based financial adjustments for the account.
+
+        Acts as a Read-Only projection mechanism (Lazy Materialization). It evaluates
+        the elapsed time since the last balance update and computes the pending
+        remuneration (yield) or debt charges (interest) without mutating the actual
+        account balance.
+
+        Returns:
+            AccrualEventDTO: An immutable payload detailing the calculated amount,
+                its semantic classification (YIELD or INTEREST), and the temporal
+                anchor for the calculation.
+        """
+        raise NotImplementedError
 
     @abstractmethod
     def simulate_withdrawal(self, amount: Decimal) -> WithdrawalSimulationDTO:
@@ -143,7 +197,7 @@ class Account(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def withdrawal(self, amount: Decimal) -> tuple[TransactionEventDTO, ...]:
+    def withdrawal(self, amount: Decimal) -> tuple[LedgerEventDTO, ...]:
         """
         Abstract method for withdrawing an amount from the account.
 
@@ -249,25 +303,6 @@ class Account(ABC):
                 "The given amount exceeds the account's available funds"
             )
 
-    def to_dict(self) -> dict[str, Any]:
-        """
-        Serializes the account state into a dictionary.
-
-        Includes a 'type' field (e.g., 'CheckingAccount') to allow the Factory method
-        to reconstruct the correct concrete class implementation upon deserialization.
-
-        Returns:
-            dict[str, Any]: The dictionary containing account number, balance,
-                            and class type.
-        """
-        return {
-            "branch_code": self._branch_code,
-            "account_num": self._account_num,
-            "balance": self._balance,
-            "is_frozen": self._is_frozen,
-            "type": type(self).__name__,
-        }
-
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Account:
         """
@@ -276,11 +311,13 @@ class Account(ABC):
         Implements a Dispatcher Pattern:
         1. If called on the base Account class, it inspects the 'type' field in the data
            and delegates instantiation to the correct subclass (Checking or Savings).
-        2. If called on (or dispatched to) a subclass, it restores the common attributes
-           (balance) and returns the hydrated instance.
+        2. If called on (or dispatched to) a subclass, it restores the common state
+           attributes (balance, frozen status, and temporal state) and returns
+           the fully hydrated instance.
 
         Args:
             data (dict[str, Any]): The dictionary containing raw account data.
+                Expects 'balance_updated_at' to be a valid datetime object.
 
         Returns:
             Account: A fully initialized instance of the specific Account subclass.
@@ -308,9 +345,74 @@ class Account(ABC):
             branch_code=data["branch_code"],
             account_num=data["account_num"],
         )
-        instance._balance = data["balance"]
         instance._is_frozen = data["is_frozen"]
+        instance._balance = data["balance"]
+        instance._balance_updated_at = data["balance_updated_at"]
+
         return instance
+
+    def _update_balance(self, amount: Decimal) -> None:
+        """
+        Mutates the account balance and synchronizes the domain clock.
+
+        This protected method acts as the sole access point for state mutation
+        regarding the financial balance. It guarantees that any change to the funds
+        (whether through standard transactions or accrual materialization) simultaneously
+        updates the internal tracker, ensuring the domain maintains an accurate,
+        authoritative record of its own temporal state.
+
+        Args:
+            amount (Decimal): The exact monetary value to be added to the balance.
+                Negative values are inherently supported for debits/withdrawals.
+        """
+        self._balance += amount
+        self._balance_updated_at = datetime.now()
+
+    def _apply_accrual(self) -> LedgerEventDTO | None:
+        """
+        Materializes pending accruals into the account balance and ledger.
+
+        Acts as an internal orchestrator that evaluates if any time-based
+        financial adjustments (yields or charges) have accrued. If a non-zero
+        adjustment exists, it mutates the account state via `_update_balance`
+        and generates an immutable ledger event for persistence.
+
+        Returns:
+            LedgerEventDTO | None: A data transfer object representing the applied
+                accrual event ready for database insertion, or None if no
+                time has elapsed or the calculated amount is zero.
+        """
+        accrual = self._pending_accrual
+
+        if not accrual:
+            return None
+
+        self._update_balance(accrual)
+
+        return LedgerEventDTO(
+            amount=accrual,
+            event_type=AccrualType.YIELD if accrual > 0 else AccrualType.INTEREST,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """
+        Serializes the account state into a dictionary.
+
+        Includes a 'type' field (e.g., 'CheckingAccount') to allow the Factory method
+        to reconstruct the correct concrete class implementation upon deserialization.
+
+        Returns:
+            dict[str, Any]: The dictionary containing account number, balance,
+                            and class type.
+        """
+        return {
+            "branch_code": self._branch_code,
+            "account_num": self._account_num,
+            "type": type(self).__name__,
+            "is_frozen": self._is_frozen,
+            "balance": self._balance,
+            "balance_updated_at": self._balance_updated_at,
+        }
 
     def freeze(self) -> None:
         """
@@ -343,21 +445,22 @@ class Account(ABC):
 
         self._is_frozen = False
 
-    def deposit(self, amount: Decimal) -> tuple[TransactionEventDTO]:
+    def deposit(self, amount: Decimal) -> tuple[LedgerEventDTO, ...]:
         """
         Performs a standard deposit operation.
 
         Enforces the strict domain rule that an account must be active to receive funds.
-        Validates the input value and increments the account balance.
-        This implementation serves as the default behavior for SavingsAccount
-        and is extended by CheckingAccount.
+        Validates the input value, processes any pending time-based accruals, and
+        increments the account balance. This implementation serves as the default
+        behavior for all concrete account types.
 
         Args:
             amount (Decimal): The amount to deposit.
 
         Returns:
-            tuple[TransactionEventDTO]: A single-element tuple containing the DTO
-                that represents the standard deposit event.
+            tuple[LedgerEventDTO, ...]: A tuple containing the DTOs that represent
+                the financial events generated by this operation (e.g., the deposit
+                itself, potentially preceded by a yield or interest materialization).
 
         Raises:
             FrozenAccountError: If the account is currently frozen.
@@ -370,29 +473,71 @@ class Account(ABC):
             )
 
         Account.validate_amount_entry(amount)
-        self._balance += amount
+        accruals_event = self._apply_accrual()
 
-        return (
-            TransactionEventDTO(amount=amount, transaction=TransactionType.DEPOSIT),
+        self._update_balance(amount)
+        deposit_event = LedgerEventDTO(
+            amount=amount, event_type=TransactionType.DEPOSIT
         )
+
+        if accruals_event:
+            return (accruals_event, deposit_event)
+
+        return (deposit_event,)
 
 
 class SavingsAccount(Account):
     """
     Represents a standard Savings Account.
 
-    A Savings Account only allows withdrawals up to the current balance.
-    It does not support overdraft or credit limits.
+    A Savings Account only allows withdrawals up to the current positive balance.
+    It does not support overdraft or credit limits. It implements the domain rule
+    for positive remuneration, automatically calculating and applying daily yields
+    (compound interest) to the balance based on elapsed calendar days.
     """
 
     DAILY_EARNINGS_RATE: ClassVar[Decimal] = Decimal("0.00016")
 
-    _accrual: Decimal
+    @property
+    def _pending_accrual(self) -> Decimal:
+        """
+        Represents the positive yield generated by the savings balance.
 
-    def __init__(self, branch_code: str, account_num: str):
-        super().__init__(branch_code, account_num)
+        Derived dynamically by applying daily compound interest over the
+        positive balance for the number of full calendar days elapsed
+        since the last update.
 
-        self._accrual = Decimal("0.00")
+        Returns:
+            Decimal: The precise yield amount pending materialization,
+                strictly formatted to two decimal places.
+        """
+        time_delta = datetime.now().date() - self._balance_updated_at.date()
+        delta_days = time_delta.days
+        new_amount = self._balance * (1 + self.DAILY_EARNINGS_RATE) ** delta_days
+        earnings = new_amount - self.balance
+
+        return earnings.quantize(Decimal("0.00"))
+
+    @property
+    def project_accrual(self) -> AccrualEventDTO:
+        """
+        Projects the current pending yield for read-only visualization.
+
+        Retrieves the calculated earnings without altering the account's actual
+        balance or updating its temporal state. This is strictly intended for
+        statement generation and UI feedback (Lazy Materialization).
+
+        Returns:
+            AccrualEventDTO: An immutable payload detailing the pending yield
+                and the exact date of the projection.
+        """
+        earnings = self._pending_accrual
+
+        return AccrualEventDTO(
+            amount=earnings,
+            accrual_type=AccrualType.YIELD,
+            event_date=datetime.now().date(),
+        )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SavingsAccount:
@@ -410,26 +555,7 @@ class SavingsAccount(Account):
                 "SavingsAccount does not allow negative balance. Database state might be corrupted."
             )
 
-        current_balance = data["balance"]
-        last_update = data["balance_update_at"]
-
-        instance = cast(SavingsAccount, super().from_dict(data))
-        new_balance = instance._calculate_yield(current_balance, last_update)
-        instance._balance = new_balance
-
-        return instance
-
-    def _calculate_yield(
-        self, current_balance: Decimal, balance_date: datetime
-    ) -> Decimal:
-        time_delta = datetime.today() - balance_date
-        new_balance = (
-            current_balance * (1 + self.DAILY_EARNINGS_RATE) ** time_delta.days
-        )
-
-        self._accrual = new_balance - current_balance
-
-        return new_balance
+        return cast(SavingsAccount, super().from_dict(data))
 
     def simulate_withdrawal(self, amount: Decimal) -> WithdrawalSimulationDTO:
         """
@@ -460,20 +586,21 @@ class SavingsAccount(Account):
             authorized=authorized, use_overdraft=None, overdraft_required=None
         )
 
-    def withdrawal(self, amount: Decimal) -> tuple[TransactionEventDTO]:
+    def withdrawal(self, amount: Decimal) -> tuple[LedgerEventDTO, ...]:
         """
         Withdraws a given amount from the savings account balance.
 
         Enforces the strict domain rule that an account must be active to dispense funds.
-        For a SavingsAccount, the available value is strictly the current positive balance.
-        Overdraft limits are not supported.
+        For a SavingsAccount, the available value is strictly the current positive balance
+        (including newly materialized yields). Overdraft limits are not supported.
 
         Args:
             amount (Decimal): The amount to withdraw.
 
         Returns:
-            tuple[TransactionEventDTO]: A single-element tuple containing the DTO
-                that represents the standard withdrawal event, with a negative amount.
+            tuple[LedgerEventDTO, ...]: A tuple containing the DTOs that represent
+                the financial events (e.g., the standard withdrawal, potentially
+                preceded by a yield materialization). Withdrawal amounts are negative.
 
         Raises:
             FrozenAccountError: If the account is currently frozen.
@@ -487,34 +614,37 @@ class SavingsAccount(Account):
             )
 
         Account.validate_amount_entry(amount)
+        accrual_event = self._apply_accrual()
         Account._validate_account_withdrawal(val=amount, available_val=self._balance)
+        self._update_balance(-amount)
 
-        self._balance -= amount
-
-        return (
-            TransactionEventDTO(amount=-amount, transaction=TransactionType.WITHDRAWAL),
+        withdrawal_event = LedgerEventDTO(
+            amount=-amount, event_type=TransactionType.WITHDRAWAL
         )
+
+        if accrual_event:
+            return (accrual_event, withdrawal_event)
+
+        return (withdrawal_event,)
 
 
 class CheckingAccount(Account):
     """
-    Represents a Checking Account with an integration for overdraft limits.
+    Represents a Checking Account with an integrated overdraft limit.
 
     Allows withdrawal operations that exceed the standard positive balance,
-    up to a statically defined OVERDRAFT_LIMIT. Instead of tracking credit
-    usage in an isolated attribute, this class derives its operational credit
-    state dynamically from a negative balance, enforcing a single source of truth.
+    up to a statically defined OVERDRAFT_LIMIT. This class derives its
+    operational credit state dynamically directly from a negative balance,
+    enforcing a single source of truth and eliminating legacy tracking attributes
+    (such as isolated credit states).
+
+    It implements the domain rule for debt charges, automatically calculating
+    and applying daily interest fees to any utilized overdraft amount based
+    on elapsed calendar days.
     """
 
     OVERDRAFT_LIMIT: ClassVar[Decimal] = Decimal("3000.00")
     DAILY_INTEREST_RATE: ClassVar[Decimal] = Decimal("0.0025")
-
-    _accrual: Decimal
-
-    def __init__(self, branch_code: str, account_num: str):
-        super().__init__(branch_code, account_num)
-
-        self._accrual = Decimal("0.00")
 
     @property
     def available_overdraft(self) -> Decimal:
@@ -535,37 +665,52 @@ class CheckingAccount(Account):
             total_overdraft if self._balance >= 0 else total_overdraft + self._balance
         )
 
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> CheckingAccount:
+    @property
+    def _pending_accrual(self) -> Decimal:
+        """
+        Represents the debt charges applied to utilized overdraft limits.
 
-        current_balance = data["balance"]
-        last_update = data["balance_update_at"]
+        If the account balance is positive or exactly zero, this property
+        evaluates to zero. If operating in the negative, it reflects the
+        daily compound interest applied over the absolute debt for the
+        number of full calendar days elapsed.
 
-        instance = cast(CheckingAccount, super().from_dict(data))
-        new_balance = instance._calculate_overdraft_interest(
-            current_balance, last_update
-        )
-        instance._balance = new_balance
+        Returns:
+            Decimal: The exact interest charge as a negative value, rounded
+                to two decimal places, or Decimal("0.00") if no debt exists.
+        """
+        if self._balance >= 0:
+            return Decimal("0.00")
 
-        return instance
+        time_delta = datetime.today().date() - self._balance_updated_at.date()
+        delta_days = time_delta.days
 
-    def _calculate_overdraft_interest(
-        self, current_balance: Decimal, balance_date: datetime
-    ) -> Decimal:
-
-        if current_balance >= 0:
-            return self.balance
-
-        time_delta = datetime.today() - balance_date
-
-        interest = abs(current_balance) * (
-            (1 + self.DAILY_INTEREST_RATE) ** time_delta.days - 1
+        interest = abs(self._balance) * (
+            (1 + self.DAILY_INTEREST_RATE) ** delta_days - 1
         )
 
-        self._accrual = -interest
-        new_balance = current_balance - interest
+        return -interest.quantize(Decimal("0.00"))
 
-        return new_balance
+    @property
+    def project_accrual(self) -> AccrualEventDTO:
+        """
+        Projects the current pending overdraft interest for read-only visualization.
+
+        Retrieves the calculated debt charges without mutating the account's
+        balance or temporal state, ensuring safe display on user statements
+        (Lazy Materialization).
+
+        Returns:
+            AccrualEventDTO: An immutable payload detailing the pending interest
+                charges and the exact date of the projection.
+        """
+        interest = self._pending_accrual
+
+        return AccrualEventDTO(
+            amount=interest,
+            accrual_type=AccrualType.INTEREST,
+            event_date=datetime.now().date(),
+        )
 
     def simulate_withdrawal(self, amount: Decimal) -> WithdrawalSimulationDTO:
         """
@@ -603,7 +748,7 @@ class CheckingAccount(Account):
             overdraft_required=required,
         )
 
-    def withdrawal(self, amount: Decimal) -> tuple[TransactionEventDTO, ...]:
+    def withdrawal(self, amount: Decimal) -> tuple[LedgerEventDTO, ...]:
         """
         Withdraws an amount, automatically utilizing the overdraft limit if necessary.
 
@@ -616,50 +761,55 @@ class CheckingAccount(Account):
             amount (Decimal): The amount to withdraw.
 
         Returns:
-            tuple[TransactionEventDTO, ...]: A tuple containing one or two event DTOs,
-                categorized as WITHDRAWAL and/or OVERDRAFT_WITHDRAWAL, with negative amounts.
+            tuple[LedgerEventDTO, ...]: A tuple containing one or more event DTOs,
+                categorized sequentially (e.g., pending INTEREST, WITHDRAWAL, and/or
+                OVERDRAFT_WITHDRAWAL), all represented with negative amounts.
 
         Raises:
             FrozenAccountError: If the account is currently frozen.
             TypeError: If the value is not a Decimal instance.
             ValueError: If the withdrawal amount is less than the MIN_ATM_TRANSACTION limit.
-            InsufficientFundsError: If the amount exceeds the total available funds
-                                    (balance + overdraft limit).
+            InsufficientFundsError: If the amount exceeds the total available funds.
         """
         if self._is_frozen:
             raise FrozenAccountError(
                 "Impossible to perform withdraw operation on a frozen account"
             )
 
+        Account.validate_amount_entry(amount)
+        accrual_event = self._apply_accrual()
         available = CheckingAccount.OVERDRAFT_LIMIT + self._balance
         Account._validate_account_withdrawal(val=amount, available_val=available)
 
         balance = self._balance
-        self._balance -= amount
+        self._update_balance(-amount)
+
+        events_list: list[LedgerEventDTO] = []
+
+        if accrual_event:
+            events_list.append(accrual_event)
 
         # Case 1: Fully covered by positive balance (including exact withdrawal)
-        if amount <= balance:
-            return (
-                TransactionEventDTO(
-                    amount=-amount, transaction=TransactionType.WITHDRAWAL
-                ),
+        if balance >= amount:
+            events_list.append(
+                LedgerEventDTO(amount=-amount, event_type=TransactionType.WITHDRAWAL)
             )
-
         # Case 2: Fully operating within overdraft limits (including starting exactly at zero)
-        if balance <= 0:
-            return (
-                TransactionEventDTO(
-                    amount=-amount, transaction=TransactionType.OVERDRAFT_WITHDRAWAL
-                ),
+        elif balance <= 0:
+            events_list.append(
+                LedgerEventDTO(
+                    amount=-amount, event_type=TransactionType.OVERDRAFT_WITHDRAWAL
+                )
             )
-
         # Case 3: Zero-crossing (Partial standard, partial overdraft)
-        return (
-            TransactionEventDTO(
-                amount=-balance, transaction=TransactionType.WITHDRAWAL
-            ),
-            TransactionEventDTO(
-                amount=self._balance,
-                transaction=TransactionType.OVERDRAFT_WITHDRAWAL,
-            ),
-        )
+        else:
+            events_list.append(
+                LedgerEventDTO(amount=-balance, event_type=TransactionType.WITHDRAWAL)
+            )
+            events_list.append(
+                LedgerEventDTO(
+                    amount=self._balance,
+                    event_type=TransactionType.OVERDRAFT_WITHDRAWAL,
+                )
+            )
+        return tuple(events_list)

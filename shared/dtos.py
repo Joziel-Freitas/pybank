@@ -1,11 +1,18 @@
 """
 Shared Data Transfer Objects (DTOs) Module.
 
-This module defines immutable payloads used to transport data across architectural
-boundaries (e.g., from the Presentation layer to the Domain layer).
+This module defines the immutable payloads that act as the lingua franca
+across all architectural boundaries of the PyBank system.
 
-By strictly using primitive types and standard library objects, these DTOs prevent
-Domain Entity leakage and eliminate circular dependencies between modules.
+It orchestrates a robust, type-safe data flow in multiple directions:
+- Inbound: From the Presentation/Controller layers to the Domain (e.g., input forms).
+- Outbound: From the Domain to the Presentation layer (e.g., financial snapshots).
+- Persistence: Transporting state changes to the Repository (e.g., Ledger Events)
+  and hydrating the Domain from the database via Composition (e.g., Russian Doll Projections).
+
+By strictly relying on primitive types and standard library objects, these DTOs
+prevent Domain Entity leakage, guarantee immutability in transit, and eliminate
+circular dependencies between the system's core modules.
 """
 
 from dataclasses import dataclass
@@ -13,7 +20,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
-from shared.types import TransactionType
+from shared.types import AccrualType, FinancialType
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,25 +110,54 @@ class WithdrawalSimulationDTO:
 
 
 @dataclass(frozen=True, slots=True)
-class TransactionEventDTO:
+class AccrualEventDTO:
     """
-    Data Transfer Object representing a discrete financial event.
+    Data Transfer Object representing a calculated time-based financial adjustment.
 
-    Designed to decompose complex account operations (such as a withdrawal
-    that crosses into overdraft limits) into immutable, atomic segments.
-    This ensures accurate ledger tracking, precise auditing, and correct
-    statement generation for the end user without exposing internal
-    domain logic to the outer layers.
+    Acts as an immutable payload transporting the results of interest or yield
+    calculations from the Domain layer to the outer architectural bounds.
+    It is used both for generating read-only projections on user statements
+    and for materializing actual ledger events during state-mutating operations.
 
     Attributes:
-        amount (Decimal): The specific monetary amount associated with this
-            discrete segment of the operation.
-        transaction (TransactionType): The semantic label (e.g., WITHDRAWAL,
-            OVERDRAFT_WITHDRAWAL) categorizing the nature of the event.
+        amount (Decimal): The specific monetary value of the adjustment.
+            Expected to be positive for yields and negative for interest charges.
+        accrual_type (AccrualType): The semantic label categorizing the nature
+            of the adjustment (e.g., YIELD or INTEREST).
+        event_date (date): The exact temporal anchor for the calculation. Validates the
+            historical accuracy of the projection, ensuring the payload represents
+            the financial reality precisely at the time of instantiation.
     """
 
     amount: Decimal
-    transaction: TransactionType
+    accrual_type: AccrualType
+    event_date: date
+
+
+@dataclass(frozen=True, slots=True)
+class LedgerEventDTO:
+    """
+    Data Transfer Object representing a discrete event bound for the ledger.
+
+    Designed to decompose complex account operations (such as a withdrawal
+    that crosses into overdraft limits, or a deposit that triggers pending
+    yield materialization) into immutable, atomic segments. This ensures
+    accurate ledger tracking, precise auditing, and correct statement
+    generation for the end user without exposing internal domain logic
+    to the outer layers.
+
+    Attributes:
+        amount (Decimal): The specific monetary amount associated with this
+            discrete segment of the operation. Negative values represent
+            debits (e.g., withdrawals, interest charges), while positive
+            values represent credits (e.g., deposits, yields).
+        event_type (FinancialType): The semantic label (e.g., WITHDRAWAL,
+            DEPOSIT, YIELD, INTEREST) categorizing the exact business nature
+            of the event.
+    """
+
+    amount: Decimal
+    event_type: FinancialType
 
 
 @dataclass(frozen=True, slots=True)
