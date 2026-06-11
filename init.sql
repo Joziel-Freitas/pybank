@@ -28,8 +28,8 @@ CREATE TABLE accounts (
     account_num CHAR(8) NOT NULL,
     account_type VARCHAR(20) NOT NULL,
     balance DECIMAL(13, 2) NOT NULL,
+    balance_updated_at DATETIME NOT NULL,
     is_frozen BOOLEAN NOT NULL,
-    used_overdraft DECIMAL(10, 2),
     password_hash VARCHAR(255) NOT NULL,
     failed_login_attempts INT DEFAULT 0,
     account_holder_id INT NOT NULL,
@@ -38,15 +38,15 @@ CREATE TABLE accounts (
 );
 
 -- ------------------------------------------------------------------------------
--- Table: transactions
--- Description: An immutable, append-only ledger of financial operations
--- used for auditing and statement generation.
+-- Table: ledger_entries
+-- Description: An immutable, append-only ledger of financial events (transactions
+-- and accruals) used for auditing, accounting, and statement generation.
 -- ------------------------------------------------------------------------------
-CREATE TABLE transactions (
+CREATE TABLE ledger_entries (
     id INT PRIMARY KEY AUTO_INCREMENT NOT NULL,
     previous_balance DECIMAL(13, 2) NOT NULL,
     amount DECIMAL(13, 2) NOT NULL,
-    transaction_type VARCHAR(20) NOT NULL,
+    event_type VARCHAR(25) NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     account_id INT NOT NULL,
     FOREIGN KEY (account_id) REFERENCES accounts(id)

@@ -147,6 +147,9 @@ class LedgerEventDTO:
     to the outer layers.
 
     Attributes:
+        previous_balance (Decimal): The exact account balance immediately
+            prior to the execution of this specific event segment, ensuring
+            chronological consistency in the database ledger.
         amount (Decimal): The specific monetary amount associated with this
             discrete segment of the operation. Negative values represent
             debits (e.g., withdrawals, interest charges), while positive
@@ -156,6 +159,7 @@ class LedgerEventDTO:
             of the event.
     """
 
+    previous_balance: Decimal
     amount: Decimal
     event_type: FinancialType
 
@@ -237,24 +241,6 @@ class StatementDTO:
 
 
 @dataclass(frozen=True, slots=True)
-class FinancialProjectionDTO:
-    """
-    Data Transfer Object holding the financial state of an account.
-
-    Acts as a nested projection representing monetary values. It is only
-    instantiated and attached to the root projection if financial data
-    was explicitly requested from the infrastructure layer.
-
-    Attributes:
-        balance (Decimal): The current available balance.
-        used_overdraft (Decimal): The utilized amount of the overdraft limit.
-    """
-
-    balance: Decimal
-    used_overdraft: Decimal
-
-
-@dataclass(frozen=True, slots=True)
 class AccessProjectionDTO:
     """
     Data Transfer Object holding security and access credentials.
@@ -299,8 +285,8 @@ class AccountProjectionDTO:
 
     Utilizes Composition over Inheritance to structure raw database results
     into a predictable, type-safe "Russian Doll" architecture. The baseline
-    routing and status fields are always guaranteed. The nested context DTOs
-    (financial, access, holder) dynamically reflect the flags passed to the
+    routing, status, and core financial fields are always guaranteed. The nested
+    context DTOs (access, holder) dynamically reflect the flags passed to the
     Repository's query builder.
 
     Attributes:
@@ -308,7 +294,7 @@ class AccountProjectionDTO:
         account_num (str): The baseline 8-digit account number.
         account_type (str): The baseline classification of the account.
         is_frozen (bool): The baseline operational status of the account.
-        financial_info (FinancialProjectionDTO | None): The nested financial context, or None.
+        balance (Decimal): The baseline current authoritative balance.
         access_info (AccessProjectionDTO | None): The nested security context, or None.
         holder_info (HolderProjectionDTO | None): The nested identity context, or None.
     """
@@ -317,6 +303,6 @@ class AccountProjectionDTO:
     account_num: str
     account_type: str
     is_frozen: bool
-    financial_info: FinancialProjectionDTO | None
+    balance: Decimal
     access_info: AccessProjectionDTO | None
     holder_info: HolderProjectionDTO | None
