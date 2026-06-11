@@ -10,7 +10,6 @@ into pure Python domain objects.
 
 from contextlib import contextmanager
 from datetime import datetime
-from decimal import Decimal
 from os import environ
 from typing import Any
 
@@ -25,8 +24,8 @@ from infra import verify
 from shared.dtos import (
     AccessProjectionDTO,
     AccountProjectionDTO,
-    FinancialProjectionDTO,
     HolderProjectionDTO,
+    LedgerEventDTO,
 )
 from shared.exceptions import (
     DataNotFoundError,
@@ -34,7 +33,6 @@ from shared.exceptions import (
     RepositoryError,
     SystemBaseException,
 )
-from shared.types import TransactionType
 
 load_dotenv()
 
@@ -45,7 +43,7 @@ class MySQLRepository:
 
     Acts as the Anti-Corruption Layer (ACL) between the PyBank domain and the
     relational database. Manages ACID transactions, data serialization, and
-    state mutations for AccountHolders, Accounts, and Transactions.
+    state mutations for AccountHolders, Accounts, and Ledger Events.
 
     Attributes:
         _connection (Connection): The active PyMySQL database connection instance
@@ -159,36 +157,30 @@ class MySQLRepository:
 
         return result["id"]
 
-    def _insert_transaction_record(
-        self,
-        cursor,
-        account_id: int,
-        previous_balance: Decimal,
-        amount: Decimal,
-        transaction_type: TransactionType,
+    def _insert_ledger_entries(
+        self, cursor: cursors.DictCursor, account_id: int, events: tuple[LedgerEventDTO]
     ) -> None:
         """
-        Helper method to insert a transaction record for auditing purposes.
+        Helper method to insert ledger event records for auditing purposes.
 
-        Records the exact balance prior to the operation alongside the transaction
-        amount and its semantic business type to ensure chronological consistency.
-        Does NOT manage commits.
+        Bulk inserts a sequence of discrete ledger events, recording the exact
+        balance prior to each operation alongside the amount and its semantic
+        business type, ensuring chronological consistency. Does NOT manage commits.
 
         Args:
-            cursor: The active database cursor.
-            account_id (int): The primary key of the account.
-            previous_balance (Decimal): The account balance strictly BEFORE the transaction.
-            amount (Decimal): The transaction amount.
-            transaction_type (TransactionType): The semantic business event type.
+            cursor (cursors.DictCursor): The active database cursor.
+            account_id (int): The primary key ID of the account.
+            events (tuple[LedgerEventDTO, ...]): A sequence of immutable event
+                payloads to be persisted.
         """
-        sql = """INSERT INTO transactions (account_id, previous_balance, amount, transaction_type)
+        sql = """INSERT INTO ledger_entries (account_id, previous_balance, amount, event_type)
         VALUES (%s, %s, %s, %s)"""
 
-        transaction_type_str = transaction_type.value
-
-        cursor.execute(
-            sql, (account_id, previous_balance, amount, transaction_type_str)
-        )
+        values = [
+            (account_id, e.previous_balance, e.amount, e.event_type.value)
+            for e in events
+        ]
+        cursor.executemany(sql, values)
 
     def _insert_account_record(
         self,
@@ -217,32 +209,28 @@ class MySQLRepository:
             "branch_code, "
             "account_num, "
             "account_type, "
-            "balance, "
             "is_frozen, "
-            "used_overdraft, "
+            "balance, "
+            "balance_updated_at, "
             "password_hash, "
             "account_holder_id) "
             "VALUES ("
             "%(branch_code)s, "
             "%(account_num)s, "
             "%(type)s, "
-            "%(balance)s, "
             "%(is_frozen)s, "
-            "%(used_overdraft)s, "
+            "%(balance)s, "
+            "%(balance_updated_at)s, "
             "%(password_hash)s, "
             "%(holder_id)s)"
         )
 
-        data_dict = {
-            "holder_id": holder_id,
-            "password_hash": password_hash,
-            "used_overdraft": None,
-        }
         acc_dict = account.to_dict()
-        data_dict.update(acc_dict)
+        acc_dict["password_hash"] = password_hash
+        acc_dict["holder_id"] = holder_id
 
         try:
-            cursor.execute(sql, data_dict)
+            cursor.execute(sql, acc_dict)
         except err.IntegrityError as e:
             raise DuplicatedDataError(
                 f"Duplicated data in the database for {account.branch_code}, {account.account_num}",
@@ -285,28 +273,24 @@ class MySQLRepository:
 
                 self._insert_account_record(cursor, account, holder_id, password_hash)
 
-    def save_transaction(
-        self, account: Account, amount: Decimal, transaction_type: TransactionType
-    ) -> None:
+    def save_transaction(self, account: Account, events: tuple[LedgerEventDTO]) -> None:
         """
-        Executes an atomic sub-operation to update the account balance and
-        record the financial transaction in history.
+        Executes an atomic sub-operation to update the account state and
+        record the corresponding financial events in the ledger.
 
         This method is a subordinate operation and strictly requires an active
         Unit of Work. It MUST be executed within a `with self.unit_of_work():` block.
-        It explicitly fetches the current balance prior to the update to satisfy
-        the snapshotting requirements of the transaction ledger.
+        It locks the specific account row to prevent race conditions during updates.
 
         Args:
-            account (Account): The domain Account entity to be updated.
-            amount (Decimal): The monetary amount (positive for deposits, negative for withdrawals).
-            transaction_type (TransactionType): The semantic business event type.
+            account (Account): The domain Account entity containing the new updated state.
+            events (tuple[LedgerEventDTO, ...]): The sequence of chronological events
+                that led to the new state.
 
         Raises:
-            RuntimeError: If called outside an active `unit_of_work()` block, enforcing the Unit of Work.
+            RuntimeError: If called outside an active `unit_of_work()` block.
             TypeError: If the arguments are of incorrect types.
             DataNotFoundError: If the account to be updated does not exist in the database.
-            RepositoryError: If a database error occurs during the operation.
         """
         if not self._in_transaction:
             raise RuntimeError(
@@ -314,19 +298,19 @@ class MySQLRepository:
             )
 
         verify.verify_instance(account, Account)
-        verify.verify_instance(amount, Decimal)
-        verify.verify_instance(transaction_type, TransactionType)
+        verify.verify_instance(events, tuple)
+        for e in events:
+            verify.verify_instance(e, LedgerEventDTO)
 
-        select_sql = "SELECT id, balance FROM accounts WHERE branch_code = %s AND account_num = %s FOR UPDATE"
+        select_sql = "SELECT id FROM accounts WHERE branch_code = %s AND account_num = %s FOR UPDATE"
         update_sql = (
-            "UPDATE accounts SET balance = %s, used_overdraft = %s WHERE id = %s"
+            "UPDATE accounts SET balance = %s, balance_updated_at = %s WHERE id = %s"
         )
 
-        account_dict = account.to_dict()
-        branch_code = account_dict["branch_code"]
-        account_num = account_dict["account_num"]
-        balance = account_dict["balance"]
-        used_overdraft = account_dict.get("used_overdraft", None)
+        branch_code = account.branch_code
+        account_num = account.account_num
+        balance = account.balance
+        balance_update = account.balance_updated_at
 
         with self._connection.cursor() as cursor:
             cursor.execute(select_sql, (branch_code, account_num))
@@ -338,18 +322,15 @@ class MySQLRepository:
                 )
 
             account_id = result["id"]
-            previous_balance = result["balance"]
 
-            cursor.execute(update_sql, (balance, used_overdraft, account_id))
+            cursor.execute(update_sql, (balance, balance_update, account_id))
 
             if cursor.rowcount == 0:
                 raise DataNotFoundError(
                     f"Data not found in the database for {branch_code=}, {account_num=}"
                 )
 
-            self._insert_transaction_record(
-                cursor, account_id, previous_balance, amount, transaction_type
-            )
+            self._insert_ledger_entries(cursor, account_id, events)
 
     def account_holder_exists(self, cpf: str) -> bool:
         """
@@ -460,7 +441,6 @@ class MySQLRepository:
         self,
         branch_code: str,
         account_num: str,
-        financial_info: bool = False,
         access_info: bool = False,
         holder_info: bool = False,
         for_update: bool = False,
@@ -469,15 +449,15 @@ class MySQLRepository:
         Dynamic Query Builder for retrieving specific slices of account data.
 
         Acts as an optimized 'micro-ORM', allowing the Domain layer to request
-        strictly the data needed for a specific context without the overhead of
-        full Entity hydration. By default, it returns a lightweight baseline
-        of routing and status data. Additional data domains can be appended via
+        strictly the data needed for a specific context (e.g., UI rendering or
+        read-only business rules) without the overhead of full Entity hydration.
+        By default, it returns a lightweight baseline of routing, status, and
+        financial balance data. Additional data domains can be appended via
         boolean flags.
 
         Args:
             branch_code (str): The 4-digit string representing the branch.
             account_num (str): The unique 8-digit string representing the account.
-            financial_info (bool, optional): Appends 'balance' and 'used_overdraft'.
             access_info (bool, optional): Appends 'password_hash' and 'failed_login_attempts'.
             holder_info (bool, optional): Executes a JOIN to append 'holder_name', 'cpf', and 'birth_date'.
             for_update (bool, optional): Applies a pessimistic lock (FOR UPDATE)
@@ -486,7 +466,7 @@ class MySQLRepository:
         Returns:
             AccountProjectionDTO: An immutable nested DTO containing the requested data slice.
                 Baseline fields always guaranteed: 'branch_code', 'account_num',
-                'account_type', 'is_frozen'.
+                'account_type', 'is_frozen', 'balance'.
 
         Raises:
             TypeError: If the provided arguments are not of the expected types.
@@ -494,10 +474,8 @@ class MySQLRepository:
                 an active `unit_of_work()` block, preventing dangling database locks.
             DataNotFoundError: If the requested account does not exist.
         """
-
         verify.verify_instance(branch_code, str)
         verify.verify_instance(account_num, str)
-        verify.verify_instance(financial_info, bool)
         verify.verify_instance(access_info, bool)
         verify.verify_instance(holder_info, bool)
         verify.verify_instance(for_update, bool)
@@ -512,10 +490,8 @@ class MySQLRepository:
             "a.account_num",
             "a.account_type",
             "a.is_frozen",
+            "a.balance",
         ]
-
-        if financial_info:
-            columns.extend(["a.balance", "a.used_overdraft"])
 
         if access_info:
             columns.extend(
@@ -549,12 +525,7 @@ class MySQLRepository:
                 f"Data not found in the database for {branch_code=}, {account_num=}"
             )
 
-        financial_dto = access_dto = holder_dto = None
-
-        if financial_info:
-            financial_dto = FinancialProjectionDTO(
-                balance=result["balance"], used_overdraft=result["used_overdraft"]
-            )
+        access_dto = holder_dto = None
 
         if access_info:
             access_dto = AccessProjectionDTO(
@@ -572,7 +543,7 @@ class MySQLRepository:
             account_num=result["account_num"],
             account_type=result["account_type"],
             is_frozen=result["is_frozen"],
-            financial_info=financial_dto,
+            balance=result["balance"],
             access_info=access_dto,
             holder_info=holder_dto,
         )
@@ -618,9 +589,9 @@ class MySQLRepository:
             "branch_code": "branch_code",
             "account_num": "account_num",
             "account_type": "type",
-            "balance": "balance",
             "is_frozen": "is_frozen",
-            "used_overdraft": "used_overdraft",
+            "balance": "balance",
+            "balance_updated_at": "balance_updated_at",
         }
         sql = f"SELECT * FROM accounts WHERE branch_code = %s AND account_num = %s {lock_clause}"
 
@@ -639,17 +610,14 @@ class MySQLRepository:
                 if k in acc_keys_mapper
             }
 
-            if acc_dict.get("used_overdraft") is None:
-                acc_dict.pop("used_overdraft")
-
             account_obj = Account.from_dict(acc_dict)
             return account_obj
 
-    def get_transactions(
+    def get_ledger_events(
         self, branch_code: str, account_num: str, start_date: datetime
     ) -> tuple[dict[str, Any], ...]:
         """
-        Retrieves a chronological record of transactions for a specific account.
+        Retrieves a chronological record of financial events (ledger entries) for a specific account.
 
         Enforces a Fail-Fast validation by explicitly verifying the account's
         existence before executing the main query. This mitigates TOCTOU
@@ -657,20 +625,20 @@ class MySQLRepository:
         of a false-positive empty statement for an account that was deleted
         in another session.
 
-        Filters transactions based on a provided start date, pushing the
+        Filters events based on a provided start date, pushing the
         computational load of date filtering and ordering to the database motor
         using an optimized JOIN operation.
 
         Args:
             branch_code (str): The 4-digit string representing the branch.
             account_num (str): The unique 8-digit string representing the account.
-            start_date (datetime): The cutoff date; fetches all transactions occurring
+            start_date (datetime): The cutoff date; fetches all events occurring
                 on or after this exact timestamp.
 
         Returns:
             tuple[dict[str, Any], ...]: A tuple of dictionaries, where each dictionary
-                represents a transaction containing 'previous_balance' (Decimal),
-                'created_at' (datetime), 'transaction_type' (str), and 'amount' (Decimal).
+                represents a ledger event containing 'previous_balance' (Decimal),
+                'created_at' (datetime), 'event_type' (str), and 'amount' (Decimal).
                 Ordered from oldest to newest.
 
         Raises:
@@ -687,14 +655,14 @@ class MySQLRepository:
             )
 
         sql = (
-            "SELECT t.previous_balance, t.created_at, t.transaction_type, t.amount "
-            "FROM transactions AS t "
+            "SELECT le.previous_balance, le.created_at, le.event_type, le.amount "
+            "FROM ledger_entries AS le "
             "JOIN accounts AS a "
-            "ON t.account_id = a.id "
+            "ON le.account_id = a.id "
             "WHERE a.branch_code = %s "
             "AND a.account_num = %s "
-            "AND t.created_at >= %s "
-            "ORDER BY t.created_at ASC"
+            "AND le.created_at >= %s "
+            "ORDER BY le.created_at ASC"
         )
 
         with self._connection.cursor() as cursor:
@@ -866,12 +834,12 @@ class MySQLRepository:
 
     def delete_account(self, branch_code: str, account_num: str) -> None:
         """
-        Permanently removes an account and its transaction history from the database.
+        Permanently removes an account and its ledger history from the database.
 
         This method is a subordinate operation and strictly requires an active
         Unit of Work. It MUST be executed within a `with self.unit_of_work():` block.
         Executes an ACID-compliant sub-transaction to ensure referential integrity by
-        first deleting all associated records in the 'transactions' table before
+        first deleting all associated records in the 'ledger_entries' table before
         deleting the parent record in the 'accounts' table.
 
         Args:
@@ -880,9 +848,8 @@ class MySQLRepository:
 
         Raises:
             TypeError: If the provided arguments are not of the expected types.
-            RuntimeError: If called outside an active `unit_of_work()` block, enforcing the Unit of Work.
+            RuntimeError: If called outside an active `unit_of_work()` block.
             DataNotFoundError: If the account to be deleted does not exist.
-            RepositoryError: If a database error occurs during the deletion process.
         """
         verify.verify_instance(branch_code, str)
         verify.verify_instance(account_num, str)
@@ -893,9 +860,9 @@ class MySQLRepository:
             )
 
         del_trans_sql = (
-            "DELETE t FROM transactions as t "
+            "DELETE le FROM ledger_entries as le "
             "JOIN accounts as a "
-            "ON t.account_id = a.id "
+            "ON le.account_id = a.id "
             "WHERE a.branch_code = %s AND a.account_num = %s "
         )
 
