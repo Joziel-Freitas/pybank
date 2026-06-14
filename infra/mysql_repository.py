@@ -8,6 +8,7 @@ ACID compliance for financial operations, and maps raw database rows back
 into pure Python domain objects.
 """
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from os import environ
@@ -72,7 +73,7 @@ class MySQLRepository:
         self._in_transaction = False
 
     @contextmanager
-    def unit_of_work(self):
+    def unit_of_work(self) -> Iterator[None]:
         """
         Macro Context Manager for orchestrating Units of Work (Unit of Work Pattern).
 
@@ -88,10 +89,12 @@ class MySQLRepository:
             SystemBaseException: Propagates all expected domain, security, and validation
                 errors, triggering a safe rollback before continuing up the stack.
             KeyError, RuntimeError, TypeError, ValueError: Propagates standard Python
-                exceptions (typically representing implementation bugs or strict state
-                validations), triggering a rollback and crashing the flow as expected.
-            RepositoryError: Catches unexpected infrastructure or database driver errors,
-                triggers a rollback to prevent zombie locks, and re-raises as a safe ACL exception.
+                exceptions, triggering a rollback and crashing the flow as expected.
+            RepositoryError: Translates specific 'pymysql' driver exceptions into a
+                safe Domain-level exception after triggering a rollback.
+            RuntimeError: Acts as a final safety net for unmapped critical exceptions,
+                guaranteeing a database rollback before crashing the flow to prevent
+                zombie locks or data corruption.
         """
         try:
             self._in_transaction = True
@@ -100,9 +103,12 @@ class MySQLRepository:
         except (SystemBaseException, KeyError, RuntimeError, TypeError, ValueError):
             self._connection.rollback()
             raise
-        except Exception as e:
+        except err.MySQLError as e:
             self._connection.rollback()
             raise RepositoryError(f"Data persistence failed due DB error: {e}") from e
+        except Exception as e:
+            self._connection.rollback()
+            raise RuntimeError(f"Critical failure due to unmapped error: {e}") from e
         finally:
             self._in_transaction = False
 
@@ -158,7 +164,10 @@ class MySQLRepository:
         return result["id"]
 
     def _insert_ledger_entries(
-        self, cursor: cursors.DictCursor, account_id: int, events: tuple[LedgerEventDTO]
+        self,
+        cursor: cursors.DictCursor,
+        account_id: int,
+        events: tuple[LedgerEventDTO, ...],
     ) -> None:
         """
         Helper method to insert ledger event records for auditing purposes.
@@ -273,7 +282,9 @@ class MySQLRepository:
 
                 self._insert_account_record(cursor, account, holder_id, password_hash)
 
-    def save_transaction(self, account: Account, events: tuple[LedgerEventDTO]) -> None:
+    def save_transaction(
+        self, account: Account, events: tuple[LedgerEventDTO, ...]
+    ) -> None:
         """
         Executes an atomic sub-operation to update the account state and
         record the corresponding financial events in the ledger.
@@ -446,32 +457,26 @@ class MySQLRepository:
         for_update: bool = False,
     ) -> AccountProjectionDTO:
         """
-        Dynamic Query Builder for retrieving specific slices of account data.
+        Dynamic Query Builder for retrieving identity and routing slices of account data.
 
-        Acts as an optimized 'micro-ORM', allowing the Domain layer to request
-        strictly the data needed for a specific context (e.g., UI rendering or
-        read-only business rules) without the overhead of full Entity hydration.
-        By default, it returns a lightweight baseline of routing, status, and
-        financial balance data. Additional data domains can be appended via
-        boolean flags.
+        Acts as an optimized 'micro-ORM'. Explicitly omits financial balances from the
+        query, forcing the Domain layer to hydrate the full Account entity for any
+        monetary operations or displays, thereby guaranteeing business rule enforcement.
 
         Args:
             branch_code (str): The 4-digit string representing the branch.
             account_num (str): The unique 8-digit string representing the account.
             access_info (bool, optional): Appends 'password_hash' and 'failed_login_attempts'.
-            holder_info (bool, optional): Executes a JOIN to append 'holder_name', 'cpf', and 'birth_date'.
-            for_update (bool, optional): Applies a pessimistic lock (FOR UPDATE)
-                to prevent TOCTOU race conditions. Defaults to False.
+            holder_info (bool, optional): Executes a JOIN to append holder data.
+            for_update (bool, optional): Applies a pessimistic lock (FOR UPDATE).
 
         Returns:
             AccountProjectionDTO: An immutable nested DTO containing the requested data slice.
-                Baseline fields always guaranteed: 'branch_code', 'account_num',
-                'account_type', 'is_frozen', 'balance'.
+                Baseline fields guaranteed: 'branch_code', 'account_num', 'account_type', 'is_frozen'.
 
         Raises:
             TypeError: If the provided arguments are not of the expected types.
-            RuntimeError: If `for_update` is True but the method is called outside
-                an active `unit_of_work()` block, preventing dangling database locks.
+            RuntimeError: If `for_update` is True but called outside a `unit_of_work()`.
             DataNotFoundError: If the requested account does not exist.
         """
         verify.verify_instance(branch_code, str)
@@ -490,7 +495,6 @@ class MySQLRepository:
             "a.account_num",
             "a.account_type",
             "a.is_frozen",
-            "a.balance",
         ]
 
         if access_info:
@@ -543,7 +547,6 @@ class MySQLRepository:
             account_num=result["account_num"],
             account_type=result["account_type"],
             is_frozen=result["is_frozen"],
-            balance=result["balance"],
             access_info=access_dto,
             holder_info=holder_dto,
         )

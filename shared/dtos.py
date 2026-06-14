@@ -110,31 +110,6 @@ class WithdrawalSimulationDTO:
 
 
 @dataclass(frozen=True, slots=True)
-class AccrualEventDTO:
-    """
-    Data Transfer Object representing a calculated time-based financial adjustment.
-
-    Acts as an immutable payload transporting the results of interest or yield
-    calculations from the Domain layer to the outer architectural bounds.
-    It is used both for generating read-only projections on user statements
-    and for materializing actual ledger events during state-mutating operations.
-
-    Attributes:
-        amount (Decimal): The specific monetary value of the adjustment.
-            Expected to be positive for yields and negative for interest charges.
-        accrual_type (AccrualType): The semantic label categorizing the nature
-            of the adjustment (e.g., YIELD or INTEREST).
-        event_date (date): The exact temporal anchor for the calculation. Validates the
-            historical accuracy of the projection, ensuring the payload represents
-            the financial reality precisely at the time of instantiation.
-    """
-
-    amount: Decimal
-    accrual_type: AccrualType
-    event_date: date
-
-
-@dataclass(frozen=True, slots=True)
 class LedgerEventDTO:
     """
     Data Transfer Object representing a discrete event bound for the ledger.
@@ -165,14 +140,47 @@ class LedgerEventDTO:
 
 
 @dataclass(frozen=True, slots=True)
+class AccountFinancialDTO:
+    """
+    Data Transfer Object representing the absolute financial truth of an Account.
+
+    Acts as a highly cohesive, composable payload containing all calculated monetary
+    metrics. By incorporating dynamic accruals (yields/interest) and the mathematically
+    accurate 'available_balance' at a specific timestamp ('issue_at'), it ensures
+    that the Presentation layer never displays a raw or misleading database balance.
+
+    Attributes:
+        balance (Decimal): The base raw financial balance.
+        accrual (Decimal): The specific monetary value of the pending adjustment.
+            Evaluates to Decimal("0.00") if no accrual is pending.
+        accrual_type (AccrualType | None): The semantic label of the adjustment
+            (YIELD or INTEREST). Strictly None if the accrual is exactly zero.
+        overdraft_limit (Decimal | None): The maximum overdraft limit, or None.
+        available_overdraft (Decimal | None): The currently available overdraft amount, or None.
+        available_balance (Decimal): The true purchasing power, factoring in balance,
+            overdrafts, and pending accruals.
+        issue_at (date): The exact temporal anchor validating the accuracy of this snapshot.
+    """
+
+    balance: Decimal
+    accrual: Decimal
+    accrual_type: AccrualType | None
+    overdraft_limit: Decimal | None
+    available_overdraft: Decimal | None
+    available_balance: Decimal
+    issue_at: date
+
+
+@dataclass(frozen=True, slots=True)
 class AccountSummaryDTO:
     """
-    A read-only, non-sensitive snapshot of an account's basic state.
+    A comprehensive, multi-stage read-only snapshot of an account's state.
 
-    Used primarily in the 'Lobby' (Identity-First) phase of the presentation layer.
-    It deliberately excludes financial data (like balance or overdraft limits)
-    to allow safe routing and dynamic menu rendering (e.g., blocking access to
-    frozen accounts) without requiring full Vault authorization (AccessToken).
+    Functions as a flexible facade for the Presentation layer. In the 'Lobby' phase,
+    it contains only basic routing and identity data to render menus safely.
+    Upon strict Vault authorization, it acts as an aggregate root, composing purely
+    financial and accrual data DTOs into a single transport object without leaking
+    the core domain entities.
 
     Attributes:
         holder_name (str): The full name of the account holder.
@@ -180,6 +188,10 @@ class AccountSummaryDTO:
         account_num (str): The unique account identifier.
         account_type (str): The class name representing the account type (e.g., 'CheckingAccount').
         is_frozen (bool): Flag indicating if the account is active or frozen.
+        financial_info (AccountFinancialDTO | None): The account's core financial metrics.
+            Hydrated only after explicit Vault authorization; otherwise None.
+        accrual_info (AccrualEventDTO | None): Pending time-based financial adjustments
+            (yields or interests) ready to be applied or displayed.
     """
 
     holder_name: str
@@ -187,37 +199,7 @@ class AccountSummaryDTO:
     account_num: str
     account_type: str
     is_frozen: bool
-
-
-@dataclass(frozen=True, slots=True)
-class AccountFinancialDTO:
-    """
-    Data Transfer Object representing a read-only snapshot of an Account's financial state.
-
-    Acts as a secure payload to transport account information from the Domain layer
-    to the Presentation layer. By encapsulating only primitive data types, it ensures
-    the core Account entity does not leak into the UI, preserving strict Domain-Driven
-    Design (DDD) boundaries.
-
-    Attributes:
-        holder_name (str): The full name of the account holder.
-        branch_code (str): The 4-digit branch code where the account is registered.
-        account_num (str): The 8-digit unique account number.
-        account_type (str): The classification of the account (e.g., Checking, Savings).
-        balance (Decimal): The current available financial balance.
-        overdraft_limit (Decimal | None): The maximum overdraft limit. None if the account
-            does not support overdraft (e.g., SavingsAccount).
-        available_overdraft (Decimal | None): The currently available overdraft amount.
-            None if the account does not support overdraft.
-    """
-
-    holder_name: str
-    branch_code: str
-    account_num: str
-    account_type: str
-    balance: Decimal
-    overdraft_limit: Decimal | None
-    available_overdraft: Decimal | None
+    financial_info: AccountFinancialDTO | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,7 +218,7 @@ class StatementDTO:
             a requested start date.
     """
 
-    account_info: AccountFinancialDTO
+    account_info: AccountSummaryDTO
     transactions: tuple[dict[str, Any], ...]
 
 
@@ -281,20 +263,17 @@ class HolderProjectionDTO:
 @dataclass(frozen=True, slots=True)
 class AccountProjectionDTO:
     """
-    Root Data Transfer Object representing a dynamic, composed projection of an Account.
+    Root Data Transfer Object representing a dynamic, lightweight projection of an Account.
 
-    Utilizes Composition over Inheritance to structure raw database results
-    into a predictable, type-safe "Russian Doll" architecture. The baseline
-    routing, status, and core financial fields are always guaranteed. The nested
-    context DTOs (access, holder) dynamically reflect the flags passed to the
-    Repository's query builder.
+    Utilizes Composition over Inheritance to structure raw database results.
+    Stripped of all financial balance data to enforce domain-driven constraints;
+    retrieving financial truth now strictly requires full Entity hydration.
 
     Attributes:
         branch_code (str): The baseline 4-digit branch code.
         account_num (str): The baseline 8-digit account number.
         account_type (str): The baseline classification of the account.
         is_frozen (bool): The baseline operational status of the account.
-        balance (Decimal): The baseline current authoritative balance.
         access_info (AccessProjectionDTO | None): The nested security context, or None.
         holder_info (HolderProjectionDTO | None): The nested identity context, or None.
     """
@@ -303,6 +282,5 @@ class AccountProjectionDTO:
     account_num: str
     account_type: str
     is_frozen: bool
-    balance: Decimal
     access_info: AccessProjectionDTO | None
     holder_info: HolderProjectionDTO | None
