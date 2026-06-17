@@ -20,6 +20,8 @@ verification, maintaining absolute consistency across the financial domain.
 
 import hashlib
 import hmac
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import ClassVar
@@ -35,6 +37,7 @@ from shared.dtos import (
     NewAccountDTO,
     NewAccountHolderDTO,
     StatementDTO,
+    WithdrawalSimulationDTO,
 )
 from shared.exceptions import (
     AccountAlreadyActiveError,
@@ -902,46 +905,47 @@ class Bank:
                 "The intended operation could not be persisted due to an internal error"
             ) from e
 
+    @contextmanager
     def execute_withdraw(
-        self, access_token: AccessToken, amount: Decimal, use_overdraft: bool = False
-    ) -> None:
+        self, access_token: AccessToken, amount: Decimal
+    ) -> Iterator[WithdrawalSimulationDTO]:
         """
-        Executes a secure withdrawal operation and persists it to the database.
+        Orchestrates a secure withdrawal operation using a state-locked context manager.
 
-        This method operates under a 'Zero Trust' security model. Acting as the
-        Aggregate Root, the Bank resolves the target Account strictly from the
-        provided AccessToken, ensuring no external layer can inject a tampered
-        Account entity.
+        This method acts as a transactional Gatekeeper. It operates under a strict
+        Zero Trust model, verifying cryptographic identity before granting access to
+        the vault. To prevent Time-of-Check to Time-of-Use (TOCTOU) race conditions,
+        it employs an atomic Unit of Work with a pessimistic database lock.
 
-        It utilizes a Unit of Work with a pessimistic lock to guarantee exclusive
-        access during the transaction. It delegates the mathematical evaluation,
-        status checks, and limit usage directly to the hydrated Account instance.
+        Execution Flow:
+        1. Locks the Account entity in the database.
+        2. Yields a `WithdrawalSimulationDTO` to the caller (Controller), pausing execution.
+        3. The caller uses this DTO to optionally prompt the user for consent (e.g., if
+           overdraft is required) and either continues or aborts the context.
+        4. If control returns to this method, the mathematical withdrawal and ledger
+           events are executed against the actively locked Entity and persisted.
 
         Args:
             access_token (AccessToken): A valid, securely signed vault token.
-            amount (Decimal): The positive monetary amount to be withdrawn.
-            use_overdraft (bool, optional): Explicit authorization to utilize the
-                account's credit limit if the amount exceeds the standard balance.
-                Defaults to False.
+            amount (Decimal): The positive monetary amount requested for withdrawal.
+
+        Yields:
+            WithdrawalSimulationDTO: A detailed projection indicating authorization
+                status and exact credit/overdraft requirements.
 
         Raises:
             TypeError: If the arguments are not of the expected types.
             ExpiredTokenError: If the token's TTL has passed.
-            BankSecurityError: If the cryptographic signature of the token is invalid
-                or has been tampered with.
-            BankAuthenticationError: If the account was deleted during the active
-                session (TOCTOU mitigation).
+            BankSecurityError: If the cryptographic signature of the token is tampered with.
+            BankAuthenticationError: If the account was deleted during the active session.
             BankAccessError: If the target account is frozen during the operation.
-            OverdraftRequiredError: If the requested amount exceeds the balance
-                and explicit overdraft consent (`use_overdraft=True`) was not provided.
-            InvalidWithdrawError: If the withdrawal amount violates business rules
-                (e.g., negative amount, exceeds total available funds).
-            BankUnavailableError: If the transaction could not be persisted due to an
-                internal database error.
+            InsufficientFundsError: If the requested amount exceeds total available funds.
+            ValueError: If the withdrawal amount violates business rules (e.g., minimum ATM limit).
+            BankUnavailableError: If the transaction could not be persisted due to an internal error.
             RuntimeError: If the repository fails to return the requested DTO state.
         """
         verify.verify_instance(amount, Decimal)
-        verify.verify_instance(use_overdraft, bool)
+        verify.verify_instance(access_token, AccessToken)
 
         try:
             account_info = self._repository.get_account_projection(
@@ -961,18 +965,18 @@ class Bank:
 
         try:
             with self._repository.unit_of_work():
-                account = self._repository.get_account(
+                account_obj = self._repository.get_account(
                     access_token.branch_code, access_token.account_num, for_update=True
                 )
+                simulation = account_obj.simulate_withdrawal(amount)
+                yield simulation
                 try:
-                    transaction_type = account.withdraw(
-                        amount, use_overdraft=use_overdraft
-                    )
+                    events = account_obj.withdrawal(amount)
                 except FrozenAccountError:
                     raise BankAccessError(
                         "This account is frozen and cannot be accessed"
                     )
-                self._repository.save_transaction(account, -amount, transaction_type)
+                self._repository.save_transaction(account_obj, events)
         except DataNotFoundError as e:
             raise BankAuthenticationError(
                 "Authentication failed: Account no longer exists"
