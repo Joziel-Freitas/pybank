@@ -55,11 +55,9 @@ from shared.exceptions import (
     DuplicatedAccountHolderError,
     HomeBranchRestrictionError,
     InactiveUserError,
+    InsufficientFundsError,
     InvalidBirthDateError,
-    InvalidDepositError,
-    InvalidWithdrawError,
     NotEmptyAccountError,
-    OverdraftRequiredError,
     SecurityError,
     UserAbortError,
 )
@@ -250,7 +248,7 @@ class BaseController(ABC):
         error_key = exceptions.map_exceptions(error)
         error_msg = self._ui_message_map[context_key][error_key]
 
-        views.system_output(error_msg, kwargs=kwargs, wait=True, clean=True)
+        views.system_output(error_msg, wait=True, clean=True, kwargs=kwargs)
 
     def _handle_info_ui(
         self,
@@ -276,7 +274,7 @@ class BaseController(ABC):
         """
         info_msg = self._ui_message_map[context_key][info_key]
 
-        views.system_output(info_msg, kwargs=kwargs, wait=wait, clean=clean)
+        views.system_output(info_msg, wait=wait, clean=clean, kwargs=kwargs)
 
 
 class OnboardingController(BaseController, SharedPromptsMixin):
@@ -423,7 +421,7 @@ class OnboardingController(BaseController, SharedPromptsMixin):
 
 class TransactionController(BaseController):
     """
-    Controller responsible for executing banking transactions (Deposit, Withdraw, Statement).
+    Controller responsible for executing banking transactions (Deposit, Withdrawal, Statement).
 
     Operates in a hybrid state model based on the provided token:
     - Public Mode (None): Executes anonymous third-party deposits.
@@ -437,14 +435,8 @@ class TransactionController(BaseController):
         "account_num": validators.boolean_validator_dec(
             Account.validate_account_number
         ),
-        "deposit": validators.boolean_validator_dec(Account.validate_account_deposit),
-        "withdraw": validators.boolean_validator_dec(
-            partial(
-                verify.verify_interval,
-                min_val=Account.MIN_ATM_TRANSACTION,
-                max_val=None,
-            )
-        ),
+        "deposit": validators.boolean_validator_dec(Account.validate_amount_entry),
+        "withdrawal": validators.boolean_validator_dec(Account.validate_amount_entry),
         "limit": validators.boolean_validator_dec(UserConfirmType),
         "statement": validators.boolean_validator_dec(
             partial(verify.verify_interval, min_val=1, max_val=3)
@@ -522,7 +514,7 @@ class TransactionController(BaseController):
     @property
     def _active_access_token(self) -> AccessToken:
         """
-        Guard clause for Vault operations (Withdraw, Statement).
+        Guard clause for Vault operations (withdrawal, Statement).
         Guarantees that the token is specifically an AccessToken.
         """
         if not isinstance(self._token, AccessToken):
@@ -539,7 +531,7 @@ class TransactionController(BaseController):
             Decimal: The exact transaction amount requested by the user.
         """
         transaction_mapper = {
-            TransactionMenuType.WITHDRAW: "withdraw",
+            TransactionMenuType.WITHDRAWAL: "withdrawal",
             TransactionMenuType.DEPOSIT: "deposit",
         }
 
@@ -570,34 +562,43 @@ class TransactionController(BaseController):
         int_user_in = _assert_input(user_in_raw, int)
         return UserConfirmType(int_user_in)
 
-    def _handle_withdraw(self) -> None:
+    def _handle_withdrawal(self) -> None:
         """
-        Manages the complete stateful withdrawal workflow.
+        Manages the complete stateful withdrawal workflow using a pessimistic lock.
 
-        Requests the amount, dispatches to the Bank, handles dynamic fallback
-        prompts for overdraft limits, and traps business constraint errors.
+        Requests the withdrawal amount and initiates an isolated transaction context
+        with the Bank. It evaluates the resulting `WithdrawalSimulationDTO`:
+        - If overdraft is required, it dynamically pauses the execution, holding
+          the database lock, to prompt the user for explicit consent with the
+          exact required credit amount.
+        - If consent is denied, it raises a UserAbortError, gracefully rolling
+          back the transaction context.
+        - If consent is granted (or not needed), the context yields, and the
+          Bank finalizes the state mutation.
         """
         amount = self._get_transaction_value()
-        use_overdraft = False
 
-        for _ in range(2):
-            try:
-                self._bank_instance.execute_withdraw(
-                    self._active_access_token, amount, use_overdraft=use_overdraft
-                )
-                self._handle_info_ui("info", "withdraw_ok", wait=True)
-                break
-            except OverdraftRequiredError as e:
-                self._handle_exception_ui("withdraw_errors", e)
-                proceed = self._confirm_overdraft()
+        try:
+            with self._bank_instance.execute_withdraw(
+                self._active_access_token, amount
+            ) as simulation:
 
-                if proceed == UserConfirmType.NO:
-                    raise UserAbortError
+                if simulation.use_overdraft:
+                    self._handle_info_ui(
+                        "info",
+                        "use_limit",
+                        wait=True,
+                        required=simulation.overdraft_required,
+                    )
+                    proceed = self._confirm_overdraft()
 
-                use_overdraft = True
-            except (BankAccessError, InvalidWithdrawError) as e:
-                self._handle_exception_ui("withdraw_errors", e)
-                raise ControllerOperationError
+                    if proceed == UserConfirmType.NO:
+                        raise UserAbortError
+
+            self._handle_info_ui("info", "withdraw_ok", wait=True)
+        except (BankAccessError, InsufficientFundsError) as e:
+            self._handle_exception_ui("withdraw_errors", e)
+            raise ControllerOperationError
 
     def _handle_deposit(self) -> None:
         """
@@ -609,8 +610,13 @@ class TransactionController(BaseController):
         - Unauthenticated (Public): Prompts the user to manually input the target
           branch and account.
 
-        Collects the deposit amount, presents a confirmation summary, and dispatches
-        the transaction request to the core Bank aggregate.
+        Collects the deposit amount, validates it at the boundary (Fail-Fast),
+        presents a confirmation summary, and dispatches the transaction request
+        to the core Bank aggregate.
+
+        Raises:
+            ValueError: If the user provides a syntactically valid but business-invalid
+                amount (e.g., below MIN_ATM_TRANSACTION) that bypasses initial I/O checks.
         """
         if self._token:
             branch_code = self._token.branch_code
@@ -632,7 +638,7 @@ class TransactionController(BaseController):
             )
             info_dict = asdict(target_info)
             views.confirm_deposit(info_dict, amount)
-        except AccountHolderNotFoundError as e:
+        except AccountNotFoundError as e:
             self._handle_exception_ui("deposit_errors", e)
             raise ControllerOperationError
 
@@ -652,28 +658,26 @@ class TransactionController(BaseController):
         except (AccountNotFoundError, BankAccessError) as e:
             self._handle_exception_ui("deposit_errors", e)
             raise ControllerOperationError
-        except InvalidDepositError:
-            raise RuntimeError("Critical error in I/O deposit value validation logic")
 
     def _handle_balance_statement(self) -> None:
         """
-        Orchestrates the workflow for displaying the account balance and transaction statement.
+        Orchestrates the workflow for displaying the account balance and ledger statement.
 
         Follows a progressive disclosure UI pattern:
         1. Securely retrieves and displays the current account balance via a
-           read-only AccountInfoDTO.
+           read-only AccountSummaryDTO (with the financial payload hydrated).
         2. Prompts the user to select a historical period (30, 90, or 180 days)
            for a detailed statement.
         3. Calculates the cutoff date, fetches the mathematically consistent
            StatementDTO, and delegates the final rendering of the chronological
-           ledger to the presentation layer.
+           ledger events to the presentation layer.
         """
-        account_info_dto = self._bank_instance.get_financial_summary(
-            self._active_access_token
+        account_summary = self._bank_instance.get_account_summary(
+            self._active_access_token, request_financial=True
         )
-        account_info_dict = asdict(account_info_dto)
+        account_summary_dict = asdict(account_summary)
 
-        views.show_balance_statement(account_info_dict)
+        views.views_balance_statement(account_summary_dict)
 
         days_mapper = {1: 30, 2: 90, 3: 180}
         user_in_raw = io_utils.get_single_input(
@@ -687,11 +691,11 @@ class TransactionController(BaseController):
             self._active_access_token, start_date
         )
 
-        account_info_dto = statement_dto.account_info
-        account_info_dict = asdict(account_info_dto)
-        transactions = statement_dto.transactions
+        account_summary = statement_dto.account_info
+        account_summary_dict = asdict(account_summary)
+        events = statement_dto.financial_events
 
-        views.show_balance_statement(account_info_dict, transactions)
+        views.views_balance_statement(account_summary_dict, events)
 
     def run_controller(self) -> None:
         """
@@ -700,8 +704,8 @@ class TransactionController(BaseController):
         match self._transaction_type:
             case TransactionMenuType.DEPOSIT:
                 self._handle_deposit()
-            case TransactionMenuType.WITHDRAW:
-                self._handle_withdraw()
+            case TransactionMenuType.WITHDRAWAL:
+                self._handle_withdrawal()
             case TransactionMenuType.STATEMENT:
                 self._handle_balance_statement()
             case _:
@@ -999,8 +1003,13 @@ class BankSystemController(BaseController, SharedPromptsMixin):
 
     def _close_account(self) -> None:
         """
-        Handles the complete account termination workflow, applying constraints
-        such as enforcing a strict zero-balance policy before deletion.
+        Handles the complete account termination workflow.
+
+        Enforces strict domain constraints, most notably a absolute zero-balance
+        policy prior to deletion. If the account is not empty, it dynamically
+        fetches the 'available_balance' (which factors in pending yields or
+        unpaid interest) to precisely inform the client of the exact settlement
+        amount required before closure can proceed.
         """
         if self._access_token is None:
             raise RuntimeError("AccessToken is required to close an account")
@@ -1010,16 +1019,24 @@ class BankSystemController(BaseController, SharedPromptsMixin):
             self._handle_info_ui("info", "close_acc_ok", wait=True, clean=True)
             raise ControllerCredentialsError
         except NotEmptyAccountError:
-            account_info_dto = self._bank_instance.get_financial_summary(
-                self._access_token
+            account_summary_dto = self._bank_instance.get_account_summary(
+                self._access_token, request_financial=True
             )
+
+            if not account_summary_dto.financial_info:
+                raise RuntimeError("Invalid DTO state")
+
             key = (
                 "close_acc_positive"
-                if account_info_dto.balance > 0
+                if account_summary_dto.financial_info.available_balance > 0
                 else "close_acc_negative"
             )
             self._handle_info_ui(
-                "info", key, balance=account_info_dto.balance, wait=True, clean=True
+                "info",
+                key,
+                wait=True,
+                clean=True,
+                balance=account_summary_dto.financial_info.available_balance,
             )
             raise ControllerOperationError
         except HomeBranchRestrictionError as e:
@@ -1070,15 +1087,15 @@ class BankSystemController(BaseController, SharedPromptsMixin):
 
     def _vault_hub(self, operation: OperationMenuType) -> None:
         """
-        The routing endpoint for Vault-level operations (Withdraw, Statement, Change Password, Close Account).
+        The routing endpoint for Vault-level operations (Withdrawal, Statement, Change Password, Close Account).
         Demands AccessToken authorization.
         """
         if not self._access_token:
             self._access_token = self._ensure_vault_access()
 
         match operation:
-            case OperationMenuType.WITHDRAW:
-                self._run_transaction_controller(TransactionMenuType.WITHDRAW)
+            case OperationMenuType.WITHDRAWAL:
+                self._run_transaction_controller(TransactionMenuType.WITHDRAWAL)
             case OperationMenuType.STATEMENT:
                 self._run_transaction_controller(TransactionMenuType.STATEMENT)
             case OperationMenuType.CHANGE_PASSWORD:
@@ -1137,7 +1154,7 @@ class BankSystemController(BaseController, SharedPromptsMixin):
                         self._unfreeze_account()
                     case OperationMenuType():
                         self._vault_hub(operation)
-                        if operation == OperationMenuType.WITHDRAW:
+                        if operation == OperationMenuType.WITHDRAWAL:
                             self._end_session()
                     case _:
                         raise RuntimeError("Critical error: Unmapped type")

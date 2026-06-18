@@ -51,6 +51,7 @@ TRANSACTION_MESSAGES: dict[str, dict[str, str]] = {
     "info": {
         "deposit_ok": "Depósito realizado com sucesso",
         "min_value": "Valor mínimo para transação: R$ {min_atm}",
+        "use_limit": "Valor insuficiente em conta. Para continuar, Autorize o uso de R$ {required} do cheque especial",
         "withdrawal_ok": "Saque realizado com sucesso",
     },
     "deposit_errors": {
@@ -60,6 +61,5 @@ TRANSACTION_MESSAGES: dict[str, dict[str, str]] = {
     "withdrawal_errors": {
         "acc_frozen": "Sua conta foi BLOQUEADA por segurança. Desbloqueie a conta pra usá-la novamente",
         "value": "Valor indisponível para saque. Transação não autorizada",
-        "use_limit": "Valor insuficiente em conta. Para sacar essa quantia autorize o uso do limite especial",
     },
 }

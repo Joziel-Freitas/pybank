@@ -23,6 +23,20 @@ from shared.exceptions import InactiveUserError
 
 SCREEN_WIDTH = 45
 
+TRANSLATION_MAP = {
+    "financial_events": {
+        "DEPOSIT": "DEPOSITO",
+        "WITHDRAWAL": "SAQUE",
+        "OVERDRAFT_WITHDRAWAL": "SAQUE CHEQUE ESP.",
+        "YIELD": "RENDIMENTOS",
+        "INTEREST": "JUROS CHEQUE ESP.",
+    },
+    "account_type": {
+        "CheckingAccount": "CONTA CORRENTE",
+        "SavingsAccount": "CONTA POUPANÇA",
+    },
+}
+
 
 def welcome() -> None:
     """Displays the application's startup banner and initial instructions."""
@@ -32,9 +46,6 @@ def welcome() -> None:
     print("*" * 45)
     print(f"{'Escolha uma das opções no menu': ^45}")
     print("-" * 45)
-
-
-# Dictionary mapping internal status keys to user-friendly messages
 
 
 def _format_currency(value_raw: Decimal) -> str:
@@ -56,9 +67,9 @@ def _format_currency(value_raw: Decimal) -> str:
 
 def system_output(
     message: str,
-    kwargs: dict[str, Any] | None = None,
     wait: bool = False,
     clean: bool = False,
+    kwargs: dict[str, Any] | None = None,
 ) -> None:
     """
     Renders a standardized, formatted system message to the terminal.
@@ -70,12 +81,12 @@ def system_output(
 
     Args:
         message (str): The pre-formatted text string template.
-        kwargs (dict, optional): Dynamic values for the message template.
-            Defaults to None.
         wait (bool): If True, pauses execution for 5 seconds to ensure
             readability of important messages. Defaults to False.
         clean (bool): If True, clears the terminal screen before rendering
             the message. Defaults to False.
+        kwargs (dict, optional): Dynamic values for the message template.
+            Defaults to None.
     """
     msg = message
 
@@ -102,7 +113,7 @@ def system_output(
             sleep(1)
 
 
-def confirm_deposit(account_info: dict[str, Any], amount: Decimal) -> None:
+def confirm_deposit(deposit_info: dict[str, Any], amount: Decimal) -> None:
     """
     Renders the deposit confirmation screen for the ATM terminal.
 
@@ -113,17 +124,15 @@ def confirm_deposit(account_info: dict[str, Any], amount: Decimal) -> None:
     data (e.g., masked CPF).
 
     Args:
-        account_info (dict[str, Any]): A dictionary representation of the
+        deposit_info (dict[str, Any]): A dictionary representation of the
             DepositTargetDTO containing the target routing and identity data.
         amount (Decimal): The exact financial value to be deposited.
     """
-    account_type_mapper = {
-        "CheckingAccount": "CONTA CORRENTE",
-        "SavingsAccount": "CONTA POUPANÇA",
-    }
-
-    raw_name = account_info["holder_name"]
-    raw_cpf = account_info["holder_cpf"]
+    raw_name = deposit_info["holder_name"]
+    raw_cpf = deposit_info["holder_cpf"]
+    branch_code = deposit_info["branch_code"]
+    account_num = deposit_info["account_num"]
+    account_type = TRANSLATION_MAP["account_type"][deposit_info["account_type"]]
 
     name = raw_name
     names_list = raw_name.split()
@@ -145,10 +154,8 @@ def confirm_deposit(account_info: dict[str, Any], amount: Decimal) -> None:
     print("-" * 45)
     print(f"FAVORECIDO: {name[:32]}")
     print(f"CPF DO FAVORECIDO: {cpf}")
-    print(f"AGÊNCIA: {account_info['branch_code']}")
-    print(
-        f"CONTA: {account_info['account_num']} | {account_type_mapper[account_info['account_type']]}"
-    )
+    print(f"AGÊNCIA: {branch_code}")
+    print(f"CONTA: {account_num} | {account_type}")
     print(f"VALOR: R$ {_format_currency(amount)}")
 
 
@@ -165,10 +172,6 @@ def _balance_statement_header(account_info: dict[str, Any]) -> None:
     """
     subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
 
-    account_type_mapper = {
-        "CheckingAccount": "CONTA CORRENTE",
-        "SavingsAccount": "CONTA POUPANÇA",
-    }
     dt = datetime.now()
     date = dt.today().strftime("%d/%m/%Y")
     time = dt.time().strftime("%H:%M:%S")
@@ -176,7 +179,7 @@ def _balance_statement_header(account_info: dict[str, Any]) -> None:
     name = account_info["holder_name"]
     branch_code = account_info["branch_code"]
     account_num = account_info["account_num"]
-    account_type = account_type_mapper[account_info["account_type"]]
+    account_type = TRANSLATION_MAP["account_type"][account_info["account_type"]]
 
     print(f"{BANK_NAME.upper():^45}")
     print(f"{date:<10} - {'AUTO-ATENDIMENTO':^23} - {time:>10}")
@@ -188,27 +191,47 @@ def _balance_statement_header(account_info: dict[str, Any]) -> None:
     print()
 
 
-def _balance_statement_footer(account_info: dict[str, Any]) -> None:
+def _balance_statement_footer(financial_info: dict[str, Any]) -> None:
     """
     Renders the standardized financial footer for ATM screens.
 
-    Displays the current balance. If the account is a CheckingAccount with an
-    active overdraft limit, it conditionally renders the total and available limits.
+    Displays the current balance and the calculated available balance. If
+    pending accruals exist (yield or interest), they are displayed. If the
+    account has an active overdraft limit, it conditionally renders the total
+    and available limits.
 
     Args:
-        account_info (dict[str, Any]): A dictionary containing the account's
-            financial data (balance, overdraft_limit, available_overdraft).
+        financial_info (dict[str, Any]): A dictionary containing the account's
+            financial data (balance, accrual, available_balance, limits, etc.).
     """
-    balance = account_info["balance"]
-    limit = account_info["overdraft_limit"]
-    available = account_info["available_overdraft"]
+    balance = financial_info["balance"]
+    accrual = financial_info["accrual"]
+    available_balance = financial_info["available_balance"]
+    issue_at = financial_info["issue_at"].strftime("%d/%m/%Y")
+    raw_accrual_type = financial_info["accrual_type"]
+    accrual_type = None
+    if raw_accrual_type:
+        accrual_type = TRANSLATION_MAP["financial_events"][
+            financial_info["accrual_type"]
+        ]
+
+    overdraft = financial_info["overdraft_limit"]
+    available_overdraft = financial_info["available_overdraft"]
 
     print("\n" + "-" * 45)
-    print(f"{'SALDO ATUAL:':<25} R$ {_format_currency(balance):>16}")
+    print(f"{'SALDO BASE:':<25} R$ {_format_currency(balance):>16}")
 
-    if limit is not None and available is not None:
-        print(f"{'LIMITE CHEQUE ESPECIAL:':<25} R$ {_format_currency(limit):>16}")
-        print(f"{'LIMITE DISPONÍVEL:':<25} R$ {_format_currency(available):>16}")
+    if accrual_type:
+        print(f"{f'{accrual_type}:':<25} R$ {_format_currency(accrual):>16}")
+
+    print(f"{'SALDO DISPONÍVEL:':<25} R$ {_format_currency(available_balance):>16}")
+    print(f"{'VALOR DISPONÍVEL EM:':<25} {issue_at:>16}")
+
+    if overdraft is not None and available_overdraft is not None:
+        print(f"{'LIMITE CHEQUE ESPECIAL:':<25} R$ {_format_currency(overdraft):>16}")
+        print(
+            f"{'LIMITE DISPONÍVEL:':<25} R$ {_format_currency(available_overdraft):>16}"
+        )
 
     print("-" * 45 + "\n")
 
@@ -218,40 +241,36 @@ def _balance_statement_footer(account_info: dict[str, Any]) -> None:
         raise InactiveUserError("Inactivity timeout during statement view") from e
 
 
-def show_balance_statement(
-    account_info: dict[str, Any], transactions: tuple[dict[str, Any], ...] | None = None
+def views_balance_statement(
+    account_summary: dict[str, Any],
+    financial_events: tuple[dict[str, Any], ...] | None = None,
 ) -> None:
     """
     Orchestrates the terminal view for both Balance and Statement operations.
 
     Acts as a dual-purpose render function based on the presence of the
-    'transactions' argument:
+    'financial_events' argument:
     - If None: Renders a simple Balance view (Header + Footer).
     - If empty tuple: Renders the Statement view indicating no recent movements.
-    - If populated tuple: Iterates through the transaction history, rendering
-      the previous balance and the chronological ledger before the current totals.
+    - If populated tuple: Iterates through the ledger history, rendering
+      the previous balance and the chronological events before the current totals.
 
     Args:
-        account_info (dict[str, Any]): A dictionary representation of the AccountInfoDTO.
-        transactions (tuple[dict[str, Any], ...] | None, optional): A chronological
-            sequence of transaction dictionaries. Defaults to None.
+        account_summary (dict[str, Any]): A dictionary representation of the AccountSummaryDTO.
+        financial_events (tuple[dict[str, Any], ...] | None, optional): A chronological
+            sequence of ledger event dictionaries. Defaults to None.
     """
-    _balance_statement_header(account_info)
+    financial_info = account_summary.pop("financial_info")
+    _balance_statement_header(account_summary)
 
-    if not transactions:
-        if transactions is not None:
+    if not financial_events:
+        if financial_events is not None:
             print(f"{'Nenhuma movimentação registrada no período':^45}")
 
-        _balance_statement_footer(account_info)
+        _balance_statement_footer(financial_info)
         return
 
-    transaction_type_map = {
-        "DEPOSIT": "DEPOSITO",
-        "WITHDRAWAL": "SAQUE",
-        "OVERDRAFT_WITHDRAWAL": "SAQUE CHEQUE ESP.",
-    }
-
-    first_item = transactions[0]
+    first_item = financial_events[0]
     previous_balance = first_item["previous_balance"]
     first_date: datetime = first_item["created_at"].strftime("%d/%m")
 
@@ -262,14 +281,14 @@ def show_balance_statement(
     )
     print("\n" + "-" * 45)
 
-    for t in transactions:
-        t_date = t["created_at"].strftime("%d/%m")
-        t_type = transaction_type_map[t["transaction_type"]]
-        t_amount = t["amount"]
+    for event in financial_events:
+        t_date = event["created_at"].strftime("%d/%m")
+        t_type = TRANSLATION_MAP["financial_events"][event["event_type"]]
+        t_amount = event["amount"]
 
         print(f"{t_date:<6}{t_type:<22} {_format_currency(t_amount):>17}")
 
-    _balance_statement_footer(account_info)
+    _balance_statement_footer(financial_info)
 
 
 def show_cards(client_cards: list[str]) -> None:
