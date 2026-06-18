@@ -862,7 +862,7 @@ class Bank:
 
         This method bypasses 'Vault' access (no password required) to allow fast
         deposits from third parties. It operates under a strict Unit of Work with
-        pessimistic locking (FOR UPDATE) to prevent race conditions. It strictly
+        exclusive transactional isolation to prevent race conditions. It strictly
         respects Domain boundaries by hydrating the target Account entity and
         delegating all mathematical and state-mutating logic to it (Tell, Don't Ask).
 
@@ -873,9 +873,9 @@ class Bank:
 
         Raises:
             TypeError: If the arguments are not of the expected types.
-            InvalidDepositError: If the deposit amount violates business rules.
+            ValueError: If the deposit amount violates business rules (e.g., minimum ATM limit).
             BankAccessError: If the target account is currently frozen, translating
-                the domain-level BlockedAccountError for the presentation layer.
+                the domain-level FrozenAccountError for the presentation layer.
             AccountNotFoundError: If the provided branch or account number does not exist.
             BankUnavailableError: If the deposit could not be persisted due to an internal error.
         """
