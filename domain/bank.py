@@ -994,18 +994,18 @@ class Bank:
 
         Operates under a Zero Trust model for data privacy. It employs a read-only
         Unit of Work to guarantee that the account summary (via AccountSummaryDTO) and
-        the transaction history are evaluated with strict temporal consistency,
+        the ledger event history are evaluated with strict temporal consistency,
         reflecting the exact same moment in time. It incorporates TOCTOU mitigation
         to ensure the account has not been deleted mid-session.
 
         Args:
             access_token (AccessToken): A valid, securely signed vault token.
-            start_date (datetime): The cutoff date for filtering transactions.
+            start_date (datetime): The cutoff date for filtering historical ledger events.
 
         Returns:
             StatementDTO: An immutable snapshot combining the account's complete
                 summary (routing, status, and precise financial truth) and its
-                chronological transaction history.
+                chronological ledger event history.
 
         Raises:
             TypeError: If the arguments do not match the expected types.
@@ -1021,7 +1021,7 @@ class Bank:
 
         try:
             with self._repository.unit_of_work():
-                transactions = self._repository.get_ledger_events(
+                events = self._repository.get_ledger_events(
                     access_token.branch_code, access_token.account_num, start_date
                 )
                 account_summary = self.get_account_summary(
@@ -1032,7 +1032,7 @@ class Bank:
                 "Authentication failed: Account no longer exists"
             ) from e
 
-        return StatementDTO(account_info=account_summary, transactions=transactions)
+        return StatementDTO(account_info=account_summary, financial_events=events)
 
     def update_password(self, access_token: AccessToken, new_password: str) -> None:
         """

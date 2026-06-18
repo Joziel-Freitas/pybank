@@ -208,18 +208,19 @@ class StatementDTO:
     Data Transfer Object representing a mathematically consistent account statement.
 
     Acts as an immutable payload combining a read-only representation of the account's
-    current state with its chronological transaction history.
+    current state with its chronological ledger event history.
 
     Attributes:
-        account_info (AccountFinancialDTO): The account's financial details and balance
-            at the exact moment of the statement generation.
-        transactions (tuple[dict[str, Any], ...]): A chronological sequence of
-            transaction records (amount and timestamp) occurring on or after
-            a requested start date.
+        account_info (AccountSummaryDTO): The account's full summary, including routing
+            details and mathematically precise financial state at the exact moment
+            of the statement generation.
+        financial_events (tuple[dict[str, Any], ...]): A chronological sequence of
+            ledger events (e.g., standard transactions, overdraft usage, or time-based
+            accruals) occurring on or after a requested start date.
     """
 
     account_info: AccountSummaryDTO
-    transactions: tuple[dict[str, Any], ...]
+    financial_events: tuple[dict[str, Any], ...]
 
 
 @dataclass(frozen=True, slots=True)
