@@ -36,6 +36,9 @@ class MenuType(Enum):
     and Controller layers to strictly type hint against any valid navigation
     menu (e.g., accepting MainMenuType or OperationMenuType interchangeably)
     while rejecting arbitrary integers or unrelated enums.
+
+    Attributes:
+        None: This is an abstract marker class and contains no specific options.
     """
 
 
@@ -47,6 +50,9 @@ class FinancialType(StrEnum):
     immutable, historical financial events (such as transactions or accruals).
     Ensures that event labels persisted in the database or transported via DTOs
     belong to a strictly defined set of business categories.
+
+    Attributes:
+        None: This is an abstract marker class and contains no specific options.
     """
 
 
@@ -98,14 +104,14 @@ class OperationMenuType(MenuType):
 
     Attributes:
         DEPOSIT (1): Routes to a logged-in money deposit operation.
-        WITHDRAW (2): Routes to a money withdrawal operation.
+        WITHDRAWAL (2): Routes to a money withdrawal operation.
         STATEMENT (3): Routes to a bank statement inquiry.
         CHANGE_PASSWORD (4): Triggers the secure workflow to change the account password.
         CLOSE_ACCOUNT (5): Triggers the irreversible process of closing the bank account.
     """
 
     DEPOSIT = 1
-    WITHDRAW = 2
+    WITHDRAWAL = 2
     STATEMENT = 3
     CHANGE_PASSWORD = 4
     CLOSE_ACCOUNT = 5
@@ -131,10 +137,15 @@ class TransactionMenuType(MenuType):
 
     Used by the MainController to bridge the flattened UI selection (OperationMenuType)
     into the localized TransactionController context.
+
+    Attributes:
+        DEPOSIT (1): Flags the controller to execute the deposit workflow.
+        WITHDRAWAL (2): Flags the controller to execute the withdrawal workflow.
+        STATEMENT (3): Flags the controller to execute the statement retrieval workflow.
     """
 
     DEPOSIT = 1
-    WITHDRAW = 2
+    WITHDRAWAL = 2
     STATEMENT = 3
 
 
@@ -146,6 +157,11 @@ class TransactionType(FinancialType):
     as the official ledger entry type, ensuring the database records the exact
     nature of the movement (e.g., distinguishing a standard withdrawal from
     an overdraft usage).
+
+    Attributes:
+        DEPOSIT: Represents funds added to the account.
+        WITHDRAWAL: Represents funds removed using standard positive balance.
+        OVERDRAFT_WITHDRAWAL: Represents funds removed utilizing the account's credit limit.
     """
 
     DEPOSIT = "DEPOSIT"

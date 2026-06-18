@@ -102,7 +102,7 @@ transaction_config: io_utils.ConfigMap = {
         "input_type": Decimal,
         "error_msg": "Valor inválido para depósito. Tente novamente",
     },
-    "withdraw": {
+    "withdrawal": {
         "info": "Transação - Saque",
         "prompt": "Valor a sacar: ",
         "input_type": Decimal,
