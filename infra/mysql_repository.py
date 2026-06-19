@@ -396,6 +396,37 @@ class MySQLRepository:
 
         return bool(result)
 
+    def holder_has_account(self, cpf: str) -> bool:
+        """
+        Checks if an account holder currently has any registered accounts in the system.
+
+        This method acts as a fail-fast guard condition for de-provisioning workflows.
+        It utilizes a highly optimized SQL query with a LIMIT 1 clause, ensuring the
+        database stops scanning the internal indices the moment the first active link
+        is discovered.
+
+        Args:
+            cpf (str): The 11-digit string representing the account holder's CPF.
+
+        Returns:
+            bool: True if the holder has at least one account linked to their record;
+                False otherwise (indicating the holder is completely unlinked).
+
+        Raises:
+            TypeError: If the provided CPF argument is not a string.
+            DataNotFoundError: If the provided CPF does not exist in the database.
+        """
+        verify.verify_instance(cpf, str)
+
+        sql = "SELECT 1 FROM accounts WHERE account_holder_id = %s LIMIT 1"
+
+        with self._connection.cursor() as cursor:
+            holder_id = self._get_account_holder_id(cursor, cpf)
+            cursor.execute(sql, (holder_id,))
+            result = cursor.fetchone()
+
+        return bool(result)
+
     def get_account_holder(self, cpf: str) -> AccountHolder:
         """
         Retrieves a fully hydrated AccountHolder domain entity and their associated account cards.
@@ -879,3 +910,38 @@ class MySQLRepository:
                 raise DataNotFoundError(
                     f"Data not found in the database for {branch_code=}, {account_num=}"
                 )
+
+    def delete_account_holder(self, cpf: str) -> None:
+        """
+        Permanently deletes an account holder's record from the persistence layer.
+
+        This method enforces transactional safety and must be executed strictly within
+        an active Unit of Work context. It relies entirely on upstream business
+        validations and database foreign key constraints to ensure referential integrity.
+        If any active accounts still reference this holder, the database transaction
+        will trigger a foreign key violation exception, initiating an automatic rollback
+        via the Unit of Work.
+
+        Args:
+            cpf (str): The 11-digit string representing the account holder's CPF.
+
+        Raises:
+            RuntimeError: If the method is invoked outside of the `unit_of_work()`
+                context manager.
+            TypeError: If the provided CPF argument is not a string.
+            DataNotFoundError: If no account holder record matches the specified CPF.
+        """
+        if not self._in_transaction:
+            raise RuntimeError(
+                "Invalid method call. Use the context manager MySQLRepository.unit_of_work()"
+            )
+
+        verify.verify_instance(cpf, str)
+
+        sql = "DELETE FROM account_holders WHERE cpf = %s"
+
+        with self._connection.cursor() as cursor:
+            cursor.execute(sql, (cpf,))
+
+            if cursor.rowcount == 0:
+                raise DataNotFoundError(f"Data not found in the database for {cpf=}")
