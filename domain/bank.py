@@ -390,6 +390,31 @@ class Bank:
                 "No account holder registered under this CPF"
             ) from e
 
+    def _cleanup_unlinked_holder(self, cpf: str) -> None:
+        """
+        Enforces the data retention policy by evaluating an account holder's linkage status.
+
+        Acts as an internal domain policy enforcement mechanism. It delegates to the
+        repository abstraction to determine if the specified holder maintains any
+        active accounts. If the holder is entirely unlinked (orphaned), it commands
+        the repository to permanently remove their identity records from the system.
+
+        This method executes state-mutating operations and strictly assumes it is
+        being orchestrated within an active transactional boundary established
+        by the caller.
+
+        Args:
+            cpf (str): The 11-digit string representing the account holder's CPF.
+
+        Raises:
+            DataNotFoundError: If the provided CPF does not exist in the persistence
+                layer when checking status or attempting deletion.
+        """
+        has_active_account = self._repository.holder_has_account(cpf)
+
+        if not has_active_account:
+            self._repository.delete_account_holder(cpf)
+
     def register_account(
         self,
         account_dto: NewAccountDTO,
@@ -1197,6 +1222,8 @@ class Bank:
            accounts cannot be closed to prevent evasion of security blocks.
         3. Zero Balance Rule: The account can only be closed if its financial
            balance (checked via live Entity hydration) is exactly zero.
+        4. Data Retention Policy: If this is the final account linked to the
+           holder, their personal records will be automatically expunged.
 
         It employs a Unit of Work with exclusive read/write access to ensure
         strict state isolation, preventing concurrent transactions from modifying
@@ -1234,10 +1261,11 @@ class Bank:
                     access_token.branch_code,
                     access_token.account_num,
                     access_info=True,
+                    holder_info=True,
                     for_update=True,
                 )
 
-                if not account_info.access_info:
+                if not account_info.access_info or not account_info.holder_info:
                     raise RuntimeError("Invalid DTO state")
 
                 self._validate_token_integrity(
@@ -1258,6 +1286,7 @@ class Bank:
                 self._repository.delete_account(
                     access_token.branch_code, access_token.account_num
                 )
+                self._cleanup_unlinked_holder(account_info.holder_info.cpf)
         except DataNotFoundError as e:
             raise BankAuthenticationError(
                 "Authentication failed: Account no longer exists"
