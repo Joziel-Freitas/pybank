@@ -844,7 +844,14 @@ class BankSystemController(BaseController, SharedPromptsMixin):
         and prompting for credentials (card or manual). Gracefully handles 'Not Found'
         errors to prevent terminal crashes.
 
+        Applies strict Zero Trust type checking on the domain's return value to
+        guarantee the controller only operates with a valid AuthToken instance.
+
+        Returns:
+            AuthToken: A secure token granting basic lobby access.
+
         Raises:
+            TypeError: If the domain layer returns an unexpected token type.
             ControllerCredentialsError: If the user fails to provide valid credentials
                 after repeated attempts or aborts the process.
         """
@@ -873,7 +880,14 @@ class BankSystemController(BaseController, SharedPromptsMixin):
             branch_code = _assert_input(user_inputs["branch_code"], str)
             account_num = _assert_input(user_inputs["account_num"], str)
 
-            return self._bank_instance.authenticate(cpf, branch_code, account_num)
+            token = self._bank_instance.authenticate(cpf, branch_code, account_num)
+
+            if not isinstance(token, AuthToken):
+                raise TypeError(
+                    f"Invalid token instance. Expect type AuthToken, get {type(token).__name__}"
+                )
+
+            return token
         except UserAbortError:
             self._handle_info_ui("info", "user_cancel", wait=True)
             raise ControllerCredentialsError
@@ -893,12 +907,16 @@ class BankSystemController(BaseController, SharedPromptsMixin):
         Routine authentication errors (wrong password) are caught and handled
         internally via a retry loop.
 
+        Applies strict Zero Trust type checking on the domain's return value to
+        guarantee the controller only operates with a valid AccessToken instance.
+
         Returns:
             AccessToken: A secure token granting vault access.
 
         Raises:
             RuntimeError: If called without first obtaining an AuthToken, or if
                 a critical error occurs in the I/O password validation logic.
+            TypeError: If the domain layer returns an unexpected token type.
             ControllerCredentialsError: If access is blocked (account frozen)
                 or if the user explicitly aborts the operation.
             BankAuthenticationError: If a structural authentication failure occurs
@@ -924,9 +942,17 @@ class BankSystemController(BaseController, SharedPromptsMixin):
                     "password", self._auth_config, self._controller_validator_cb
                 )
                 password = _assert_input(raw_password, str)
-                return self._bank_instance.authorize_vault_access(
+
+                token = self._bank_instance.authorize_vault_access(
                     self._auth_token, password=password
                 )
+
+                if not isinstance(token, AccessToken):
+                    raise TypeError(
+                        f"Invalid token instance. Expect type AccessToken, get {type(token).__name__}"
+                    )
+
+                return token
             except BankAuthenticationError as e:
                 if e.argument is password:
                     self._handle_info_ui("info", "pwd_wrong")
@@ -944,6 +970,28 @@ class BankSystemController(BaseController, SharedPromptsMixin):
         raise ControllerCredentialsError(
             "Credentials could not be validated because of an unknown error"
         )
+
+    def _transition_to_lobby(self, token: AuthToken) -> None:
+        """Transitions the session state to the authenticated Lobby environment."""
+        if not isinstance(token, AuthToken):
+            raise TypeError(
+                f"Invalid state transition. Expected AuthToken, got {type(token).__name__}"
+            )
+
+        self._auth_token = token
+
+    def _transition_to_vault(self, token: AccessToken) -> None:
+        """Upgrades the session state to the secure Vault environment."""
+        if not self._auth_token:
+            raise RuntimeError(
+                "Cannot transition to Vault without an active Lobby session."
+            )
+        if not isinstance(token, AccessToken):
+            raise TypeError(
+                f"Invalid state transition. Expected AccessToken, got {type(token).__name__}"
+            )
+
+        self._access_token = token
 
     def _end_session(self) -> None:
         """
@@ -1087,11 +1135,23 @@ class BankSystemController(BaseController, SharedPromptsMixin):
 
     def _vault_hub(self, operation: OperationMenuType) -> None:
         """
-        The routing endpoint for Vault-level operations (Withdrawal, Statement, Change Password, Close Account).
-        Demands AccessToken authorization.
+        The routing endpoint for Vault-level operations.
+
+        Demands an active AccessToken to execute sensitive operations
+        (Withdrawal, Statement, Change Password, Close Account). If the
+        current session is restricted to basic Lobby access, it dynamically
+        upgrades the session state to full Vault access before dispatching
+        the requested operation.
+
+        Args:
+            operation (OperationMenuType): The specific vault-level operation to execute.
+
+        Raises:
+            RuntimeError: If an unmapped operation type is passed to the hub.
         """
         if not self._access_token:
-            self._access_token = self._ensure_vault_access()
+            token = self._ensure_vault_access()
+            self._transition_to_vault(token)
 
         match operation:
             case OperationMenuType.WITHDRAWAL:
@@ -1105,59 +1165,131 @@ class BankSystemController(BaseController, SharedPromptsMixin):
             case _:
                 raise RuntimeError("Critical error: Unmapped type")
 
+    def _start_session(self) -> AuthToken | None:
+        """
+        Initiates the authentication workflow for the session.
+
+        Wraps the lobby access routine to gracefully capture and handle expected
+        credential failures at the UI level, ensuring the controller does not
+        crash during the initial handshake.
+
+        Returns:
+            AuthToken | None: A valid authentication token if successful,
+                or None if the user failed to authenticate or aborted.
+        """
+        try:
+            if not self._auth_token:
+                token = self._ensure_lobby_access()
+                return token
+        except ControllerCredentialsError as e:
+            self._handle_exception_ui("errors", e)
+            return None
+
+    def _greet_user(self, account_summary) -> None:
+        """
+        Extracts the account holder's first name and dispatches the welcome UI.
+
+        Args:
+            account_summary (AccountSummaryDTO): The current state of the account.
+        """
+        first_name = account_summary.holder_name.split()[0]
+
+        self._handle_info_ui(
+            "info",
+            "lobby_hello",
+            clean=True,
+            user_name=first_name,
+        )
+
+    def _select_operation(
+        self, account_summary: AccountSummaryDTO
+    ) -> OperationMenuType | RestrictedMenuType:
+        """
+        Evaluates the account state to present the appropriate operations menu.
+
+        Ensures that frozen accounts are restricted to the recovery menu, preventing
+        any financial transactions until the security block is resolved.
+
+        Args:
+            account_summary (AccountSummaryDTO): The current state of the account.
+
+        Returns:
+            OperationMenuType | RestrictedMenuType: The specific operation requested
+                by the user.
+        """
+        if account_summary.is_frozen:
+            return self._restrict_operations_menu(account_summary)
+
+        return self._operations_menu()
+
+    def _dispatch_operation(
+        self, operation: OperationMenuType | RestrictedMenuType
+    ) -> None:
+        """
+        Routes the selected menu operation to its corresponding execution flow.
+
+        Acts as an internal dispatcher, invoking transaction controllers, account
+        recovery flows, or vault hub upgrades based on the operation type.
+
+        Args:
+            operation (OperationMenuType | RestrictedMenuType): The operation to execute.
+
+        Raises:
+            RuntimeError: If the provided operation type is unmapped.
+        """
+        match operation:
+            case RestrictedMenuType.UNFREEZE_ACCOUNT:
+                self._unfreeze_account()
+            case OperationMenuType.DEPOSIT:
+                self._run_transaction_controller(TransactionMenuType.DEPOSIT)
+            case OperationMenuType():
+                self._vault_hub(operation)
+            case _:
+                raise RuntimeError("Critical error: Unmapped type")
+
     def _lobby_hub(self) -> None:
         """
         The authenticated environment loop.
 
-        Demands an AuthToken to enter. Allows navigation between restricted
-        operations (such as password change and account closure) and operations
-        that only depend on basic authentication, without requiring vault access
-        (such as unfreezing an account). Upgrades access dynamically if the user
-        selects a vault-level operation. Safely catches local errors while ensuring
-        critical errors cleanly close the session via 'Intercept and Rethrow'.
-        """
-        try:
-            if not self._auth_token:
-                self._auth_token = self._ensure_lobby_access()
+        Operates as a declarative state machine for the session. It establishes
+        initial lobby access, coordinates the continuous presentation-selection-dispatch
+        loop, and manages state transitions dynamically.
 
-        except ControllerCredentialsError as e:
-            self._handle_exception_ui("errors", e)
-            self._end_session()
+        Operations requiring vault access are delegated safely, while critical
+        domain or UI errors are caught to cleanly sever the session state
+        prior to termination.
+        """
+        token = self._start_session()
+
+        if token:
+            self._transition_to_lobby(token)
 
         greeted = False
-        while type(self._auth_token) is AuthToken:
+
+        while self._auth_token is not None:
+            operation = None
             try:
                 account_summary = self._bank_instance.get_account_summary(
                     self._auth_token
                 )
+
                 if not greeted:
-                    first_name = account_summary.holder_name.split()[0]
-                    self._handle_info_ui(
-                        "info",
-                        "lobby_hello",
-                        clean=True,
-                        user_name=first_name,
-                    )
+                    self._greet_user(account_summary)
                     greeted = True
+
                 try:
-                    operation = (
-                        self._restrict_operations_menu(account_summary)
-                        if account_summary.is_frozen
-                        else self._operations_menu()
-                    )
+                    operation = self._select_operation(account_summary)
                 except UserAbortError:
-                    raise ControllerCredentialsError
-                match operation:
-                    case OperationMenuType.DEPOSIT:
-                        self._run_transaction_controller(TransactionMenuType.DEPOSIT)
-                    case RestrictedMenuType.UNFREEZE_ACCOUNT:
-                        self._unfreeze_account()
-                    case OperationMenuType():
-                        self._vault_hub(operation)
-                        if operation == OperationMenuType.WITHDRAWAL:
-                            self._end_session()
-                    case _:
-                        raise RuntimeError("Critical error: Unmapped type")
+                    self._handle_info_ui("info", "user_cancel", wait=True)
+                    self._end_session()
+                    break
+
+                if operation:
+                    self._dispatch_operation(operation)
+
+                if operation == OperationMenuType.WITHDRAWAL:
+                    self._end_session()
+
             except UserAbortError:
                 self._handle_info_ui("info", "user_cancel", wait=True)
                 continue
