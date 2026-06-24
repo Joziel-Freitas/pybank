@@ -21,19 +21,20 @@ verification, maintaining absolute consistency across the financial domain.
 import hashlib
 import hmac
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import ClassVar
+from typing import Any, ClassVar, Protocol
 
 import bcrypt
 
 from infra import verify
-from infra.mysql_repository import MySQLRepository
 from shared.credentials import AccessToken, AccountCard, AuthToken
 from shared.dtos import (
+    AccountProjectionDTO,
     AccountSummaryDTO,
     DepositTargetDTO,
+    LedgerEventDTO,
     NewAccountDTO,
     NewAccountHolderDTO,
     StatementDTO,
@@ -63,6 +64,65 @@ from .account import Account, CheckingAccount, SavingsAccount
 from .person import AccountHolder
 
 
+class RepositoryProtocol(Protocol):
+    """
+    The persistence contract required by the Bank aggregate root.
+
+    This protocol defines the strict interface that any infrastructure adapter
+    must fulfill to serve as a persistence mechanism for the PyBank domain,
+    guaranteeing true Dependency Inversion (DIP).
+    """
+
+    def unit_of_work(self) -> AbstractContextManager[None]: ...
+
+    def account_holder_exists(self, cpf: str) -> bool: ...
+
+    def account_exists(self, branch_code: str, account_num: str) -> bool: ...
+
+    def holder_has_account(self, cpf: str) -> bool: ...
+
+    def get_account_holder(self, cpf: str) -> AccountHolder: ...
+
+    def get_account_projection(
+        self,
+        branch_code: str,
+        account_num: str,
+        access_info: bool = False,
+        holder_info: bool = False,
+        for_update: bool = False,
+    ) -> AccountProjectionDTO: ...
+
+    def get_account(
+        self, branch_code: str, account_num: str, for_update: bool = False
+    ) -> Account: ...
+
+    def get_ledger_events(
+        self, branch_code: str, account_num: str, start_date: datetime
+    ) -> tuple[dict[str, Any], ...]: ...
+
+    def register_account_bundle(
+        self, account: Account, holder_or_cpf: AccountHolder | str, password_hash: str
+    ) -> None: ...
+
+    def save_transaction(
+        self, account: Account, events: tuple[LedgerEventDTO, ...]
+    ) -> None: ...
+
+    def register_failed_login(self, branch_code: str, account_num: str) -> None: ...
+
+    def reset_login_attempts(self, branch_code: str, account_num: str) -> None: ...
+
+    def update_account_status(self, account: Account) -> None: ...
+
+    def update_password(
+        self, branch_code: str, account_num: str, new_password_hash: str
+    ) -> None: ...
+
+    def delete_account(self, branch_code: str, account_num: str) -> None: ...
+
+    def delete_account_holder(self, cpf: str) -> None: ...
+
+
 class Bank:
     """
     The aggregate root and core domain service of the PyBank system.
@@ -90,15 +150,15 @@ class Bank:
 
     _bank_name: str
     _branch_code: str
-    _repository: MySQLRepository
     _secret_key: bytes
+    _repository: RepositoryProtocol
 
     def __init__(
         self,
         bank_name: str,
         branch_code: str,
-        repository: MySQLRepository,
         secret_key: str,
+        repository: RepositoryProtocol,
     ):
         """
         Initializes a new Bank instance.
@@ -112,15 +172,12 @@ class Bank:
             ValueError: If branch_code does not have exactly 4 digits.
         """
         verify.verify_instance(bank_name, str)
-        self._bank_name = bank_name
-
         verify.verify_instance(branch_code, str)
         verify.verify_digits(branch_code, 4)
+        self._bank_name = bank_name
         self._branch_code = branch_code
-
-        verify.verify_instance(repository, MySQLRepository)
-        self._repository = repository
         self._secret_key = secret_key.encode("utf-8")
+        self._repository = repository
 
     def __repr__(self) -> str:
         """

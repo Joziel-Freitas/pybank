@@ -31,7 +31,7 @@ def main() -> None:
     ATM kiosk loop.
     """
     repository = MySQLRepository()
-    bank_obj = Bank(BANK_NAME, BRANCH_CODE, repository, BANK_SECRET_KEY)
+    bank_obj = Bank(BANK_NAME, BRANCH_CODE, BANK_SECRET_KEY, repository)
     controller_obj = BankSystemController(bank_obj)
     controller_obj.run_controller()
 
