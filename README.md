@@ -1,100 +1,95 @@
-# 🏦 PyBank System 3.0 - Enterprise-Grade CLI Banking Application
+# 🏦 PyBank System 3.0
 
-Uma aplicação bancária via linha de comando desenvolvida com foco extremo em **Arquitetura de Software (Clean Architecture / DDD)**, **Segurança (Zero Trust / AppSec)** e **Concorrência de Dados (ACID)**.
+Uma aplicação bancária via linha de comando (CLI) desenvolvida em Python para explorar fundamentos de Arquitetura de Software, Concorrência de Dados e Segurança, sem a abstração de frameworks web.
 
-## 📖 Sobre o Projeto
+## ⚡ Destaques Técnicos
 
-Este projeto é o marco principal do meu portfólio para Desenvolvimento Backend. O objetivo não foi criar apenas um script funcional, mas provar que é possível aplicar engenharia de software de nível corporativo utilizando Python puro, sem depender de frameworks de alto nível (como Django ou FastAPI) para abstrair a complexidade.
+* ✅ **Arquitetura em Camadas** isolando I/O, Casos de Uso e Regras de Negócio.
+* ✅ **Persistência Desacoplada** utilizando o padrão *Repository*.
+* ✅ **Tratamento de Concorrência** via *Unit of Work* e MySQL *Pessimistic Locks*.
+* ✅ **Autenticação Stateless** com tokens criptográficos (HMAC-SHA256 + Bcrypt).
+* ✅ **Design Defensivo (Fail-Fast)** com validação estrita de tipos e valores nas bordas.
+* ✅ **Ambiente Conteinerizado** com Docker e Docker Compose.
+* 🚧 *Testes Automatizados (Em desenvolvimento)*
 
-Em um intervalo de 82 dias, o sistema evoluiu de uma persistência simples em JSON (v2.0) para uma arquitetura robusta, baseada em um banco de dados relacional isolado em contêineres, aplicando padrões rigorosos de design para garantir segurança, desacoplamento e resiliência a falhas.
+---
 
-## 🚀 O que mudou na v3.0? (Destaques de Engenharia)
+## 📖 A Evolução do Projeto (O que eu aprendi)
 
-Nesta versão, a aplicação deixou de ser um projeto de estudos e passou a adotar práticas de mercado focadas em alta disponibilidade e segurança:
+Este projeto começou como um script simples de terminal e evoluiu para um laboratório de engenharia de software. O objetivo nunca foi reinventar a roda ou criar um "concorrente" para frameworks modernos, mas sim entender **por que** os padrões de projeto existem.
 
-* **Domain-Driven Design (DDD) e DTOs:** Fronteiras arquiteturais estritas. A interface de usuário (View/Controllers) nunca interage diretamente com as entidades de Domínio (`Account`, `AccountHolder`). Todo o tráfego de dados é feito através de Data Transfer Objects (DTOs) imutáveis.
-* **Concorrência e Transações ACID (Unit of Work):** Transição para MySQL. Implementação manual do padrão *Unit of Work* com gerenciamento de contexto (`contextmanager`) e **Bloqueio Pessimista (FOR UPDATE)**, mitigando completamente vulnerabilidades de Race Conditions e TOCTOU (Time-of-Check to Time-of-Use) durante saques e transferências simultâneas.
-* **Segurança Zero Trust e Sessões Stateless:** Fim do armazenamento de sessão em memória. Implementação de um sistema de tokens criptográficos baseados em HMAC-SHA256.
-  * **AuthToken (Lobby):** Comprova a identidade sem expor dados financeiros.
-  * **AccessToken (Vault):** Garante acesso ao cofre. O hash da senha via Bcrypt é embutido na assinatura do token, garantindo que uma troca de senha invalide sessões ativas instantaneamente.
-* **Anti-Corruption Layer (ACL) e Padrão Repository:** O banco de dados é apenas um detalhe de infraestrutura. O Domínio desconhece o SQL. O `MySQLRepository` atua como tradutor, hidratando os objetos de domínio.
-* **Roteamento Centralizado de Exceções:** Padrão *Intercept-and-Rethrow*. Exceções de Domínio e Infraestrutura são mapeadas dinamicamente para um dicionário de mensagens da UI, evitando vazamento de Stack Trace ou lógicas de negócio para o cliente.
+A evolução foi orgânica e baseada em dores reais durante o desenvolvimento:
 
-## 🏗️ Estrutura e Arquitetura (Clean Architecture)
+* **A transição de JSON para MySQL:** O uso de arquivos JSON serviu para a prova de conceito inicial, mas não é o padrão da indústria para aplicações financeiras. A migração para um banco de dados relacional foi uma evolução deliberada para garantir integridade, tipagem estrita e alinhar o portfólio às tecnologias exigidas pelo mercado.
+* **A escolha do Padrão Repository:** A separação de responsabilidades sempre foi uma premissa do projeto — lógicas de banco de dados *nunca* se misturaram com regras de negócio. O padrão *Repository* foi adotado proativamente por ser a solução de mercado ideal para atuar como uma Camada Anticorrupção (ACL), garantindo que o Domínio desconheça a infraestrutura de persistência.
+* **A adoção do DDD e DTOs:** Com o amadurecimento do sistema, o *Domain-Driven Design* foi aplicado para isolar o coração bancário da aplicação. Para proteger essa fronteira, implementei *Data Transfer Objects* (DTOs), que atuam como o padrão de segurança e os únicos pacotes de informação autorizados a transitar entre as camadas externas (Views/Controllers) e o Core Domain.
+* **Lidando com Concorrência na Prática:** Para cumprir os requisitos de segurança de um banco real, pesquisei e implementei o *Unit of Work* em conjunto com bloqueios pessimistas (`SELECT ... FOR UPDATE`), resolvendo na prática vulnerabilidades de concorrência como TOCTOU ( *Time-of-Check to Time-of-Use* ).
 
-```text
-PyBank/
-├── app/                  # Camada de Aplicação (Casos de Uso)
-│   └── controllers.py    # Orquestração do fluxo, gestão de sessão e injeção de DTOs
-├── domain/               # Camada de Domínio (O Coração do Negócio - Zero dependências externas)
-│   ├── bank.py           # Aggregate Root, Regras de Segurança e AppSec
-│   ├── account.py        # Entidades base, Fábricas (Dispatchers) para Checking/Savings
-│   └── person.py         # Entidades de Cliente e credenciais de acesso
-├── infra/                # Camada de Infraestrutura (Adaptadores de Interface)
-│   ├── mysql_repository  # Repository Pattern, Unit of Work, ACL e queries SQL
-│   ├── io_utils.py       # Motor de validação de input dinâmico (Inversão de Controle)
-│   ├── config.py         # Mapeamento de regras de I/O
-│   ├── views.py          # Renderização de tela (Terminal)
-│   └── ui_messages.py    # Catálogo central de feedback ao usuário
-├── shared/               # Tipos globais e transporte de dados
-│   ├── dtos.py           # Data Transfer Objects
-│   ├── credentials.py    # Value Objects de Tokens HMAC
-│   └── exceptions.py     # Hierarquia customizada de erros do sistema
-├── main.py               # Composition Root (Dependency Injection Bottom-Up)
-├── init.sql              # Script de inicialização do schema relacional
-├── docker-compose.yaml   # Orquestração do banco de dados
-└── .env.example          # Variáveis de ambiente (12-Factor App)
+## 🏗️ Arquitetura e Decisões de Design
+
+O sistema foi desenhado respeitando as fronteiras do *Domain-Driven Design (DDD)* e *Ports and Adapters*.
+
+```mermaid
+graph TD
+    UI[Terminal / Views] --> IO[IO Utils / Validação]
+    IO --> Controller[Controllers]
+
+    subgraph Core Domain
+        Controller --> Bank[Bank Aggregate]
+        Bank --> Account[Account Entity]
+        Bank --> Person[AccountHolder]
+    end
+
+    Bank --> RepoInterface((Repository Protocol))
+
+    subgraph Infrastructure
+        RepoInterface -. implements .-> MySQLRepo[MySQL Repository]
+        MySQLRepo --> UoW[Unit of Work]
+        UoW --> DB[(MySQL DB)]
+    end
+
+    classDef domain fill:#1f2937,stroke:#3b82f6,stroke-width:2px,color:#fff;
+    class Bank,Account,Person domain;
 ```
 
-## 🛠️ Tecnologias Utilizadas
-* **Linguagem:** Python 3.12+ (Com tipagem estrita via typing / Mypy)
+### Decisões Principais:
 
-* **Persistência:** MySQL 8.0 (PyMySQL)
-
-* **Infraestrutura:** Docker & Docker Compose
-
-* **Segurança:** Bcrypt, HMAC (Hash-based Message Authentication Code), Hashlib
-
-* **Configuração:** python-dotenv (Seguindo princípios do 12-Factor App)
-
-## 💻 Funcionalidades Principais
-* **Identidade First:** Autenticação em duas camadas (Cartão/CPF -> Senha).
-
-* **Operações Financeiras ACID:** Saques (com cálculo dinâmico de Cheque Especial), Depósitos e Extrato Cronológico com saldo retroativo.
-
-* **Sistema Kiosk Mode:** O Terminal nunca "crasha". Falhas de infraestrutura são capturadas pelo Global Exception Handler e o sistema retorna à tela inicial de forma segura.
-
-* **Recuperação e Bloqueio:** Congelamento automático de conta após 3 tentativas falhas de login. Recuperação de conta validada por KBA (Knowledge Based Authentication - Data de Nascimento).
-
-* **Alteração e Encerramento:** Troca de senhas com invalidação de token e fechamento de conta mediante regra de saldo zero.
+1. **Segurança Zero Trust (Sessões Stateless):** O sistema não guarda estado de sessão em memória. O acesso é gerido por `AuthToken` (para navegação básica) e `AccessToken` (para o cofre). O hash da senha via Bcrypt é embutido na assinatura HMAC do token, garantindo que uma alteração de senha invalide sessões ativas imediatamente.
+2. **Global Exception Handler:** Padrão  *Intercept-and-Rethrow* . O sistema roda em "Kiosk Mode" (loop infinito). Erros de domínio ou banco de dados são capturados pelo Controller, mapeados para mensagens de interface seguras e o sistema retorna à tela inicial graciosamente, sem vazar  *stack trace* .
 
 ## ⚙️ Como Executar o Projeto
-**Pré-requisitos:** Python 3.12+ e Docker (com Docker Compose) instalados.
+
+**Pré-requisitos:** Python 3.12+ e Docker instalados.
 
 **1. Clone o repositório e acesse a pasta:**
-```Bash
+
+```Shell
 git clone https://github.com/Joziel-Freitas/bank-system-python.git
-cd bank-system-python
+cd pybank
 ```
 
-**2. Configure o Ambiente:**
-Crie uma cópia do arquivo de configuração e edite as credenciais caso necessário:
-```Bash
+**2. Configure as Variáveis de Ambiente:**
+Crie uma cópia do arquivo de configuração:
+
+```Shell
 cp .env.example .env
 ```
 
 **3. Suba o Banco de Dados (Docker):**
-Isso irá iniciar o MySQL e executar automaticamente o init.sql.
-```Bash
+O script `init.sql` será executado automaticamente na primeira inicialização, criando as tabelas e relacionamentos.
+
+
+```Shell
 docker-compose up -d
 ```
 
 **4. Instale as dependências e rode a aplicação:**
-```Bash
+Recomenda-se o uso de um ambiente virtual (`venv`).
+
+
+```Shell
 pip install -r requirements.txt
 python main.py
 ```
 
----
-**Autor:** Joziel Freitas da Silva<br>
-*Projeto desenvolvido do zero, guiado pela paixão por resolver problemas complexos através de Backend Engineering, Design Patterns e Clean Code.*
+*Desenvolvido por Joziel Freitas da Silva.*
