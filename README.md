@@ -68,14 +68,14 @@ git clone https://github.com/Joziel-Freitas/bank-system-python.git
 cd pybank
 ```
 
-**2. Configure as Variáveis de Ambiente:**
+**2. Configure as Variáveis de Ambiente:**  
 Crie uma cópia do arquivo de configuração:
 
 ```Shell
 cp .env.example .env
 ```
 
-**3. Suba o Banco de Dados (Docker):**
+**3. Suba o Banco de Dados (Docker):**  
 O script `init.sql` será executado automaticamente na primeira inicialização, criando as tabelas e relacionamentos.
 
 
@@ -83,7 +83,7 @@ O script `init.sql` será executado automaticamente na primeira inicialização,
 docker-compose up -d
 ```
 
-**4. Instale as dependências e rode a aplicação:**
+**4. Instale as dependências e rode a aplicação:**  
 Recomenda-se o uso de um ambiente virtual (`venv`).
 
 
