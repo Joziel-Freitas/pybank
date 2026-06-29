@@ -144,6 +144,10 @@ class Bank:
             highly sensitive, authenticated vault session.
     """
 
+    # --------------------------------------------------------------------------
+    # Class attributes
+    # --------------------------------------------------------------------------
+
     MAX_LOGIN_ATTEMPTS: ClassVar[int] = 3
     LOBBY_TIME_MINUTES: ClassVar[timedelta] = timedelta(minutes=5)
     VAULT_TIME_MINUTES: ClassVar[timedelta] = timedelta(minutes=2)
@@ -152,6 +156,10 @@ class Bank:
     _branch_code: str
     _secret_key: bytes
     _repository: RepositoryProtocol
+
+    # --------------------------------------------------------------------------
+    # Constructor
+    # --------------------------------------------------------------------------
 
     def __init__(
         self,
@@ -179,6 +187,10 @@ class Bank:
         self._secret_key = secret_key.encode("utf-8")
         self._repository = repository
 
+    # --------------------------------------------------------------------------
+    # Dunder methods
+    # --------------------------------------------------------------------------
+
     def __repr__(self) -> str:
         """
         Returns a summary string representation of the Bank.
@@ -191,6 +203,10 @@ class Bank:
         class_name = type(self).__name__
         return f"{class_name}(name={self._bank_name!r}, branch_code={self._branch_code!r}),"
 
+    # --------------------------------------------------------------------------
+    # Properties
+    # --------------------------------------------------------------------------
+
     @property
     def bank_name(self) -> str:
         """Returns the bank's name."""
@@ -201,276 +217,9 @@ class Bank:
         """Returns the bank's branch code."""
         return self._branch_code
 
-    @staticmethod
-    def validate_password(password: str) -> None:
-        """
-        Validates the format of a password.
-
-        Args:
-            password (str): The password string to validate.
-
-        Raises:
-            TypeError: If the password is not a string (indicates a system type bug).
-            BankPasswordError: If the password does not consist of exactly 6 digits.
-        """
-        verify.verify_instance(password, str)
-        try:
-            verify.verify_digits(password, 6)
-        except ValueError as e:
-            raise BankPasswordError(f"Invalid password. Cause: {e}")
-
-    def _generate_password_hash(self, password_str: str) -> str:
-        """
-        Generates a secure cryptographic hash for a plain-text password.
-
-        Uses the bcrypt algorithm with a randomly generated salt to ensure
-        protection against rainbow table and brute-force attacks.
-
-        Args:
-            password_str (str): The plain-text password (already validated).
-
-        Returns:
-            str: The securely hashed password string.
-        """
-        pwd = password_str
-        pwd_bytes = pwd.encode("utf-8")
-        salt = bcrypt.gensalt()
-        pwd_hash_bytes = bcrypt.hashpw(pwd_bytes, salt)
-        pwd_hash_str = pwd_hash_bytes.decode("utf-8")
-
-        return pwd_hash_str
-
-    def _check_password(self, pwd_str: str, pwd_hash_str: str) -> None:
-        """
-        Verifies a plain-text password against a securely hashed password.
-
-        Args:
-            pwd_str (str): The plain-text password provided by the user.
-            pwd_hash_str (str): The bcrypt hash retrieved from the database.
-
-        Raises:
-            BankAuthenticationError: If the password does not match the hash.
-        """
-        pwd_bytes = pwd_str.encode("utf-8")
-        hashed_pwd_bytes = pwd_hash_str.encode("utf-8")
-
-        if not bcrypt.checkpw(pwd_bytes, hashed_pwd_bytes):
-            raise BankAuthenticationError(
-                "Given password doesn't match with registered password"
-            )
-
-    def _validate_token_integrity(
-        self, token: AccessToken | AuthToken, pwd_hash: str = ""
-    ) -> None:
-        """
-        Validates the type, cryptographic integrity, and Time-To-Live (TTL) of a session token.
-
-        Enforces a strict Zero Trust model by focusing solely on mathematical and
-        cryptographic validity, adhering to the Single Responsibility Principle.
-        It does not interact with the database; instead, it relies on the injected
-        'pwd_hash' (for Vault access) to reconstruct and verify the expected signature.
-
-        1. Type Check (Fail-Fast): Ensures the incoming object is a valid token instance.
-        2. Cryptographic Integrity: Reconstructs the payload (using static data for AuthToken,
-           or the injected hash for AccessToken). If the payload or hash does not mathematically
-           match the provided signature, the session is instantly rejected.
-        3. TTL Check: After confirming the token is authentic, verifies if the session
-           is still within its expiration window.
-
-        Args:
-            token (AccessToken | AuthToken): The session token to be validated.
-            pwd_hash (str, optional): The current password hash provided by the caller.
-                Required for AccessToken validation; ignored for AuthToken. Defaults to "".
-
-        Raises:
-            TypeError: If the provided token object is not a valid recognized instance.
-            BankSecurityError: If the cryptographic signature has been tampered with
-                or if the provided hash causes a signature mismatch.
-            ExpiredTokenError: If the authentic token's TTL has passed.
-        """
-        match token:
-            case AuthToken():
-                payload = f"{token.cpf}:{token.branch_code}:{token.account_num}"
-            case AccessToken():
-                payload = (
-                    f"{token.cpf}:{token.branch_code}:{token.account_num}:{pwd_hash}"
-                )
-            case _:
-                raise TypeError("Invalid token instance")
-
-        bank_signature = self._sign_token_payload(payload)
-
-        if not hmac.compare_digest(bank_signature, token.signature):
-            raise BankSecurityError("Security breach: Tampered token.")
-
-        if datetime.now() > token.expires_at:
-            raise ExpiredTokenError(
-                "This token is no longer valid because it has expired"
-            )
-
-    def _sign_token_payload(self, payload_str: str) -> str:
-        """
-        Generates a secure cryptographic signature for a given payload.
-
-        Uses HMAC (Hash-based Message Authentication Code) with SHA-256 and the
-        internal bank's secret key to ensure the payload cannot be forged or
-        altered by malicious actors.
-
-        Args:
-            payload_str (str): The raw string payload to be signed.
-
-        Returns:
-            str: A hexadecimal string representing the cryptographic signature.
-        """
-        payload_bytes = payload_str.encode("utf-8")
-        return hmac.new(self._secret_key, payload_bytes, hashlib.sha256).hexdigest()
-
-    def _generate_auth_token(
-        self, cpf: str, branch_code: str, account_num: str
-    ) -> AuthToken:
-        """
-        Issues an AuthToken for initial client identification.
-
-        This token grants 'Lobby' access, proving the client's identity and
-        allowing standard, non-sensitive operations (such as deposits) without
-        granting access to the account's vault.
-
-        Args:
-            cpf (str): The client's unique identification number.
-            branch_code (str): The 4-digit numeric branch code.
-            account_num (str): The account number.
-
-        Returns:
-            AuthToken: A securely signed identification token.
-        """
-        payload = f"{cpf}:{branch_code}:{account_num}"
-        signature = self._sign_token_payload(payload)
-
-        return AuthToken(
-            cpf=cpf,
-            branch_code=branch_code,
-            account_num=account_num,
-            signature=signature,
-            expires_at=datetime.now() + Bank.LOBBY_TIME_MINUTES,
-        )
-
-    def _generate_access_token(
-        self, auth_token: AuthToken, password_hash: str
-    ) -> AccessToken:
-        """
-        Issues a highly secure AccessToken for vault authorization.
-
-        This token represents a fully authenticated session. By injecting the
-        current database password hash into the cryptographic payload, it ensures
-        that the token becomes immediately invalid if the account password is
-        changed, providing defense-in-depth against session hijacking.
-
-        Args:
-            auth_token (AuthToken): The pre-validated identification token.
-            password_hash (str): The latest bcrypt password hash retrieved from
-                the database.
-
-        Returns:
-            AccessToken: A securely signed vault access token.
-        """
-        payload = f"{auth_token.cpf}:{auth_token.branch_code}:{auth_token.account_num}:{password_hash}"
-        signature = self._sign_token_payload(payload)
-
-        return AccessToken(
-            cpf=auth_token.cpf,
-            branch_code=auth_token.branch_code,
-            account_num=auth_token.account_num,
-            signature=signature,
-            expires_at=datetime.now() + Bank.VAULT_TIME_MINUTES,
-        )
-
-    def _account_factory(self, account_dto: NewAccountDTO) -> Account:
-        """
-        Internal factory to instantiate Account entities from a DTO.
-
-        Translates the integer flag within the DTO into the correct Account
-        subclass (CheckingAccount or SavingsAccount), keeping the Presentation
-        layer entirely decoupled from Domain implementations.
-
-        Args:
-            account_dto (NewAccountDTO): The immutable payload from the UI.
-
-        Returns:
-            Account: A fully initialized domain Account instance.
-        """
-        type_mapper = {1: CheckingAccount, 2: SavingsAccount}
-
-        acc_type = type_mapper[account_dto.account_type]
-        account_obj = acc_type(
-            account_dto.branch_code,
-            account_dto.account_num,
-        )
-
-        return account_obj
-
-    def _account_holder_factory(
-        self, acc_holder_dto: NewAccountHolderDTO
-    ) -> AccountHolder:
-        """
-        Internal factory to instantiate an AccountHolder entity from a DTO.
-
-        Args:
-            acc_holder_dto (NewAccountHolderDTO): The immutable payload containing the new account holder's data.
-
-        Returns:
-            AccountHolder: A fully initialized domain AccountHolder instance.
-        """
-        holder_obj = AccountHolder(
-            acc_holder_dto.name, acc_holder_dto.cpf, acc_holder_dto.birth_date
-        )
-
-        return holder_obj
-
-    def _get_account_holder(self, cpf: str) -> AccountHolder:
-        """
-        Retrieves a fully hydrated account holder entity from the repository.
-
-        Args:
-            cpf (str): The 11-digit string representing the account holder's CPF.
-
-        Returns:
-            AccountHolder: The domain AccountHolder object.
-
-        Raises:
-            AccountHolderNotFoundError: If the CPF is not registered in the system.
-        """
-        try:
-            holder_obj = self._repository.get_account_holder(cpf=cpf)
-            return holder_obj
-        except DataNotFoundError as e:
-            raise AccountHolderNotFoundError(
-                "No account holder registered under this CPF"
-            ) from e
-
-    def _cleanup_unlinked_holder(self, cpf: str) -> None:
-        """
-        Enforces the data retention policy by evaluating an account holder's linkage status.
-
-        Acts as an internal domain policy enforcement mechanism. It delegates to the
-        repository abstraction to determine if the specified holder maintains any
-        active accounts. If the holder is entirely unlinked (orphaned), it commands
-        the repository to permanently remove their identity records from the system.
-
-        This method executes state-mutating operations and strictly assumes it is
-        being orchestrated within an active transactional boundary established
-        by the caller.
-
-        Args:
-            cpf (str): The 11-digit string representing the account holder's CPF.
-
-        Raises:
-            DataNotFoundError: If the provided CPF does not exist in the persistence
-                layer when checking status or attempting deletion.
-        """
-        has_active_account = self._repository.holder_has_account(cpf)
-
-        if not has_active_account:
-            self._repository.delete_account_holder(cpf)
+    # --------------------------------------------------------------------------
+    # Public API
+    # --------------------------------------------------------------------------
 
     def register_account(
         self,
@@ -1352,3 +1101,282 @@ class Bank:
             raise BankUnavailableError(
                 "The intended operation could not be persisted due to an internal error"
             ) from e
+
+    # --------------------------------------------------------------------------
+    # Protected methods
+    # --------------------------------------------------------------------------
+
+    def _generate_password_hash(self, password_str: str) -> str:
+        """
+        Generates a secure cryptographic hash for a plain-text password.
+
+        Uses the bcrypt algorithm with a randomly generated salt to ensure
+        protection against rainbow table and brute-force attacks.
+
+        Args:
+            password_str (str): The plain-text password (already validated).
+
+        Returns:
+            str: The securely hashed password string.
+        """
+        pwd = password_str
+        pwd_bytes = pwd.encode("utf-8")
+        salt = bcrypt.gensalt()
+        pwd_hash_bytes = bcrypt.hashpw(pwd_bytes, salt)
+        pwd_hash_str = pwd_hash_bytes.decode("utf-8")
+
+        return pwd_hash_str
+
+    def _check_password(self, pwd_str: str, pwd_hash_str: str) -> None:
+        """
+        Verifies a plain-text password against a securely hashed password.
+
+        Args:
+            pwd_str (str): The plain-text password provided by the user.
+            pwd_hash_str (str): The bcrypt hash retrieved from the database.
+
+        Raises:
+            BankAuthenticationError: If the password does not match the hash.
+        """
+        pwd_bytes = pwd_str.encode("utf-8")
+        hashed_pwd_bytes = pwd_hash_str.encode("utf-8")
+
+        if not bcrypt.checkpw(pwd_bytes, hashed_pwd_bytes):
+            raise BankAuthenticationError(
+                "Given password doesn't match with registered password"
+            )
+
+    def _validate_token_integrity(
+        self, token: AccessToken | AuthToken, pwd_hash: str = ""
+    ) -> None:
+        """
+        Validates the type, cryptographic integrity, and Time-To-Live (TTL) of a session token.
+
+        Enforces a strict Zero Trust model by focusing solely on mathematical and
+        cryptographic validity, adhering to the Single Responsibility Principle.
+        It does not interact with the database; instead, it relies on the injected
+        'pwd_hash' (for Vault access) to reconstruct and verify the expected signature.
+
+        1. Type Check (Fail-Fast): Ensures the incoming object is a valid token instance.
+        2. Cryptographic Integrity: Reconstructs the payload (using static data for AuthToken,
+           or the injected hash for AccessToken). If the payload or hash does not mathematically
+           match the provided signature, the session is instantly rejected.
+        3. TTL Check: After confirming the token is authentic, verifies if the session
+           is still within its expiration window.
+
+        Args:
+            token (AccessToken | AuthToken): The session token to be validated.
+            pwd_hash (str, optional): The current password hash provided by the caller.
+                Required for AccessToken validation; ignored for AuthToken. Defaults to "".
+
+        Raises:
+            TypeError: If the provided token object is not a valid recognized instance.
+            BankSecurityError: If the cryptographic signature has been tampered with
+                or if the provided hash causes a signature mismatch.
+            ExpiredTokenError: If the authentic token's TTL has passed.
+        """
+        match token:
+            case AuthToken():
+                payload = f"{token.cpf}:{token.branch_code}:{token.account_num}"
+            case AccessToken():
+                payload = (
+                    f"{token.cpf}:{token.branch_code}:{token.account_num}:{pwd_hash}"
+                )
+            case _:
+                raise TypeError("Invalid token instance")
+
+        bank_signature = self._sign_token_payload(payload)
+
+        if not hmac.compare_digest(bank_signature, token.signature):
+            raise BankSecurityError("Security breach: Tampered token.")
+
+        if datetime.now() > token.expires_at:
+            raise ExpiredTokenError(
+                "This token is no longer valid because it has expired"
+            )
+
+    def _sign_token_payload(self, payload_str: str) -> str:
+        """
+        Generates a secure cryptographic signature for a given payload.
+
+        Uses HMAC (Hash-based Message Authentication Code) with SHA-256 and the
+        internal bank's secret key to ensure the payload cannot be forged or
+        altered by malicious actors.
+
+        Args:
+            payload_str (str): The raw string payload to be signed.
+
+        Returns:
+            str: A hexadecimal string representing the cryptographic signature.
+        """
+        payload_bytes = payload_str.encode("utf-8")
+        return hmac.new(self._secret_key, payload_bytes, hashlib.sha256).hexdigest()
+
+    def _generate_auth_token(
+        self, cpf: str, branch_code: str, account_num: str
+    ) -> AuthToken:
+        """
+        Issues an AuthToken for initial client identification.
+
+        This token grants 'Lobby' access, proving the client's identity and
+        allowing standard, non-sensitive operations (such as deposits) without
+        granting access to the account's vault.
+
+        Args:
+            cpf (str): The client's unique identification number.
+            branch_code (str): The 4-digit numeric branch code.
+            account_num (str): The account number.
+
+        Returns:
+            AuthToken: A securely signed identification token.
+        """
+        payload = f"{cpf}:{branch_code}:{account_num}"
+        signature = self._sign_token_payload(payload)
+
+        return AuthToken(
+            cpf=cpf,
+            branch_code=branch_code,
+            account_num=account_num,
+            signature=signature,
+            expires_at=datetime.now() + Bank.LOBBY_TIME_MINUTES,
+        )
+
+    def _generate_access_token(
+        self, auth_token: AuthToken, password_hash: str
+    ) -> AccessToken:
+        """
+        Issues a highly secure AccessToken for vault authorization.
+
+        This token represents a fully authenticated session. By injecting the
+        current database password hash into the cryptographic payload, it ensures
+        that the token becomes immediately invalid if the account password is
+        changed, providing defense-in-depth against session hijacking.
+
+        Args:
+            auth_token (AuthToken): The pre-validated identification token.
+            password_hash (str): The latest bcrypt password hash retrieved from
+                the database.
+
+        Returns:
+            AccessToken: A securely signed vault access token.
+        """
+        payload = f"{auth_token.cpf}:{auth_token.branch_code}:{auth_token.account_num}:{password_hash}"
+        signature = self._sign_token_payload(payload)
+
+        return AccessToken(
+            cpf=auth_token.cpf,
+            branch_code=auth_token.branch_code,
+            account_num=auth_token.account_num,
+            signature=signature,
+            expires_at=datetime.now() + Bank.VAULT_TIME_MINUTES,
+        )
+
+    def _account_factory(self, account_dto: NewAccountDTO) -> Account:
+        """
+        Internal factory to instantiate Account entities from a DTO.
+
+        Translates the integer flag within the DTO into the correct Account
+        subclass (CheckingAccount or SavingsAccount), keeping the Presentation
+        layer entirely decoupled from Domain implementations.
+
+        Args:
+            account_dto (NewAccountDTO): The immutable payload from the UI.
+
+        Returns:
+            Account: A fully initialized domain Account instance.
+        """
+        type_mapper = {1: CheckingAccount, 2: SavingsAccount}
+
+        acc_type = type_mapper[account_dto.account_type]
+        account_obj = acc_type(
+            account_dto.branch_code,
+            account_dto.account_num,
+        )
+
+        return account_obj
+
+    def _account_holder_factory(
+        self, acc_holder_dto: NewAccountHolderDTO
+    ) -> AccountHolder:
+        """
+        Internal factory to instantiate an AccountHolder entity from a DTO.
+
+        Args:
+            acc_holder_dto (NewAccountHolderDTO): The immutable payload containing the new account holder's data.
+
+        Returns:
+            AccountHolder: A fully initialized domain AccountHolder instance.
+        """
+        holder_obj = AccountHolder(
+            acc_holder_dto.name, acc_holder_dto.cpf, acc_holder_dto.birth_date
+        )
+
+        return holder_obj
+
+    def _get_account_holder(self, cpf: str) -> AccountHolder:
+        """
+        Retrieves a fully hydrated account holder entity from the repository.
+
+        Args:
+            cpf (str): The 11-digit string representing the account holder's CPF.
+
+        Returns:
+            AccountHolder: The domain AccountHolder object.
+
+        Raises:
+            AccountHolderNotFoundError: If the CPF is not registered in the system.
+        """
+        try:
+            holder_obj = self._repository.get_account_holder(cpf=cpf)
+            return holder_obj
+        except DataNotFoundError as e:
+            raise AccountHolderNotFoundError(
+                "No account holder registered under this CPF"
+            ) from e
+
+    def _cleanup_unlinked_holder(self, cpf: str) -> None:
+        """
+        Enforces the data retention policy by evaluating an account holder's linkage status.
+
+        Acts as an internal domain policy enforcement mechanism. It delegates to the
+        repository abstraction to determine if the specified holder maintains any
+        active accounts. If the holder is entirely unlinked (orphaned), it commands
+        the repository to permanently remove their identity records from the system.
+
+        This method executes state-mutating operations and strictly assumes it is
+        being orchestrated within an active transactional boundary established
+        by the caller.
+
+        Args:
+            cpf (str): The 11-digit string representing the account holder's CPF.
+
+        Raises:
+            DataNotFoundError: If the provided CPF does not exist in the persistence
+                layer when checking status or attempting deletion.
+        """
+        has_active_account = self._repository.holder_has_account(cpf)
+
+        if not has_active_account:
+            self._repository.delete_account_holder(cpf)
+
+    # --------------------------------------------------------------------------
+    # Static methods
+    # --------------------------------------------------------------------------
+
+    @staticmethod
+    def validate_password(password: str) -> None:
+        """
+        Validates the format of a password.
+
+        Args:
+            password (str): The password string to validate.
+
+        Raises:
+            TypeError: If the password is not a string (indicates a system type bug).
+            BankPasswordError: If the password does not consist of exactly 6 digits.
+        """
+        verify.verify_instance(password, str)
+        try:
+            verify.verify_digits(password, 6)
+        except ValueError as e:
+            raise BankPasswordError(f"Invalid password. Cause: {e}")

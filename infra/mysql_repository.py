@@ -51,8 +51,16 @@ class MySQLRepository:
             configured with a DictCursor.
     """
 
+    # --------------------------------------------------------------------------
+    # Class attributes
+    # --------------------------------------------------------------------------
+
     _connection: Connection[cursors.DictCursor]
     _in_transaction: bool
+
+    # --------------------------------------------------------------------------
+    # Constructor
+    # --------------------------------------------------------------------------
 
     def __init__(self) -> None:
         """
@@ -71,6 +79,10 @@ class MySQLRepository:
         )
 
         self._in_transaction = False
+
+    # --------------------------------------------------------------------------
+    # Public API
+    # --------------------------------------------------------------------------
 
     @contextmanager
     def unit_of_work(self) -> Iterator[None]:
@@ -111,140 +123,6 @@ class MySQLRepository:
             raise RuntimeError(f"Critical failure due to unmapped error: {e}") from e
         finally:
             self._in_transaction = False
-
-    def _insert_account_holder_record(
-        self, cursor: cursors.DictCursor, holder: AccountHolder
-    ) -> int:
-        """
-        Internal helper to persist a new AccountHolder entity within an active transaction.
-
-        Args:
-            cursor (cursors.DictCursor): The active database cursor.
-            holder (AccountHolder): The domain AccountHolder instance to be saved.
-
-        Returns:
-            int: The auto-generated database ID of the newly inserted account holder.
-
-        Raises:
-            DuplicatedDataError: If an account holder with the same CPF already exists.
-        """
-        query = "INSERT INTO account_holders (cpf, holder_name, birth_date) VALUES (%(cpf)s, %(name)s, %(birth_date)s)"
-        data = holder.to_dict()
-
-        try:
-            cursor.execute(query, data)
-            return cursor.lastrowid
-        except err.IntegrityError as e:
-            raise DuplicatedDataError(
-                f"Duplicated data in the database for {holder.cpf=}", holder
-            ) from e
-
-    def _get_account_holder_id(self, cursor: cursors.DictCursor, cpf: str) -> int:
-        """
-        Internal helper to retrieve an account holder's primary key ID by their CPF.
-
-        Args:
-            cursor (cursors.DictCursor): The active database cursor.
-            cpf (str): The 11-digit string representing the account holder's CPF.
-
-        Returns:
-            int: The primary key ID of the account holder.
-
-        Raises:
-            DataNotFoundError: If the CPF is not found in the database.
-        """
-        sql = "SELECT id FROM account_holders WHERE cpf = %s"
-
-        cursor.execute(sql, (cpf,))
-        result = cursor.fetchone()
-
-        if result is None:
-            raise DataNotFoundError(f"Data not found in the database for {cpf=}", cpf)
-
-        return result["id"]
-
-    def _insert_ledger_entries(
-        self,
-        cursor: cursors.DictCursor,
-        account_id: int,
-        events: tuple[LedgerEventDTO, ...],
-    ) -> None:
-        """
-        Helper method to insert ledger event records for auditing purposes.
-
-        Bulk inserts a sequence of discrete ledger events, recording the exact
-        balance prior to each operation alongside the amount and its semantic
-        business type, ensuring chronological consistency. Does NOT manage commits.
-
-        Args:
-            cursor (cursors.DictCursor): The active database cursor.
-            account_id (int): The primary key ID of the account.
-            events (tuple[LedgerEventDTO, ...]): A sequence of immutable event
-                payloads to be persisted.
-        """
-        sql = """INSERT INTO ledger_entries (account_id, previous_balance, amount, event_type)
-        VALUES (%s, %s, %s, %s)"""
-
-        values = [
-            (account_id, e.previous_balance, e.amount, e.event_type.value)
-            for e in events
-        ]
-        cursor.executemany(sql, values)
-
-    def _insert_account_record(
-        self,
-        cursor: cursors.DictCursor,
-        account: Account,
-        holder_id: int,
-        password_hash: str,
-    ) -> None:
-        """
-        Internal helper to persist a newly created Account.
-
-        This method is solely responsible for inserting
-        the base account entity into the database.
-
-        Args:
-            cursor (cursors.DictCursor): The active database cursor.
-            account (Account): The domain Account instance to be saved.
-            holder_id (int): The primary key ID of the parent account holder.
-            password_hash (str): The hashed password for account access.
-
-        Raises:
-            DuplicatedDataError: If an account with the same branch code and account_num already exists.
-        """
-        sql = (
-            "INSERT INTO accounts ( "
-            "branch_code, "
-            "account_num, "
-            "account_type, "
-            "is_frozen, "
-            "balance, "
-            "balance_updated_at, "
-            "password_hash, "
-            "account_holder_id) "
-            "VALUES ("
-            "%(branch_code)s, "
-            "%(account_num)s, "
-            "%(type)s, "
-            "%(is_frozen)s, "
-            "%(balance)s, "
-            "%(balance_updated_at)s, "
-            "%(password_hash)s, "
-            "%(holder_id)s)"
-        )
-
-        acc_dict = account.to_dict()
-        acc_dict["password_hash"] = password_hash
-        acc_dict["holder_id"] = holder_id
-
-        try:
-            cursor.execute(sql, acc_dict)
-        except err.IntegrityError as e:
-            raise DuplicatedDataError(
-                f"Duplicated data in the database for {account.branch_code}, {account.account_num}",
-                account,
-            ) from e
 
     def register_account_bundle(
         self, account: Account, holder_or_cpf: AccountHolder | str, password_hash: str
@@ -476,7 +354,7 @@ class MySQLRepository:
         holder_dict["name"] = result["holder_name"]
         holder_dict["birth_date"] = result["birth_date"]
         holder_dict["account_cards"] = cards_list
-        holder_obj = AccountHolder.from_dict(holder_dict)
+        holder_obj = AccountHolder.from_snapshot(holder_dict)
         return holder_obj
 
     def get_account_projection(
@@ -945,3 +823,141 @@ class MySQLRepository:
 
             if cursor.rowcount == 0:
                 raise DataNotFoundError(f"Data not found in the database for {cpf=}")
+
+    # --------------------------------------------------------------------------
+    # Protected methods
+    # --------------------------------------------------------------------------
+
+    def _insert_account_holder_record(
+        self, cursor: cursors.DictCursor, holder: AccountHolder
+    ) -> int:
+        """
+        Internal helper to persist a new AccountHolder entity within an active transaction.
+
+        Args:
+            cursor (cursors.DictCursor): The active database cursor.
+            holder (AccountHolder): The domain AccountHolder instance to be saved.
+
+        Returns:
+            int: The auto-generated database ID of the newly inserted account holder.
+
+        Raises:
+            DuplicatedDataError: If an account holder with the same CPF already exists.
+        """
+        query = "INSERT INTO account_holders (cpf, holder_name, birth_date) VALUES (%(cpf)s, %(name)s, %(birth_date)s)"
+        data = holder.to_snapshot()
+
+        try:
+            cursor.execute(query, data)
+            return cursor.lastrowid
+        except err.IntegrityError as e:
+            raise DuplicatedDataError(
+                f"Duplicated data in the database for {holder.cpf=}", holder
+            ) from e
+
+    def _get_account_holder_id(self, cursor: cursors.DictCursor, cpf: str) -> int:
+        """
+        Internal helper to retrieve an account holder's primary key ID by their CPF.
+
+        Args:
+            cursor (cursors.DictCursor): The active database cursor.
+            cpf (str): The 11-digit string representing the account holder's CPF.
+
+        Returns:
+            int: The primary key ID of the account holder.
+
+        Raises:
+            DataNotFoundError: If the CPF is not found in the database.
+        """
+        sql = "SELECT id FROM account_holders WHERE cpf = %s"
+
+        cursor.execute(sql, (cpf,))
+        result = cursor.fetchone()
+
+        if result is None:
+            raise DataNotFoundError(f"Data not found in the database for {cpf=}", cpf)
+
+        return result["id"]
+
+    def _insert_ledger_entries(
+        self,
+        cursor: cursors.DictCursor,
+        account_id: int,
+        events: tuple[LedgerEventDTO, ...],
+    ) -> None:
+        """
+        Helper method to insert ledger event records for auditing purposes.
+
+        Bulk inserts a sequence of discrete ledger events, recording the exact
+        balance prior to each operation alongside the amount and its semantic
+        business type, ensuring chronological consistency. Does NOT manage commits.
+
+        Args:
+            cursor (cursors.DictCursor): The active database cursor.
+            account_id (int): The primary key ID of the account.
+            events (tuple[LedgerEventDTO, ...]): A sequence of immutable event
+                payloads to be persisted.
+        """
+        sql = """INSERT INTO ledger_entries (account_id, previous_balance, amount, event_type)
+        VALUES (%s, %s, %s, %s)"""
+
+        values = [
+            (account_id, e.previous_balance, e.amount, e.event_type.value)
+            for e in events
+        ]
+        cursor.executemany(sql, values)
+
+    def _insert_account_record(
+        self,
+        cursor: cursors.DictCursor,
+        account: Account,
+        holder_id: int,
+        password_hash: str,
+    ) -> None:
+        """
+        Internal helper to persist a newly created Account.
+
+        This method is solely responsible for inserting
+        the base account entity into the database.
+
+        Args:
+            cursor (cursors.DictCursor): The active database cursor.
+            account (Account): The domain Account instance to be saved.
+            holder_id (int): The primary key ID of the parent account holder.
+            password_hash (str): The hashed password for account access.
+
+        Raises:
+            DuplicatedDataError: If an account with the same branch code and account_num already exists.
+        """
+        sql = (
+            "INSERT INTO accounts ( "
+            "branch_code, "
+            "account_num, "
+            "account_type, "
+            "is_frozen, "
+            "balance, "
+            "balance_updated_at, "
+            "password_hash, "
+            "account_holder_id) "
+            "VALUES ("
+            "%(branch_code)s, "
+            "%(account_num)s, "
+            "%(type)s, "
+            "%(is_frozen)s, "
+            "%(balance)s, "
+            "%(balance_updated_at)s, "
+            "%(password_hash)s, "
+            "%(holder_id)s)"
+        )
+
+        acc_dict = account.to_dict()
+        acc_dict["password_hash"] = password_hash
+        acc_dict["holder_id"] = holder_id
+
+        try:
+            cursor.execute(sql, acc_dict)
+        except err.IntegrityError as e:
+            raise DuplicatedDataError(
+                f"Duplicated data in the database for {account.branch_code}, {account.account_num}",
+                account,
+            ) from e

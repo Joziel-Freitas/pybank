@@ -39,6 +39,10 @@ class AccountHolder:
     a credential holder, decoupled from direct Account object ownership.
     """
 
+    # --------------------------------------------------------------------------
+    # Class attributes
+    # --------------------------------------------------------------------------
+
     MIN_AGE: ClassVar[int] = 18
     MAX_AGE: ClassVar[int] = 120
 
@@ -47,6 +51,10 @@ class AccountHolder:
     _cpf: str
     _birth_date: date
     _account_cards: set[AccountCard]
+
+    # --------------------------------------------------------------------------
+    # Constructor
+    # --------------------------------------------------------------------------
 
     def __init__(self, name: str, cpf: str, birth_date: date):
         """
@@ -66,6 +74,10 @@ class AccountHolder:
         self._cpf = AccountHolder.validate_cpf(cpf)
         self._birth_date: date = AccountHolder.validate_birth_date(birth_date)
         self._account_cards = set()
+
+    # --------------------------------------------------------------------------
+    # Dunder methods
+    # --------------------------------------------------------------------------
 
     def __repr__(self) -> str:
         """
@@ -99,6 +111,10 @@ class AccountHolder:
         if isinstance(card, AccountCard):
             return card in self._account_cards
         return False
+
+    # --------------------------------------------------------------------------
+    # Properties
+    # --------------------------------------------------------------------------
 
     @property
     def name(self) -> str:
@@ -134,6 +150,27 @@ class AccountHolder:
         the internal state from external callers.
         """
         return list(self._account_cards)
+
+    # --------------------------------------------------------------------------
+    # Public API
+    # --------------------------------------------------------------------------
+
+    def to_dict(self) -> dict:
+        """
+        Serializes the account holder data into a standard dictionary.
+
+        Includes a list of serialized AccountCards ('account_cards') to persist
+        the account holder's wallet of saved credentials.
+
+        Returns:
+            dict: The complete state dictionary, including personal info and cards.
+        """
+        return {
+            "name": self._name,
+            "birth_date": self._birth_date,
+            "cpf": self._cpf,
+            "account_cards": [asdict(card) for card in self._account_cards],
+        }
 
     def has_account(self, card: AccountCard) -> bool:
         """Checks if a specific card is registered to the account holder."""
@@ -182,6 +219,36 @@ class AccountHolder:
             )
 
         self._account_cards.remove(acc_card)
+
+    # --------------------------------------------------------------------------
+    # Class methods
+    # --------------------------------------------------------------------------
+
+    @classmethod
+    def from_dict(cls, data: dict) -> AccountHolder:
+        """
+        Reconstructs an AccountHolder instance and their associated account cards.
+
+        Args:
+            data (dict): The dictionary containing account holder data and cards.
+
+        Returns:
+            AccountHolder: The restored AccountHolder object with all its cards.
+        """
+        # Reconstruct the base instance running all domain validations via __init__
+        instance = cls(
+            name=data["name"], cpf=data["cpf"], birth_date=data["birth_date"]
+        )
+
+        # Populate the wallet
+        cards_list = data.get("account_cards", [])
+        instance._account_cards = {AccountCard(**card) for card in cards_list}
+
+        return instance
+
+    # --------------------------------------------------------------------------
+    # Static methods
+    # --------------------------------------------------------------------------
 
     @staticmethod
     def validate_name(name: str) -> str:
@@ -251,42 +318,3 @@ class AccountHolder:
             age -= 1
 
         return age
-
-    def to_dict(self) -> dict:
-        """
-        Serializes the account holder data into a standard dictionary.
-
-        Includes a list of serialized AccountCards ('account_cards') to persist
-        the account holder's wallet of saved credentials.
-
-        Returns:
-            dict: The complete state dictionary, including personal info and cards.
-        """
-        return {
-            "name": self._name,
-            "birth_date": self._birth_date,
-            "cpf": self._cpf,
-            "account_cards": [asdict(card) for card in self._account_cards],
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict) -> AccountHolder:
-        """
-        Reconstructs an AccountHolder instance and their associated account cards.
-
-        Args:
-            data (dict): The dictionary containing account holder data and cards.
-
-        Returns:
-            AccountHolder: The restored AccountHolder object with all its cards.
-        """
-        # Reconstruct the base instance running all domain validations via __init__
-        instance = cls(
-            name=data["name"], cpf=data["cpf"], birth_date=data["birth_date"]
-        )
-
-        # Populate the wallet
-        cards_list = data.get("account_cards", [])
-        instance._account_cards = {AccountCard(**card) for card in cards_list}
-
-        return instance
