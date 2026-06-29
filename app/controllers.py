@@ -30,8 +30,8 @@ from functools import partial
 from typing import Any, Callable, ClassVar, TypeVar, cast
 
 from domain.account import Account
+from domain.account_holder import AccountHolder
 from domain.bank import Bank
-from domain.person import Person
 from infra import config, io_utils, ui_messages, verify, views
 from infra.io_utils import CallbackReturn, InputType
 from settings import ADMIN_EXIT_CODE
@@ -287,9 +287,11 @@ class OnboardingController(BaseController, SharedPromptsMixin):
     """
 
     _validation_mapper = {
-        "name": validators.boolean_validator_dec(Person.validate_name),
-        "cpf": validators.boolean_validator_dec(Person.validate_cpf),
-        "birth_date": validators.boolean_validator_dec(Person.validate_birth_date),
+        "name": validators.boolean_validator_dec(AccountHolder.validate_name),
+        "cpf": validators.boolean_validator_dec(AccountHolder.validate_cpf),
+        "birth_date": validators.boolean_validator_dec(
+            AccountHolder.validate_birth_date
+        ),
         "account_type": validators.boolean_validator_dec(
             partial(verify.verify_interval, min_val=1, max_val=2)
         ),
@@ -738,7 +740,9 @@ class BankSystemController(BaseController, SharedPromptsMixin):
         "restricted_menu": validators.boolean_validator_dec(RestrictedMenuType),
         "cpf": validators.boolean_validator_dec(validators.validate_cpf),
         "password": validators.boolean_validator_dec(Bank.validate_password),
-        "birth_date": validators.boolean_validator_dec(Person.validate_birth_date),
+        "birth_date": validators.boolean_validator_dec(
+            AccountHolder.validate_birth_date
+        ),
         "use_card_menu": validators.boolean_validator_dec(UserConfirmType),
         "branch_code": validators.boolean_validator_dec(Account.validate_branch_code),
         "account_num": validators.boolean_validator_dec(
@@ -1037,7 +1041,7 @@ class BankSystemController(BaseController, SharedPromptsMixin):
         birth_date = _assert_input(raw_birth_date, date)
 
         try:
-            birth_date = Person.validate_birth_date(birth_date)
+            birth_date = AccountHolder.validate_birth_date(birth_date)
             self._bank_instance.unfreeze_account(
                 self._auth_token, birth_date, new_password
             )

@@ -20,7 +20,7 @@ from pymysql.connections import Connection
 from pymysql.constants import CLIENT
 
 from domain.account import Account
-from domain.person import AccountHolder
+from domain.account_holder import AccountHolder
 from infra import verify
 from shared.dtos import (
     AccessProjectionDTO,

@@ -61,7 +61,7 @@ from shared.exceptions import (
 )
 
 from .account import Account, CheckingAccount, SavingsAccount
-from .person import AccountHolder
+from .account_holder import AccountHolder
 
 
 class RepositoryProtocol(Protocol):
