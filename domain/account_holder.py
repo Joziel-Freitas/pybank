@@ -22,8 +22,6 @@ from infra import verify
 from shared import validators
 from shared.credentials import AccountCard
 from shared.exceptions import (
-    AccountHolderCardNotFoundError,
-    AccountHolderDuplicatedCardError,
     InvalidBirthDateError,
     InvalidCpfError,
     InvalidNameError,
@@ -32,11 +30,11 @@ from shared.exceptions import (
 
 class AccountHolder:
     """
-    The core entity representing a bank customer.
+    Represents a bank customer identity.
 
-    Manages the identity validations (CPF, Name, Age) and a unique set of
-    quick-access cards (AccountCard) for streamlined authentication. Acts as
-    a credential holder, decoupled from direct Account object ownership.
+    Encapsulates the business rules that validate a customer's identity
+    (Name, CPF and Birth Date) while holding the collection of stored
+    quick-access cards associated with that customer.
     """
 
     # --------------------------------------------------------------------------
@@ -103,38 +101,24 @@ class AccountHolder:
         """
         return hash(self._cpf)
 
-    def __contains__(self, card: AccountCard) -> bool:
-        """
-        Allows checking if an account card is registered using the `in` operator.
-        Leverages the O(1) average time complexity of Python's Set membership test.
-        """
-        if isinstance(card, AccountCard):
-            return card in self._account_cards
-        return False
-
     # --------------------------------------------------------------------------
     # Properties
     # --------------------------------------------------------------------------
 
     @property
     def name(self) -> str:
-        """Returns the person's name."""
+        """Returns the account holder's name."""
         return self._name
 
     @name.setter
     def name(self, name: str) -> None:
-        """Sets the person's name after validation."""
+        """Sets the account holder's name after validation."""
         self._name = AccountHolder.validate_name(name)
 
     @property
     def birth_date(self) -> date:
-        """Returns the person's birth date."""
+        """Returns the account holder's birth date."""
         return self._birth_date
-
-    @property
-    def age(self) -> int:
-        """Returns the person's current age in years."""
-        return self._calculate_age(self._birth_date)
 
     @property
     def cpf(self) -> str:
@@ -144,10 +128,10 @@ class AccountHolder:
     @property
     def cards(self) -> list[AccountCard]:
         """
-        Returns a list of the account holder's saved account cards.
+        Returns a shallow copy of the stored account cards.
 
-        Converts the internal set to a list to prevent direct mutation of
-        the internal state from external callers.
+        Converts the internal set into a new list to prevent external callers
+        from mutating the entity's internal collection.
         """
         return list(self._account_cards)
 
@@ -155,15 +139,13 @@ class AccountHolder:
     # Public API
     # --------------------------------------------------------------------------
 
-    def to_dict(self) -> dict:
+    def to_snapshot(self) -> dict:
         """
-        Serializes the account holder data into a standard dictionary.
-
-        Includes a list of serialized AccountCards ('account_cards') to persist
-        the account holder's wallet of saved credentials.
+        Creates a persistence snapshot representing the current entity state.
 
         Returns:
-            dict: The complete state dictionary, including personal info and cards.
+            dict: A snapshot containing only primitive values and serializable
+            value objects required to reconstruct this entity.
         """
         return {
             "name": self._name,
@@ -172,62 +154,14 @@ class AccountHolder:
             "account_cards": [asdict(card) for card in self._account_cards],
         }
 
-    def has_account(self, card: AccountCard) -> bool:
-        """Checks if a specific card is registered to the account holder."""
-        return card in self
-
-    def add_card(self, acc_card: AccountCard) -> None:
-        """
-        Stores a new access card in the account holder's wallet.
-
-        Args:
-            acc_card (AccountCard): The card object containing credentials.
-
-        Raises:
-            TypeError: If the input is not an instance of AccountCard.
-            AccountHolderDuplicatedCardError: If the card is already present.
-        """
-        if not isinstance(acc_card, AccountCard):
-            raise TypeError(
-                f"Invalid card type. Expected AccountCard, got {type(acc_card).__name__}"
-            )
-        if acc_card in self._account_cards:
-            raise AccountHolderDuplicatedCardError(
-                "Card already present in the account holder's card collection"
-            )
-
-        self._account_cards.add(acc_card)
-
-    def remove_card(self, acc_card: AccountCard) -> None:
-        """
-        Removes a specific card from the account holder's wallet.
-
-        Args:
-            acc_card (AccountCard): The card to be removed.
-
-        Raises:
-            TypeError: If the input is not an instance of AccountCard.
-            AccountHolderCardNotFoundError: If the card is not found in the wallet.
-        """
-        if not isinstance(acc_card, AccountCard):
-            raise TypeError(
-                f"Invalid card type. Expected AccountCard, got {type(acc_card).__name__}"
-            )
-        if acc_card not in self._account_cards:
-            raise AccountHolderCardNotFoundError(
-                "Card not found in the account holder's card collection"
-            )
-
-        self._account_cards.remove(acc_card)
-
     # --------------------------------------------------------------------------
     # Class methods
     # --------------------------------------------------------------------------
 
     @classmethod
-    def from_dict(cls, data: dict) -> AccountHolder:
+    def from_snapshot(cls, data: dict) -> AccountHolder:
         """
-        Reconstructs an AccountHolder instance and their associated account cards.
+        Rehydrates an AccountHolder from a previously captured persistence snapshot.
 
         Args:
             data (dict): The dictionary containing account holder data and cards.
@@ -240,7 +174,7 @@ class AccountHolder:
             name=data["name"], cpf=data["cpf"], birth_date=data["birth_date"]
         )
 
-        # Populate the wallet
+        # Restore the stored account cards
         cards_list = data.get("account_cards", [])
         instance._account_cards = {AccountCard(**card) for card in cards_list}
 
@@ -253,7 +187,7 @@ class AccountHolder:
     @staticmethod
     def validate_name(name: str) -> str:
         """
-        Validates the provided name string using Regular Expressions.
+        Validates an account holder name against the domain business rules.
         """
         verify.verify_instance(name, str)
 
@@ -273,18 +207,21 @@ class AccountHolder:
     @staticmethod
     def validate_cpf(cpf: str) -> str:
         """
-        Validates the CPF by delegating mathematical verification to infrastructure.
-        Acts as a Domain Facade, catching ValueError and raising InvalidCpfError.
+        Delegates the mathematical CPF validation to the shared validator while
+        translating infrastructure exceptions into domain-specific exceptions.
         """
         try:
             return validators.validate_cpf(cpf)
         except ValueError as e:
-            raise InvalidCpfError(f"Person CPF is invalid: {e}")
+            raise InvalidCpfError(f"Account Holder CPF is invalid: {e}")
 
     @staticmethod
     def validate_birth_date(birth_date: date) -> date:
         """
-        Validates a given birth date against domain business rules.
+        Validates a birth date against the account holder business rules.
+
+        The validation enforces that the birth date is not in the future and
+        that the resulting age falls within the supported range.
         """
         verify.verify_instance(birth_date, date)
 
@@ -293,7 +230,7 @@ class AccountHolder:
             if birth_date > today:
                 raise ValueError("Date of birth cannot be in the future")
 
-            age = AccountHolder._calculate_age(birth_date)
+            age = _calculate_age(birth_date)
 
             if not AccountHolder.MIN_AGE <= age <= AccountHolder.MAX_AGE:
                 raise ValueError(
@@ -306,15 +243,15 @@ class AccountHolder:
                 f"Value {birth_date} is invalid for date of birth. Cause: {e}"
             ) from e
 
-    @staticmethod
-    def _calculate_age(birth_date: date) -> int:
-        """
-        Calculates the person's age in years based on the birth date.
-        """
-        today = date.today()
-        age = today.year - birth_date.year
 
-        if (today.month, today.day) < (birth_date.month, birth_date.day):
-            age -= 1
+def _calculate_age(birth_date: date) -> int:
+    """
+    Module-level helper that calculates the age represented by a birth date.
+    """
+    today = date.today()
+    age = today.year - birth_date.year
 
-        return age
+    if (today.month, today.day) < (birth_date.month, birth_date.day):
+        age -= 1
+
+    return age
