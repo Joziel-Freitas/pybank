@@ -193,13 +193,13 @@ class MySQLRepository:
 
         select_sql = "SELECT id FROM accounts WHERE branch_code = %s AND account_num = %s FOR UPDATE"
         update_sql = (
-            "UPDATE accounts SET balance = %s, balance_updated_at = %s WHERE id = %s"
+            "UPDATE accounts SET balance = %s, last_balance_update = %s WHERE id = %s"
         )
 
         branch_code = account.branch_code
         account_num = account.account_num
         balance = account.balance
-        balance_update = account.balance_updated_at
+        last_balance_update = account.last_balance_update
 
         with self._connection.cursor() as cursor:
             cursor.execute(select_sql, (branch_code, account_num))
@@ -207,12 +207,12 @@ class MySQLRepository:
 
             if not result:
                 raise DataNotFoundError(
-                    f"Data not found in the database for {account.branch_code=}, {account.account_num=}"
+                    f"Data not found in the database for {branch_code=}, {account_num=}"
                 )
 
             account_id = result["id"]
 
-            cursor.execute(update_sql, (balance, balance_update, account_id))
+            cursor.execute(update_sql, (balance, last_balance_update, account_id))
 
             if cursor.rowcount == 0:
                 raise DataNotFoundError(
@@ -503,7 +503,7 @@ class MySQLRepository:
             "account_type": "type",
             "is_frozen": "is_frozen",
             "balance": "balance",
-            "balance_updated_at": "balance_updated_at",
+            "last_balance_update": "last_balance_update",
         }
         sql = f"SELECT * FROM accounts WHERE branch_code = %s AND account_num = %s {lock_clause}"
 
@@ -828,6 +828,30 @@ class MySQLRepository:
     # Protected methods
     # --------------------------------------------------------------------------
 
+    def _get_account_holder_id(self, cursor: cursors.DictCursor, cpf: str) -> int:
+        """
+        Internal helper to retrieve an account holder's primary key ID by their CPF.
+
+        Args:
+            cursor (cursors.DictCursor): The active database cursor.
+            cpf (str): The 11-digit string representing the account holder's CPF.
+
+        Returns:
+            int: The primary key ID of the account holder.
+
+        Raises:
+            DataNotFoundError: If the CPF is not found in the database.
+        """
+        sql = "SELECT id FROM account_holders WHERE cpf = %s"
+
+        cursor.execute(sql, (cpf,))
+        result = cursor.fetchone()
+
+        if result is None:
+            raise DataNotFoundError(f"Data not found in the database for {cpf=}", cpf)
+
+        return result["id"]
+
     def _insert_account_holder_record(
         self, cursor: cursors.DictCursor, holder: AccountHolder
     ) -> int:
@@ -854,58 +878,6 @@ class MySQLRepository:
             raise DuplicatedDataError(
                 f"Duplicated data in the database for {holder.cpf=}", holder
             ) from e
-
-    def _get_account_holder_id(self, cursor: cursors.DictCursor, cpf: str) -> int:
-        """
-        Internal helper to retrieve an account holder's primary key ID by their CPF.
-
-        Args:
-            cursor (cursors.DictCursor): The active database cursor.
-            cpf (str): The 11-digit string representing the account holder's CPF.
-
-        Returns:
-            int: The primary key ID of the account holder.
-
-        Raises:
-            DataNotFoundError: If the CPF is not found in the database.
-        """
-        sql = "SELECT id FROM account_holders WHERE cpf = %s"
-
-        cursor.execute(sql, (cpf,))
-        result = cursor.fetchone()
-
-        if result is None:
-            raise DataNotFoundError(f"Data not found in the database for {cpf=}", cpf)
-
-        return result["id"]
-
-    def _insert_ledger_entries(
-        self,
-        cursor: cursors.DictCursor,
-        account_id: int,
-        events: tuple[LedgerEventDTO, ...],
-    ) -> None:
-        """
-        Helper method to insert ledger event records for auditing purposes.
-
-        Bulk inserts a sequence of discrete ledger events, recording the exact
-        balance prior to each operation alongside the amount and its semantic
-        business type, ensuring chronological consistency. Does NOT manage commits.
-
-        Args:
-            cursor (cursors.DictCursor): The active database cursor.
-            account_id (int): The primary key ID of the account.
-            events (tuple[LedgerEventDTO, ...]): A sequence of immutable event
-                payloads to be persisted.
-        """
-        sql = """INSERT INTO ledger_entries (account_id, previous_balance, amount, event_type)
-        VALUES (%s, %s, %s, %s)"""
-
-        values = [
-            (account_id, e.previous_balance, e.amount, e.event_type.value)
-            for e in events
-        ]
-        cursor.executemany(sql, values)
 
     def _insert_account_record(
         self,
@@ -936,7 +908,7 @@ class MySQLRepository:
             "account_type, "
             "is_frozen, "
             "balance, "
-            "balance_updated_at, "
+            "last_balance_update, "
             "password_hash, "
             "account_holder_id) "
             "VALUES ("
@@ -945,7 +917,7 @@ class MySQLRepository:
             "%(type)s, "
             "%(is_frozen)s, "
             "%(balance)s, "
-            "%(balance_updated_at)s, "
+            "%(last_balance_update)s, "
             "%(password_hash)s, "
             "%(holder_id)s)"
         )
@@ -961,3 +933,31 @@ class MySQLRepository:
                 f"Duplicated data in the database for {account.branch_code}, {account.account_num}",
                 account,
             ) from e
+
+    def _insert_ledger_entries(
+        self,
+        cursor: cursors.DictCursor,
+        account_id: int,
+        events: tuple[LedgerEventDTO, ...],
+    ) -> None:
+        """
+        Helper method to insert ledger event records for auditing purposes.
+
+        Bulk inserts a sequence of discrete ledger events, recording the exact
+        balance prior to each operation alongside the amount and its semantic
+        business type, ensuring chronological consistency. Does NOT manage commits.
+
+        Args:
+            cursor (cursors.DictCursor): The active database cursor.
+            account_id (int): The primary key ID of the account.
+            events (tuple[LedgerEventDTO, ...]): A sequence of immutable event
+                payloads to be persisted.
+        """
+        sql = """INSERT INTO ledger_entries (account_id, previous_balance, amount, event_type)
+        VALUES (%s, %s, %s, %s)"""
+
+        values = [
+            (account_id, e.previous_balance, e.amount, e.event_type.value)
+            for e in events
+        ]
+        cursor.executemany(sql, values)

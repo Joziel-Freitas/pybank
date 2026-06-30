@@ -44,7 +44,7 @@ class Account(ABC):
         _account_num (str): The validated unique account number.
         _is_frozen (bool): The operational status of the account (True if blocked).
         _balance (Decimal): The current authoritative account balance.
-        _balance_updated_at (date): The exact temporal anchor of the last
+        _last_balance_update (date): The exact temporal anchor of the last
         balance mutation, used for calculating precise daily accruals.
     """
 
@@ -59,7 +59,7 @@ class Account(ABC):
     _account_num: str
     _is_frozen: bool
     _balance: Decimal
-    _balance_updated_at: date
+    _last_balance_update: date
 
     # --------------------------------------------------------------------------
     # Constructor
@@ -85,7 +85,7 @@ class Account(ABC):
         self._account_num = Account.validate_account_number(account_num)
         self._is_frozen = False
         self._balance = Decimal("0.00")
-        self._balance_updated_at = clock.get_today()
+        self._last_balance_update = clock.get_today()
 
     # --------------------------------------------------------------------------
     # Dunder methods
@@ -100,7 +100,7 @@ class Account(ABC):
             f"branch_code={self._branch_code!r}, "
             f"account_num={self._account_num!r}, "
             f"balance={self._balance!r}, "
-            f"balance_updated_at={self._balance_updated_at!r})"
+            f"last_balance_update={self._last_balance_update!r})"
         )
 
     def __eq__(self, other: object) -> bool:
@@ -157,9 +157,9 @@ class Account(ABC):
         return self._balance
 
     @property
-    def balance_updated_at(self) -> date:
+    def last_balance_update(self) -> date:
         """Returns the calendar date of the last balance update."""
-        return self._balance_updated_at
+        return self._last_balance_update
 
     @property
     @abstractmethod
@@ -234,7 +234,7 @@ class Account(ABC):
             "type": type(self).__name__,
             "is_frozen": self._is_frozen,
             "balance": self._balance,
-            "balance_updated_at": self._balance_updated_at,
+            "last_balance_update": self._last_balance_update,
         }
 
     def freeze(self) -> None:
@@ -331,7 +331,7 @@ class Account(ABC):
                 Negative values are inherently supported for debits/withdrawals.
         """
         self._balance += amount
-        self._balance_updated_at = clock.get_today()
+        self._last_balance_update = clock.get_today()
 
     def _apply_accrual(self) -> LedgerEventDTO | None:
         """
@@ -477,7 +477,7 @@ class Account(ABC):
 
         Args:
             data (dict[str, Any]): The dictionary containing raw account data.
-                Expects 'balance_updated_at' to be a valid datetime object.
+                Expects 'last_balance_update' to be a valid date object.
 
         Returns:
             Account: A fully initialized instance of the specific Account subclass.
@@ -507,7 +507,7 @@ class Account(ABC):
         )
         instance._is_frozen = data["is_frozen"]
         instance._balance = data["balance"]
-        instance._balance_updated_at = data["balance_updated_at"]
+        instance._last_balance_update = data["last_balance_update"]
 
         return instance
 
@@ -609,7 +609,7 @@ class SavingsAccount(Account):
             Decimal: The precise yield amount pending materialization,
                 strictly formatted to two decimal places.
         """
-        time_delta = clock.get_today() - self._balance_updated_at
+        time_delta = clock.get_today() - self._last_balance_update
         delta_days = time_delta.days
         new_amount = self._balance * (1 + self.DAILY_EARNINGS_RATE) ** delta_days
         earnings = new_amount - self._balance
@@ -788,7 +788,7 @@ class CheckingAccount(Account):
         if self._balance >= 0:
             return Decimal("0.00")
 
-        time_delta = clock.get_today() - self._balance_updated_at
+        time_delta = clock.get_today() - self._last_balance_update
         delta_days = time_delta.days
 
         interest = abs(self._balance) * (
