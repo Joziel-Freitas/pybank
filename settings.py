@@ -8,6 +8,7 @@ entire application.
 """
 
 from os import environ
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
@@ -40,3 +41,12 @@ ADMIN_EXIT_CODE: int = int(environ.get("PYBANK_ADMIN_CODE", "999999"))
 
 # Maximum allowed idle time (in seconds) before killing a user session
 SYSTEM_TIMEOUT: float = float(environ.get("SYSTEM_TIMEOUT", "30.0"))
+
+# ==============================================================================
+# System Locality & Time
+# ==============================================================================
+# The default timezone used for all business time calculations.
+# Ensures deterministic financial operations regardless of the host OS timezone.
+SYSTEM_TIMEZONE: ZoneInfo = ZoneInfo(
+    environ.get("SYSTEM_TIMEZONE", "America/Sao_Paulo")
+)

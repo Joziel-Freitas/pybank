@@ -14,11 +14,12 @@ audit trail for the repository layer.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import date
 from decimal import Decimal
 from typing import Any, ClassVar, cast
 
 from infra import verify
+from shared import clock
 from shared.dtos import AccountFinancialDTO, LedgerEventDTO, WithdrawalSimulationDTO
 from shared.exceptions import (
     FrozenAccountError,
@@ -43,8 +44,8 @@ class Account(ABC):
         _account_num (str): The validated unique account number.
         _is_frozen (bool): The operational status of the account (True if blocked).
         _balance (Decimal): The current authoritative account balance.
-        _balance_updated_at (datetime): The exact temporal anchor of the last
-            balance mutation, used for calculating precise daily accruals.
+        _balance_updated_at (date): The exact temporal anchor of the last
+        balance mutation, used for calculating precise daily accruals.
     """
 
     # --------------------------------------------------------------------------
@@ -58,7 +59,7 @@ class Account(ABC):
     _account_num: str
     _is_frozen: bool
     _balance: Decimal
-    _balance_updated_at: datetime
+    _balance_updated_at: date
 
     # --------------------------------------------------------------------------
     # Constructor
@@ -69,7 +70,7 @@ class Account(ABC):
         Initializes a new Account instance with validated identifiers.
 
         Sets the initial financial state to zero and initializes the domain
-        clock to the current datetime. The account is created in an active
+        clock to the current system date. The account is created in an active
         (unfrozen) state by default.
 
         Args:
@@ -84,7 +85,7 @@ class Account(ABC):
         self._account_num = Account.validate_account_number(account_num)
         self._is_frozen = False
         self._balance = Decimal("0.00")
-        self._balance_updated_at = datetime.now()
+        self._balance_updated_at = clock.get_today()
 
     # --------------------------------------------------------------------------
     # Dunder methods
@@ -156,8 +157,8 @@ class Account(ABC):
         return self._balance
 
     @property
-    def balance_updated_at(self) -> datetime:
-        """Returns the datetime of the last balance update"""
+    def balance_updated_at(self) -> date:
+        """Returns the calendar date of the last balance update."""
         return self._balance_updated_at
 
     @property
@@ -330,7 +331,7 @@ class Account(ABC):
                 Negative values are inherently supported for debits/withdrawals.
         """
         self._balance += amount
-        self._balance_updated_at = datetime.now()
+        self._balance_updated_at = clock.get_today()
 
     def _apply_accrual(self) -> LedgerEventDTO | None:
         """
@@ -608,7 +609,7 @@ class SavingsAccount(Account):
             Decimal: The precise yield amount pending materialization,
                 strictly formatted to two decimal places.
         """
-        time_delta = datetime.now().date() - self._balance_updated_at.date()
+        time_delta = clock.get_today() - self._balance_updated_at
         delta_days = time_delta.days
         new_amount = self._balance * (1 + self.DAILY_EARNINGS_RATE) ** delta_days
         earnings = new_amount - self._balance
@@ -650,7 +651,7 @@ class SavingsAccount(Account):
             overdraft_limit=None,
             available_overdraft=None,
             available_balance=self.available_funds,
-            issue_at=datetime.today().date(),
+            issue_at=clock.get_today(),
         )
 
     @classmethod
@@ -787,7 +788,7 @@ class CheckingAccount(Account):
         if self._balance >= 0:
             return Decimal("0.00")
 
-        time_delta = datetime.today().date() - self._balance_updated_at.date()
+        time_delta = clock.get_today() - self._balance_updated_at
         delta_days = time_delta.days
 
         interest = abs(self._balance) * (
@@ -840,7 +841,7 @@ class CheckingAccount(Account):
             overdraft_limit=self.OVERDRAFT_LIMIT,
             available_overdraft=total_overdraft,
             available_balance=available_amount,
-            issue_at=datetime.today().date(),
+            issue_at=clock.get_today(),
         )
 
     def simulate_withdrawal(self, amount: Decimal) -> WithdrawalSimulationDTO:

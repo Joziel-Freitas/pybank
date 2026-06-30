@@ -19,6 +19,7 @@ from typing import Any
 from inputimeout import TimeoutOccurred, inputimeout
 
 from settings import BANK_NAME
+from shared import clock
 from shared.exceptions import InactiveUserError
 
 SCREEN_WIDTH = 45
@@ -172,9 +173,9 @@ def _balance_statement_header(account_info: dict[str, Any]) -> None:
     """
     subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
 
-    dt = datetime.now()
-    date = dt.today().strftime("%d/%m/%Y")
-    time = dt.time().strftime("%H:%M:%S")
+    now = clock.get_now()
+    date = now.strftime("%d/%m/%Y")
+    time = now.strftime("%H:%M:%S")
 
     name = account_info["holder_name"]
     branch_code = account_info["branch_code"]

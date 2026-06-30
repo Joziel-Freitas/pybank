@@ -10,7 +10,7 @@ into pure Python domain objects.
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date
 from os import environ
 from typing import Any
 
@@ -526,7 +526,7 @@ class MySQLRepository:
             return account_obj
 
     def get_ledger_events(
-        self, branch_code: str, account_num: str, start_date: datetime
+        self, branch_code: str, account_num: str, start_date: date
     ) -> tuple[dict[str, Any], ...]:
         """
         Retrieves a chronological record of financial events (ledger entries) for a specific account.
@@ -544,7 +544,7 @@ class MySQLRepository:
         Args:
             branch_code (str): The 4-digit string representing the branch.
             account_num (str): The unique 8-digit string representing the account.
-            start_date (datetime): The cutoff date; fetches all events occurring
+            start_date (date): The cutoff date; fetches all events occurring
                 on or after this exact timestamp.
 
         Returns:
@@ -559,7 +559,7 @@ class MySQLRepository:
         """
         verify.verify_instance(branch_code, str)
         verify.verify_instance(account_num, str)
-        verify.verify_instance(start_date, datetime)
+        verify.verify_instance(start_date, date)
 
         if not self.account_exists(branch_code, account_num):
             raise DataNotFoundError(

@@ -22,13 +22,14 @@ import hashlib
 import hmac
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any, ClassVar, Protocol
 
 import bcrypt
 
 from infra import verify
+from shared import clock
 from shared.credentials import AccessToken, AccountCard, AuthToken
 from shared.dtos import (
     AccountProjectionDTO,
@@ -97,7 +98,7 @@ class RepositoryProtocol(Protocol):
     ) -> Account: ...
 
     def get_ledger_events(
-        self, branch_code: str, account_num: str, start_date: datetime
+        self, branch_code: str, account_num: str, start_date: date
     ) -> tuple[dict[str, Any], ...]: ...
 
     def register_account_bundle(
@@ -818,7 +819,7 @@ class Bank:
             ) from e
 
     def generate_statement(
-        self, access_token: AccessToken, start_date: datetime
+        self, access_token: AccessToken, start_date: date
     ) -> StatementDTO:
         """
         Retrieves a mathematically consistent, chronologically ordered bank statement.
@@ -831,7 +832,7 @@ class Bank:
 
         Args:
             access_token (AccessToken): A valid, securely signed vault token.
-            start_date (datetime): The cutoff date for filtering historical ledger events.
+            start_date (date): The cutoff date for filtering historical ledger events.
 
         Returns:
             StatementDTO: An immutable snapshot combining the account's complete
@@ -848,7 +849,7 @@ class Bank:
             RuntimeError: If the repository fails to return the requested DTO state.
         """
         verify.verify_instance(access_token, AccessToken)
-        verify.verify_instance(start_date, datetime)
+        verify.verify_instance(start_date, date)
 
         try:
             with self._repository.unit_of_work():
@@ -1190,7 +1191,7 @@ class Bank:
         if not hmac.compare_digest(bank_signature, token.signature):
             raise BankSecurityError("Security breach: Tampered token.")
 
-        if datetime.now() > token.expires_at:
+        if clock.get_now() > token.expires_at:
             raise ExpiredTokenError(
                 "This token is no longer valid because it has expired"
             )
@@ -1238,7 +1239,7 @@ class Bank:
             branch_code=branch_code,
             account_num=account_num,
             signature=signature,
-            expires_at=datetime.now() + Bank.LOBBY_TIME_MINUTES,
+            expires_at=clock.get_now() + Bank.LOBBY_TIME_MINUTES,
         )
 
     def _generate_access_token(
@@ -1268,7 +1269,7 @@ class Bank:
             branch_code=auth_token.branch_code,
             account_num=auth_token.account_num,
             signature=signature,
-            expires_at=datetime.now() + Bank.VAULT_TIME_MINUTES,
+            expires_at=clock.get_now() + Bank.VAULT_TIME_MINUTES,
         )
 
     def _account_factory(self, account_dto: NewAccountDTO) -> Account:

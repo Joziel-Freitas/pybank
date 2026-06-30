@@ -19,7 +19,7 @@ from datetime import date
 from typing import ClassVar
 
 from infra import verify
-from shared import validators
+from shared import clock, validators
 from shared.credentials import AccountCard
 from shared.exceptions import (
     InvalidBirthDateError,
@@ -226,7 +226,7 @@ class AccountHolder:
         verify.verify_instance(birth_date, date)
 
         try:
-            today = date.today()
+            today = clock.get_today()
             if birth_date > today:
                 raise ValueError("Date of birth cannot be in the future")
 
@@ -246,9 +246,10 @@ class AccountHolder:
 
 def _calculate_age(birth_date: date) -> int:
     """
-    Module-level helper that calculates the age represented by a birth date.
+    Module-level helper that calculates the current age represented by a birth date
+    using the application's canonical business date.
     """
-    today = date.today()
+    today = clock.get_today()
     age = today.year - birth_date.year
 
     if (today.month, today.day) < (birth_date.month, birth_date.day):

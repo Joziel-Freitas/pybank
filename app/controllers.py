@@ -24,7 +24,7 @@ domain state directly.
 
 from abc import ABC, abstractmethod
 from dataclasses import asdict
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from functools import partial
 from typing import Any, Callable, ClassVar, TypeVar, cast
@@ -35,7 +35,7 @@ from domain.bank import Bank
 from infra import config, io_utils, ui_messages, verify, views
 from infra.io_utils import CallbackReturn, InputType
 from settings import ADMIN_EXIT_CODE
-from shared import exceptions, validators
+from shared import clock, exceptions, validators
 from shared.credentials import AccessToken, AccountCard, AuthToken
 from shared.dtos import AccountSummaryDTO, NewAccountDTO, NewAccountHolderDTO
 from shared.exceptions import (
@@ -687,7 +687,7 @@ class TransactionController(BaseController):
         )
         int_user_in = _assert_input(user_in_raw, int)
         days = days_mapper[int_user_in]
-        start_date = datetime.now() - timedelta(days=days)
+        start_date = clock.get_today() - timedelta(days=days)
 
         statement_dto = self._bank_instance.generate_statement(
             self._active_access_token, start_date
