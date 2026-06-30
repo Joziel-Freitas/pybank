@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class AccountCard:
     """
     Immutable value object representing the credentials for quick account access.
@@ -37,7 +37,7 @@ class AccountCard:
         return f"CPF {self.cpf} | Ag {self.branch_code} Conta {self.account_num}"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class AuthToken:
     """
     Represents a secure access token for stateless authentication.
@@ -63,7 +63,7 @@ class AuthToken:
     expires_at: datetime
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class AccessToken:
     """
     Represents a highly secure, stateless token granting full vault access.
