@@ -285,3 +285,41 @@ class AccountProjectionDTO:
     is_frozen: bool
     access_info: AccessProjectionDTO | None
     holder_info: HolderProjectionDTO | None
+
+    def unwrap_holder(self) -> HolderProjectionDTO:
+        """
+        Safely extracts the nested identity projection.
+
+        Acts as a strict type-narrowing mechanism. It guarantees to both the
+        static type checker and the runtime caller that the nested DTO exists,
+        eliminating the need for repetitive 'is None' checks in the Domain layer.
+
+        Returns:
+            HolderProjectionDTO: The hydrated identity context.
+
+        Raises:
+            RuntimeError: If the projection was originally queried from the
+                database without explicitly requesting holder information.
+        """
+        if self.holder_info is None:
+            raise RuntimeError("holder_info was not hydrated in this projection")
+        return self.holder_info
+
+    def unwrap_access(self) -> AccessProjectionDTO:
+        """
+        Safely extracts the nested security projection.
+
+        Acts as a strict type-narrowing mechanism. It guarantees to both the
+        static type checker and the runtime caller that the nested DTO exists,
+        eliminating the need for repetitive 'is None' checks in the Domain layer.
+
+        Returns:
+            AccessProjectionDTO: The hydrated security context.
+
+        Raises:
+            RuntimeError: If the projection was originally queried from the
+                database without explicitly requesting access information.
+        """
+        if self.access_info is None:
+            raise RuntimeError("access_info was not hydrated in this projection")
+        return self.access_info

@@ -30,11 +30,13 @@ import bcrypt
 
 from infra import verify
 from shared import clock
+from shared.validators import boolean_validator_dec
 from shared.credentials import AccessToken, AccountCard, AuthToken
 from shared.dtos import (
     AccountProjectionDTO,
     AccountSummaryDTO,
     DepositTargetDTO,
+    AccessProjectionDTO,
     LedgerEventDTO,
     NewAccountDTO,
     NewAccountHolderDTO,
@@ -50,6 +52,7 @@ from shared.exceptions import (
     BankPasswordError,
     BankSecurityError,
     BankUnavailableError,
+    BankError,
     DataNotFoundError,
     DuplicatedAccountError,
     DuplicatedAccountHolderError,
@@ -395,10 +398,9 @@ class Bank:
                 "Authentication failed: Account not found in system register"
             )
 
-        if not account_info.holder_info:
-            raise RuntimeError("Invalid DTO state")
+        holder_info = account_info.unwrap_holder()
 
-        if account_info.holder_info.cpf != cpf:
+        if holder_info.cpf != cpf:
             raise BankAuthenticationError(
                 "Authentication failed: Account not linked to this client"
             )
@@ -439,54 +441,53 @@ class Bank:
         except DataNotFoundError as e:
             raise BankAuthenticationError("Account no longer exists") from e
 
-        if not account_info.access_info:
-            raise RuntimeError("Invalid DTO state")
+        access_info = account_info.unwrap_access()
 
-        return max(
-            0, self.MAX_LOGIN_ATTEMPTS - account_info.access_info.failed_attempts
-        )
+        return max(0, self.MAX_LOGIN_ATTEMPTS - access_info.failed_attempts)
 
     def authorize_vault_access(
         self, auth_token: AuthToken, password: str
     ) -> AccessToken:
         """
-        The primary security checkpoint and brute-force mitigation mechanism.
+        Executes the complete Vault Authentication Protocol.
 
-        This method upgrades 'Lobby' access (AuthToken) to 'Vault' access
-        (AccessToken). Operating under a Zero Trust model, it verifies the
-        token's integrity and validates the password against the stored Bcrypt hash.
+        This method upgrades a previously authenticated Lobby session (AuthToken)
+        into full Vault access (AccessToken) by orchestrating the entire security
+        authentication workflow under a single atomic transaction.
 
-        To simulate real-world ATM behavior, it explicitly denies vault access to
-        frozen accounts, preventing any operations (including read-only views) until
-        the account is formally unfrozen via identity verification.
+        Operating under a Zero Trust model, the protocol performs:
 
-        To mitigate brute-force attacks, it tracks failed login attempts. It employs
-        an isolated state transaction (Unit of Work) with exclusive access control
-        to guarantee that login failures are reliably recorded and the account is
-        frozen if the maximum threshold is reached, seamlessly preventing TOCTOU
-        race conditions during the security update.
+        1. Token integrity validation.
+        2. Exclusive retrieval of the account security projection.
+        3. Frozen-account enforcement.
+        4. Password verification against the stored BCrypt hash.
+        5. Automatic reset of failed login attempts after successful authentication.
+        6. Registration of failed attempts and automatic account freezing when the
+        configured security threshold is reached.
+
+        All security state transitions occur inside a single Unit of Work protected
+        by pessimistic locking, guaranteeing consistency under concurrent access and
+        eliminating TOCTOU race conditions during authentication.
 
         Args:
             auth_token (AuthToken): A valid, securely signed authentication token.
             password (str): The raw 6-digit password provided by the user.
 
         Returns:
-            AccessToken: The cryptographic key granting full vault access.
+            AccessToken: A cryptographic token granting full Vault access.
 
         Raises:
-            TypeError: If the provided token is not of the expected type.
-            ExpiredTokenError: If the provided AuthToken has passed its Time-To-Live (TTL).
-            BankPasswordError: If the provided password format is invalid.
-            BankSecurityError: If the AuthToken is tampered with.
-            BankAccessError: If the account is already frozen, or if it reaches
-                the maximum allowed failed login attempts during this check.
-            BankAuthenticationError: If the provided password does not match the hash
-                (returns the 'password' object reference in the 'argument' attribute),
-                or if the account no longer exists during the active session (TOCTOU
-                mitigation, 'argument' is not set).
-            RuntimeError: If the repository fails to return the requested DTO state.
-            BankUnavailableError: If the validation or security updates could not
-                be persisted due to an internal infrastructure error.
+            TypeError: If the provided arguments are of invalid types.
+            ExpiredTokenError: If the authentication token has expired.
+            BankPasswordError: If the supplied password has an invalid format.
+            BankSecurityError: If the authentication token fails integrity validation.
+            BankAccessError: If the account is already frozen, or becomes frozen after
+                reaching the maximum allowed number of failed login attempts.
+            BankAuthenticationError: If the password is incorrect, or if the account
+                no longer exists during protocol execution.
+            RuntimeError: If an unexpected projection inconsistency is detected.
+            BankUnavailableError: If the security protocol cannot be completed because
+                its state changes could not be safely persisted.
         """
         verify.verify_instance(auth_token, AuthToken)
         Bank.validate_password(password)
@@ -501,54 +502,25 @@ class Bank:
                     for_update=True,
                 )
 
-                if not account_info.access_info:
-                    raise RuntimeError("Invalid DTO state")
-
                 if account_info.is_frozen:
                     raise BankAccessError(
                         "This account is blocked and cannot be accessed"
                     )
 
-                auth_exception = None
-                access_exception = None
+                access_info = account_info.unwrap_access()
 
-                try:
-                    self._check_password(
-                        password, account_info.access_info.password_hash
-                    )
-                except BankAuthenticationError as e:
-                    e.argument = password
-                    auth_exception = e
-
-                if not auth_exception:
-                    if account_info.access_info.failed_attempts:
-                        self._repository.reset_login_attempts(
-                            auth_token.branch_code, auth_token.account_num
-                        )
-
-                    return self._generate_access_token(
-                        auth_token=auth_token,
-                        password_hash=account_info.access_info.password_hash,
+                if self._is_password_valid(password, access_info.password_hash):
+                    return self._login_success_route(
+                        auth_token,
+                        access_info.password_hash,
+                        access_info.failed_attempts,
                     )
 
-                self._repository.register_failed_login(
-                    auth_token.branch_code, auth_token.account_num
+                exception_to_raise = self._login_failed_route(
+                    auth_token, access_info.failed_attempts, password
                 )
-                if (
-                    account_info.access_info.failed_attempts + 1
-                ) >= self.MAX_LOGIN_ATTEMPTS:
-                    account = self._repository.get_account(
-                        auth_token.branch_code,
-                        auth_token.account_num,
-                        for_update=True,
-                    )
 
-                    account.freeze()
-                    self._repository.update_account_status(account)
-                    access_exception = BankAccessError(
-                        "The account was frozen due to 3 consecutive failed login attempts"
-                    )
-            raise access_exception or auth_exception
+            raise exception_to_raise
         except DataNotFoundError as e:
             raise BankAuthenticationError(
                 "Authentication failed: Account no longer exists"
@@ -590,14 +562,13 @@ class Bank:
                 "The requested account does not exist in our records"
             ) from e
 
-        if not account_info.holder_info:
-            raise RuntimeError("Invalid DTO state")
+        holder_info = account_info.unwrap_holder()
 
-        raw_cpf = account_info.holder_info.cpf
+        raw_cpf = holder_info.cpf
         masked_cpf = f"***{raw_cpf[3:9]}**"
 
         return DepositTargetDTO(
-            holder_name=account_info.holder_info.name,
+            holder_name=holder_info.name,
             holder_cpf=masked_cpf,
             branch_code=account_info.branch_code,
             account_num=account_info.account_num,
@@ -630,18 +601,18 @@ class Bank:
                 status flags, and dynamically populated financial data if requested.
 
         Raises:
-            BankAccessError: If financial data is requested but only an AuthToken is provided.
             ExpiredTokenError: If the token's TTL has passed.
             BankSecurityError: If the token is invalid, tampered with, or if cryptographic
                 validation against the live database hash fails (Zero Trust enforcement).
             BankAuthenticationError: If the account or holder no longer exists (TOCTOU mitigation).
-            RuntimeError: If the repository returns a corrupted or incomplete projection state.
+            RuntimeError: If the repository returns a corrupted or incomplete projection state or
+                if financial data is requested but only an AuthToken is provided.
         """
         verify.verify_instance(token, (AuthToken, AccessToken))
         verify.verify_instance(request_financial, bool)
 
         if request_financial and isinstance(token, AuthToken):
-            raise BankAccessError("Financial info requires AccessToken")
+            raise RuntimeError("Financial info requires AccessToken")
 
         account_obj = None
         financial_dto = None
@@ -663,19 +634,17 @@ class Bank:
                 "Authentication failed: Account no longer exists"
             )
 
-        if not account_info.holder_info or (
-            request_financial and not account_info.access_info
-        ):
-            raise RuntimeError("Invalid DTO state")
-
-        if request_financial and account_info.access_info and account_obj:
+        if request_financial and account_obj:
+            access_info = account_info.unwrap_access()
             financial_dto = account_obj.financial_info
-            pwd_hash = account_info.access_info.password_hash
+            pwd_hash = access_info.password_hash
 
         self._validate_token_integrity(token, pwd_hash)
 
+        holder_info = account_info.unwrap_holder()
+
         return AccountSummaryDTO(
-            holder_name=account_info.holder_info.name,
+            holder_name=holder_info.name,
             branch_code=account_info.branch_code,
             account_num=account_info.account_num,
             account_type=account_info.account_type,
@@ -788,12 +757,9 @@ class Bank:
                 "Authentication failed: Account no longer exists"
             ) from e
 
-        if not account_info.access_info:
-            raise RuntimeError("Invalid DTO state")
+        access_info = account_info.unwrap_access()
 
-        self._validate_token_integrity(
-            access_token, account_info.access_info.password_hash
-        )
+        self._validate_token_integrity(access_token, access_info.password_hash)
 
         try:
             with self._repository.unit_of_work():
@@ -908,12 +874,10 @@ class Bank:
                     access_info=True,
                     for_update=True,
                 )
-                if not account_info.access_info:
-                    raise RuntimeError("Invalid DTO state")
 
-                self._validate_token_integrity(
-                    access_token, account_info.access_info.password_hash
-                )
+                access_info = account_info.unwrap_access()
+
+                self._validate_token_integrity(access_token, access_info.password_hash)
 
                 if account_info.is_frozen:
                     raise BankAccessError(
@@ -981,15 +945,14 @@ class Bank:
                     for_update=True,
                 )
 
-                if not account_info.holder_info:
-                    raise RuntimeError("Invalid DTO state")
-
                 if not account_info.is_frozen:
                     raise AccountAlreadyActiveError(
                         "Operational accounts cannot be unfrozen"
                     )
 
-                if account_info.holder_info.birth_date != birth_date:
+                holder_info = account_info.unwrap_holder()
+
+                if holder_info.birth_date != birth_date:
                     raise BankAuthenticationError(
                         "The given birth date doesn't match with registered birth date"
                     )
@@ -1072,12 +1035,10 @@ class Bank:
                     for_update=True,
                 )
 
-                if not account_info.access_info or not account_info.holder_info:
-                    raise RuntimeError("Invalid DTO state")
+                access_info = account_info.unwrap_access()
+                holder_info = account_info.unwrap_holder()
 
-                self._validate_token_integrity(
-                    access_token, account_info.access_info.password_hash
-                )
+                self._validate_token_integrity(access_token, access_info.password_hash)
 
                 if account_info.is_frozen:
                     raise BankAccessError("This account is frozen and cannot be closed")
@@ -1093,7 +1054,7 @@ class Bank:
                 self._repository.delete_account(
                     access_token.branch_code, access_token.account_num
                 )
-                self._cleanup_unlinked_holder(account_info.holder_info.cpf)
+                self._cleanup_unlinked_holder(holder_info.cpf)
         except DataNotFoundError as e:
             raise BankAuthenticationError(
                 "Authentication failed: Account no longer exists"
@@ -1106,6 +1067,48 @@ class Bank:
     # --------------------------------------------------------------------------
     # Protected methods
     # --------------------------------------------------------------------------
+
+    def _account_factory(self, account_dto: NewAccountDTO) -> Account:
+        """
+        Internal factory to instantiate Account entities from a DTO.
+
+        Translates the integer flag within the DTO into the correct Account
+        subclass (CheckingAccount or SavingsAccount), keeping the Presentation
+        layer entirely decoupled from Domain implementations.
+
+        Args:
+            account_dto (NewAccountDTO): The immutable payload from the UI.
+
+        Returns:
+            Account: A fully initialized domain Account instance.
+        """
+        type_mapper = {1: CheckingAccount, 2: SavingsAccount}
+
+        acc_type = type_mapper[account_dto.account_type]
+        account_obj = acc_type(
+            account_dto.branch_code,
+            account_dto.account_num,
+        )
+
+        return account_obj
+
+    def _account_holder_factory(
+        self, acc_holder_dto: NewAccountHolderDTO
+    ) -> AccountHolder:
+        """
+        Internal factory to instantiate an AccountHolder entity from a DTO.
+
+        Args:
+            acc_holder_dto (NewAccountHolderDTO): The immutable payload containing the new account holder's data.
+
+        Returns:
+            AccountHolder: A fully initialized domain AccountHolder instance.
+        """
+        holder_obj = AccountHolder(
+            acc_holder_dto.name, acc_holder_dto.cpf, acc_holder_dto.birth_date
+        )
+
+        return holder_obj
 
     def _generate_password_hash(self, password_str: str) -> str:
         """
@@ -1146,6 +1149,65 @@ class Bank:
             raise BankAuthenticationError(
                 "Given password doesn't match with registered password"
             )
+
+    def _generate_auth_token(
+        self, cpf: str, branch_code: str, account_num: str
+    ) -> AuthToken:
+        """
+        Issues an AuthToken for initial client identification.
+
+        This token grants 'Lobby' access, proving the client's identity and
+        allowing standard, non-sensitive operations (such as deposits) without
+        granting access to the account's vault.
+
+        Args:
+            cpf (str): The client's unique identification number.
+            branch_code (str): The 4-digit numeric branch code.
+            account_num (str): The account number.
+
+        Returns:
+            AuthToken: A securely signed identification token.
+        """
+        payload = f"{cpf}:{branch_code}:{account_num}"
+        signature = self._sign_token_payload(payload)
+
+        return AuthToken(
+            cpf=cpf,
+            branch_code=branch_code,
+            account_num=account_num,
+            signature=signature,
+            expires_at=clock.get_now() + Bank.LOBBY_TIME_MINUTES,
+        )
+
+    def _generate_access_token(
+        self, auth_token: AuthToken, password_hash: str
+    ) -> AccessToken:
+        """
+        Issues a highly secure AccessToken for vault authorization.
+
+        This token represents a fully authenticated session. By injecting the
+        current database password hash into the cryptographic payload, it ensures
+        that the token becomes immediately invalid if the account password is
+        changed, providing defense-in-depth against session hijacking.
+
+        Args:
+            auth_token (AuthToken): The pre-validated identification token.
+            password_hash (str): The latest bcrypt password hash retrieved from
+                the database.
+
+        Returns:
+            AccessToken: A securely signed vault access token.
+        """
+        payload = f"{auth_token.cpf}:{auth_token.branch_code}:{auth_token.account_num}:{password_hash}"
+        signature = self._sign_token_payload(payload)
+
+        return AccessToken(
+            cpf=auth_token.cpf,
+            branch_code=auth_token.branch_code,
+            account_num=auth_token.account_num,
+            signature=signature,
+            expires_at=clock.get_now() + Bank.VAULT_TIME_MINUTES,
+        )
 
     def _validate_token_integrity(
         self, token: AccessToken | AuthToken, pwd_hash: str = ""
@@ -1213,107 +1275,6 @@ class Bank:
         payload_bytes = payload_str.encode("utf-8")
         return hmac.new(self._secret_key, payload_bytes, hashlib.sha256).hexdigest()
 
-    def _generate_auth_token(
-        self, cpf: str, branch_code: str, account_num: str
-    ) -> AuthToken:
-        """
-        Issues an AuthToken for initial client identification.
-
-        This token grants 'Lobby' access, proving the client's identity and
-        allowing standard, non-sensitive operations (such as deposits) without
-        granting access to the account's vault.
-
-        Args:
-            cpf (str): The client's unique identification number.
-            branch_code (str): The 4-digit numeric branch code.
-            account_num (str): The account number.
-
-        Returns:
-            AuthToken: A securely signed identification token.
-        """
-        payload = f"{cpf}:{branch_code}:{account_num}"
-        signature = self._sign_token_payload(payload)
-
-        return AuthToken(
-            cpf=cpf,
-            branch_code=branch_code,
-            account_num=account_num,
-            signature=signature,
-            expires_at=clock.get_now() + Bank.LOBBY_TIME_MINUTES,
-        )
-
-    def _generate_access_token(
-        self, auth_token: AuthToken, password_hash: str
-    ) -> AccessToken:
-        """
-        Issues a highly secure AccessToken for vault authorization.
-
-        This token represents a fully authenticated session. By injecting the
-        current database password hash into the cryptographic payload, it ensures
-        that the token becomes immediately invalid if the account password is
-        changed, providing defense-in-depth against session hijacking.
-
-        Args:
-            auth_token (AuthToken): The pre-validated identification token.
-            password_hash (str): The latest bcrypt password hash retrieved from
-                the database.
-
-        Returns:
-            AccessToken: A securely signed vault access token.
-        """
-        payload = f"{auth_token.cpf}:{auth_token.branch_code}:{auth_token.account_num}:{password_hash}"
-        signature = self._sign_token_payload(payload)
-
-        return AccessToken(
-            cpf=auth_token.cpf,
-            branch_code=auth_token.branch_code,
-            account_num=auth_token.account_num,
-            signature=signature,
-            expires_at=clock.get_now() + Bank.VAULT_TIME_MINUTES,
-        )
-
-    def _account_factory(self, account_dto: NewAccountDTO) -> Account:
-        """
-        Internal factory to instantiate Account entities from a DTO.
-
-        Translates the integer flag within the DTO into the correct Account
-        subclass (CheckingAccount or SavingsAccount), keeping the Presentation
-        layer entirely decoupled from Domain implementations.
-
-        Args:
-            account_dto (NewAccountDTO): The immutable payload from the UI.
-
-        Returns:
-            Account: A fully initialized domain Account instance.
-        """
-        type_mapper = {1: CheckingAccount, 2: SavingsAccount}
-
-        acc_type = type_mapper[account_dto.account_type]
-        account_obj = acc_type(
-            account_dto.branch_code,
-            account_dto.account_num,
-        )
-
-        return account_obj
-
-    def _account_holder_factory(
-        self, acc_holder_dto: NewAccountHolderDTO
-    ) -> AccountHolder:
-        """
-        Internal factory to instantiate an AccountHolder entity from a DTO.
-
-        Args:
-            acc_holder_dto (NewAccountHolderDTO): The immutable payload containing the new account holder's data.
-
-        Returns:
-            AccountHolder: A fully initialized domain AccountHolder instance.
-        """
-        holder_obj = AccountHolder(
-            acc_holder_dto.name, acc_holder_dto.cpf, acc_holder_dto.birth_date
-        )
-
-        return holder_obj
-
     def _get_account_holder(self, cpf: str) -> AccountHolder:
         """
         Retrieves a fully hydrated account holder entity from the repository.
@@ -1359,6 +1320,101 @@ class Bank:
 
         if not has_active_account:
             self._repository.delete_account_holder(cpf)
+
+    def _is_password_valid(self, password: str, password_hash: str) -> bool:
+        """
+        Safely verifies a plain-text password against a stored bcrypt hash.
+
+        Acts as an internal boolean wrapper around the strict '_check_password' method,
+        swallowing the domain exception to allow the orchestrator to handle the
+        control flow cleanly without nested try/except blocks.
+
+        Args:
+            password (str): The raw input password.
+            password_hash (str): The cryptographic hash retrieved from the database.
+
+        Returns:
+            bool: True if the password is a mathematical match, False otherwise.
+        """
+        try:
+            self._check_password(password, password_hash)
+            return True
+        except BankAuthenticationError:
+            return False
+
+    def _login_success_route(
+        self, auth_token: AuthToken, password_hash: str, failed_attempts: int
+    ) -> AccessToken:
+        """
+        Executes the state transitions required for a successful vault login.
+
+        Optimizes database I/O by only issuing a reset command if there are
+        prior failed attempts recorded. Concludes the protocol by generating
+        the highly secure AccessToken.
+
+        Requires an active Unit of Work context.
+
+        Args:
+            auth_token (AuthToken): The current lobby session token.
+            password_hash (str): The verified database password hash.
+            failed_attempts (int): The current count of failed login attempts.
+
+        Returns:
+            AccessToken: The upgraded token granting full vault access.
+        """
+        if failed_attempts:
+            self._repository.reset_login_attempts(
+                auth_token.branch_code, auth_token.account_num
+            )
+
+        return self._generate_access_token(
+            auth_token=auth_token, password_hash=password_hash
+        )
+
+    def _login_failed_route(
+        self, auth_token: AuthToken, failed_attempts: int, password: str
+    ) -> BankAccessError | BankAuthenticationError:
+        """
+        Executes the security mitigation protocols for a failed vault login.
+
+        Implements a 'Return Exception' pattern. It registers the failure and
+        evaluates the brute-force threshold, freezing the account if necessary.
+        Crucially, it mutates the database state and *returns* the resulting
+        exception object rather than raising it. This allows the caller's Unit
+        of Work to commit the security lock to the database before the exception
+        bubbles up and halts the application flow.
+
+        Requires an active Unit of Work context.
+
+        Args:
+            auth_token (AuthToken): The current lobby session token.
+            failed_attempts (int): The count of failed login attempts prior to this one.
+            password (str): The invalid password attempted (stored in the exception).
+
+        Returns:
+            BankAccessError | BankAuthenticationError: The instantiated exception
+                object representing the specific security failure, ready to be raised
+                after the transaction commits.
+        """
+        self._repository.register_failed_login(
+            auth_token.branch_code, auth_token.account_num
+        )
+
+        if (failed_attempts + 1) >= self.MAX_LOGIN_ATTEMPTS:
+            account = self._repository.get_account(
+                auth_token.branch_code,
+                auth_token.account_num,
+                for_update=True,
+            )
+            account.freeze()
+            self._repository.update_account_status(account)
+            return BankAccessError(
+                "The account was frozen due to 3 consecutive failed login attempts"
+            )
+
+        return BankAuthenticationError(
+            "Login failed. Password doesn't match", argument=password
+        )
 
     # --------------------------------------------------------------------------
     # Static methods
