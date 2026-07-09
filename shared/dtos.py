@@ -82,34 +82,6 @@ class DepositTargetDTO:
 
 
 @dataclass(frozen=True, slots=True)
-class WithdrawalSimulationDTO:
-    """
-    Data Transfer Object representing the projected outcome of a withdrawal.
-
-    This DTO is utilized by the application layer (Controllers) to safely evaluate
-    the financial and operational impact of a withdrawal before committing to the
-    state mutation. It provides the necessary data to prompt the user for explicit
-    consent when credit limits are involved.
-
-    Attributes:
-        authorized (bool): Indicates if the operation is mathematically and operationally
-            possible (e.g., account is active and the requested amount does not exceed
-            the total available funds).
-        use_overdraft (bool | None): True if the requested amount exceeds the standard positive
-            balance, requiring the use of the account's credit limit. False if the limit
-            exists but won't be used. None if the account type does not support overdraft.
-        overdraft_required (Decimal | None): The exact monetary value that will be drawn from
-            the overdraft limit if the transaction proceeds. Expected to be Decimal("0.00")
-            if `use_overdraft` is False. Expected to be None if the account type does not
-            support overdraft (`use_overdraft` is None).
-    """
-
-    authorized: bool
-    use_overdraft: bool | None
-    overdraft_required: Decimal | None
-
-
-@dataclass(frozen=True, slots=True)
 class LedgerEventDTO:
     """
     Data Transfer Object representing a discrete event bound for the ledger.
@@ -140,33 +112,66 @@ class LedgerEventDTO:
 
 
 @dataclass(frozen=True, slots=True)
+class WithdrawalSimulationDTO:
+    """
+    Data Transfer Object representing the projected outcome of a withdrawal.
+
+    This DTO is utilized by the application layer (Controllers) to safely evaluate
+    the financial and operational impact of a withdrawal before committing to the
+    state mutation. It provides the necessary data to prompt the user for explicit
+    consent when credit limits are involved.
+
+    Attributes:
+        authorized (bool): Indicates if the operation is mathematically and operationally
+            possible (e.g., account is active and the requested amount does not exceed
+            the total available funds).
+        use_credit (bool | None): True if the requested amount exceeds the standard positive
+            balance, requiring the use of the account's credit limit. False if the limit
+            exists but won't be used. None if the account type does not support credit.
+        credit_required (Decimal | None): The exact monetary value that will be drawn from
+            the credit limit if the transaction proceeds. Expected to be Decimal("0.00")
+            if `use_credit` is False. Expected to be None if the account type does not
+            support credit (`use_credit` is None).
+    """
+
+    authorized: bool
+    use_credit: bool | None
+    credit_required: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
 class AccountFinancialDTO:
     """
     Data Transfer Object representing the absolute financial truth of an Account.
 
     Acts as a highly cohesive, composable payload containing all calculated monetary
-    metrics. By incorporating dynamic accruals (yields/interest) and the mathematically
-    accurate 'available_balance' at a specific timestamp ('issue_at'), it ensures
-    that the Presentation layer never displays a raw or misleading database balance.
+    metrics. By separating the historical ledger state ('ledger_balance') from the
+    temporally accurate current state ('balance') and the total purchasing power
+    ('available_balance'), it ensures the Presentation layer renders precise and
+    unambiguous information to the user at the specific timestamp ('issue_at').
 
     Attributes:
-        balance (Decimal): The base raw financial balance.
-        accrual (Decimal): The specific monetary value of the pending adjustment.
-            Evaluates to Decimal("0.00") if no accrual is pending.
+        ledger_balance (Decimal): The historical, unadjusted balance retrieved directly
+            from the accounting records.
+        accrual (Decimal): The specific monetary value of any pending time-based adjustment.
+            Evaluates to Decimal("0.00") if no adjustment is pending.
+        balance (Decimal): The true, real-time adjusted current balance, fully evaluated
+            by the account's specific business rules.
         accrual_type (AccrualType | None): The semantic label of the adjustment
-            (YIELD or INTEREST). Strictly None if the accrual is exactly zero.
-        overdraft_limit (Decimal | None): The maximum overdraft limit, or None.
-        available_overdraft (Decimal | None): The currently available overdraft amount, or None.
-        available_balance (Decimal): The true purchasing power, factoring in balance,
-            overdrafts, and pending accruals.
+            (e.g., YIELD or INTEREST). Strictly None if the accrual is exactly zero.
+        credit_limit (Decimal | None): The maximum credit limit, or None if not supported.
+        available_credit (Decimal | None): The currently available credit amount, or None.
+        available_balance (Decimal): The true total purchasing power, factoring in the
+            adjusted balance and any available credit lines.
         issue_at (date): The exact temporal anchor validating the accuracy of this snapshot.
     """
 
-    balance: Decimal
+    ledger_balance: Decimal
     accrual: Decimal
+    balance: Decimal
     accrual_type: AccrualType | None
-    overdraft_limit: Decimal | None
-    available_overdraft: Decimal | None
+    credit_limit: Decimal | None
+    available_credit: Decimal | None
     available_balance: Decimal
     issue_at: date
 

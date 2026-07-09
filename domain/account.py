@@ -153,13 +153,85 @@ class Account(ABC):
 
     @property
     def balance(self) -> Decimal:
-        """Returns the current balance of the account."""
-        return self._balance
+        """
+        Returns the true, temporally accurate balance of the account.
+
+        Combines the raw ledger balance with any pending time-based accruals
+        (yields or interest) up to the current moment.
+        """
+        return self._balance + self._pending_accrual
 
     @property
     def last_balance_update(self) -> date:
         """Returns the calendar date of the last balance update."""
         return self._last_balance_update
+
+    @property
+    def financial_info(self) -> AccountFinancialDTO:
+        """
+        Projects the complete, mathematically accurate financial state of the account.
+
+        Acts as a strict Read-Only facade (Lazy Materialization). By orchestrating
+        subclass-specific implementations of credit limits, accruals, and available
+        funds, this method enforces the Information Expert principle. It centralizes
+        the construction of the AccountFinancialDTO, applying the DRY principle and
+        ensuring that the Application layer receives a uniform, predictable, and
+        temporally accurate snapshot of the account's true state.
+
+        Returns:
+            AccountFinancialDTO: An immutable, composed snapshot detailing the ledger
+                balance, pending accruals, true current balance, operational limits,
+                and the total purchasing power at the exact moment of invocation.
+        """
+        accrual = self._pending_accrual
+        accrual_type = None
+
+        if accrual:
+            accrual_type = AccrualType.YIELD if accrual > 0 else AccrualType.INTEREST
+
+        return AccountFinancialDTO(
+            ledger_balance=self._balance,
+            accrual=accrual,
+            balance=self.balance,
+            accrual_type=accrual_type,
+            credit_limit=self.credit_limit,
+            available_credit=self.available_credit,
+            available_balance=self.available_funds,
+            issue_at=clock.get_today(),
+        )
+
+    @property
+    @abstractmethod
+    def credit_limit(self) -> Decimal | None:
+        """
+        Defines the maximum credit threshold granted to the account.
+
+        Acts as an explicit contract for subclasses to declare their support
+        for credit products. Enforces the Open/Closed Principle by allowing
+        the base orchestrator to safely evaluate credit availability without
+        type-checking concrete implementations.
+
+        Returns:
+            Decimal | None: The absolute monetary value of the credit limit,
+                or None if the account type does not support credit operations.
+        """
+        pass
+
+    @property
+    @abstractmethod
+    def available_credit(self) -> Decimal | None:
+        """
+        Calculates the real-time remaining credit available for transactions.
+
+        Acts as a dynamic projection that accounts for current ledger balances
+        and any pending time-based charges (e.g., compound interest) that
+        actively consume the credit limit.
+
+        Returns:
+            Decimal | None: The precise monetary value still available from the
+                credit limit, or None if credit operations are not supported.
+        """
+        pass
 
     @property
     @abstractmethod
@@ -192,24 +264,6 @@ class Account(ABC):
 
         Returns:
             Decimal: The absolute monetary value available for disbursement.
-        """
-        pass
-
-    @property
-    @abstractmethod
-    def financial_info(self) -> AccountFinancialDTO:
-        """
-        Projects the complete, mathematically accurate financial state of the account.
-
-        Acts as a strict Read-Only facade (Lazy Materialization). It enforces the
-        Information Expert principle by calculating time-based adjustments (yields
-        or debts) and deriving the true purchasing power of the account at the exact
-        moment of invocation, without mutating the historical ledger balance.
-
-        Returns:
-            AccountFinancialDTO: An immutable, composed snapshot detailing the base
-                balance, pending accruals, operational limits, and the true
-                available balance for transactions.
         """
         pass
 
@@ -312,6 +366,92 @@ class Account(ABC):
 
         return (deposit_event,)
 
+    def simulate_withdrawal(self, amount: Decimal) -> WithdrawalSimulationDTO:
+        """
+        Simulates the financial projection of a withdrawal without mutating state.
+
+        Acts as a universal financial oracle for all account types. It evaluates
+        transaction viability strictly based on the polymorphic 'available_funds'
+        and explicitly checks the subclass contracts for credit support ('credit_limit').
+        It assumes the orchestrating layer has already validated external conditions
+        (e.g., frozen status) and applies core input validation.
+
+        Args:
+            amount (Decimal): The intended monetary amount to be withdrawn.
+
+        Returns:
+            WithdrawalSimulationDTO: A detailed projection detailing authorization
+                status, the necessity of utilizing an overdraft, and the precise
+                monetary value required from the credit line.
+
+        Raises:
+            TypeError: If the provided amount is not a Decimal instance.
+            ValueError: If the withdrawal amount is less than the MIN_ATM_TRANSACTION limit.
+        """
+
+        Account.validate_amount_entry(amount)
+        authorized = amount <= self.available_funds
+        balance = self.balance
+        use_credit = None
+        credit_required = None
+
+        if self.credit_limit is not None:
+            use_credit = amount > balance
+
+            if use_credit:
+                credit_required = amount - balance if balance > 0 else amount
+            else:
+                credit_required = Decimal("0.00")
+
+        return WithdrawalSimulationDTO(
+            authorized=authorized,
+            use_credit=use_credit,
+            credit_required=credit_required,
+        )
+
+    def withdrawal(self, amount: Decimal) -> tuple[LedgerEventDTO, ...]:
+        """
+        Orchestrates the secure withdrawal workflow.
+
+        This template method enforces mandatory business invariants—specifically
+        checking account active status and sufficient liquidity—before performing
+        the state mutation. It handles the financial calculation and domain clock
+        synchronization, concluding by delegating the semantic construction of
+        ledger events to concrete subclasses via the `_compose_withdrawal_event` hook.
+
+        Args:
+            amount (Decimal): The strictly positive amount to withdraw.
+
+        Returns:
+            tuple[LedgerEventDTO, ...]: A chronological sequence of ledger events
+                representing the transaction, including potential interest materialization.
+
+        Raises:
+            FrozenAccountError: If the account is locked and cannot dispense funds.
+            InsufficientFundsError: If the requested amount exceeds the mathematically
+                precise 'available_funds'.
+            TypeError: If the provided amount is not a Decimal instance.
+            ValueError: If the withdrawal amount is less than the MIN_ATM_TRANSACTION limit.
+        """
+        if self._is_frozen:
+            raise FrozenAccountError(
+                "Impossible to perform withdraw operation on a frozen account"
+            )
+
+        if amount > self.available_funds:
+            raise InsufficientFundsError(
+                "The given amount exceeds the account's available funds"
+            )
+
+        Account.validate_amount_entry(amount)
+        accrual_event = self._apply_accrual()
+        start_balance = self._balance
+        self._update_balance(-amount)
+
+        events = self._compose_withdrawal_event(amount, accrual_event, start_balance)
+
+        return events
+
     # --------------------------------------------------------------------------
     # Protected methods
     # --------------------------------------------------------------------------
@@ -361,101 +501,32 @@ class Account(ABC):
             event_type=AccrualType.YIELD if accrual > 0 else AccrualType.INTEREST,
         )
 
-    def _apply_withdrawal_event(
-        self, amount: Decimal, withdraw_type: TransactionType
-    ) -> LedgerEventDTO:
-        """
-        Executes the internal state mutation for a withdrawal and generates its ledger event.
-
-        Acts as a protected Template Method for concrete subclasses. It strictly enforces
-        business invariants (frozen status and sufficient funds) before mutating the
-        authoritative balance and synchronizing the domain clock.
-
-        Args:
-            amount (Decimal): The exact monetary amount to debit from the account.
-            withdraw_type (TransactionType): The semantic classification of the withdrawal
-                (e.g., standard withdrawal vs. overdraft usage).
-
-        Returns:
-            LedgerEventDTO: An immutable snapshot representing the successful financial
-                mutation, ready for persistence.
-
-        Raises:
-            FrozenAccountError: If the account is locked and cannot dispense funds.
-            InsufficientFundsError: If the requested amount exceeds the mathematically
-                precise 'available_funds'.
-        """
-
-        if self._is_frozen:
-            raise FrozenAccountError(
-                "Impossible to perform withdraw operation on a frozen account"
-            )
-
-        if amount > self.available_funds:
-            raise InsufficientFundsError(
-                "The given amount exceeds the account's available funds"
-            )
-
-        start_balance = self._balance
-        self._update_balance(-amount)
-
-        withdrawal_event = LedgerEventDTO(
-            previous_balance=start_balance, amount=-amount, event_type=withdraw_type
-        )
-
-        return withdrawal_event
-
     # --------------------------------------------------------------------------
     # Abstract methods
     # --------------------------------------------------------------------------
 
     @abstractmethod
-    def simulate_withdrawal(self, amount: Decimal) -> WithdrawalSimulationDTO:
+    def _compose_withdrawal_event(
+        self,
+        amount: Decimal,
+        accrual_event: LedgerEventDTO | None,
+        start_balance: Decimal,
+    ) -> tuple[LedgerEventDTO, ...]:
         """
-        Simulates the financial projection of a withdrawal without mutating state.
+        Abstract hook for constructing account-specific ledger events.
 
-        This method acts as a financial oracle, calculating the viability of a
-        transaction strictly based on the available funds and specific credit rules
-        of the concrete account type. It assumes the orchestrating layer has already
-        validated external conditions (e.g., account frozen status) and basic
-        input rules (e.g., minimum ATM transaction values).
+        Concrete subclasses must implement this to define the semantic sequencing
+        of withdrawal events, ensuring that the audit trail accurately reflects
+        the nature of the transaction (e.g., standard vs. overdraft usage) relative
+        to the account's state before mutation.
 
         Args:
-            amount (Decimal): The intended monetary amount to be withdrawn.
+            amount (Decimal): The amount withdrawn.
+            accrual_event (LedgerEventDTO | None): The materialized interest/yield event, if any.
+            start_balance (Decimal): The authoritative balance prior to the withdrawal.
 
         Returns:
-            WithdrawalSimulationDTO: A Data Transfer Object detailing the projected
-                authorization status based on funds, the necessity of an overdraft,
-                and the exact overdraft amount required.
-        """
-        pass
-
-    @abstractmethod
-    def withdrawal(self, amount: Decimal) -> tuple[LedgerEventDTO, ...]:
-        """
-        Abstract method for withdrawing an amount from the account.
-
-        Concrete implementations handle specific withdrawal logic, such as
-        checking available limits or minimum balances. Following the Tell, Don't
-        Ask principle, the entity is responsible for self-validating the requested
-        amount against its internal rules and applying pending accruals before
-        mutating its balance.
-
-        Args:
-            amount (Decimal): The amount to withdraw. Must be strictly positive.
-
-        Returns:
-            tuple[LedgerEventDTO, ...]: A chronological sequence of data transfer
-                objects representing the financial events generated by this operation.
-                This always includes the withdrawal event(s) and any dynamically
-                materialized accruals triggered by the state mutation.
-
-        Raises:
-            FrozenAccountError: If the account is locked and cannot dispense funds.
-            TypeError: If the provided amount is not a Decimal instance.
-            ValueError: If the withdrawal amount is less than the MIN_ATM_TRANSACTION limit.
-            InsufficientFundsError: If the requested amount exceeds the mathematically
-                precise available funds defined by the specific account rules.
+            tuple[LedgerEventDTO, ...]: The chronological sequence of finalized ledger events.
         """
         pass
 
@@ -594,7 +665,49 @@ class SavingsAccount(Account):
     (compound interest) to the balance based on elapsed calendar days.
     """
 
+    # --------------------------------------------------------------------------
+    # Class attributes
+    # --------------------------------------------------------------------------
+
     DAILY_EARNINGS_RATE: ClassVar[Decimal] = Decimal("0.00016")
+
+    # --------------------------------------------------------------------------
+    # Properties
+    # --------------------------------------------------------------------------
+
+    @property
+    def credit_limit(self) -> None:
+        """
+        Explicitly declares that Savings Accounts do not support credit limits.
+
+        Returns:
+            None: Strictly evaluates to None, ensuring the domain orchestration
+                safely bypasses credit-dependent business rules.
+        """
+        return None
+
+    @property
+    def available_credit(self) -> None:
+        """
+        Explicitly declares that Savings Accounts do not possess available credit.
+
+        Returns:
+            None: Strictly evaluates to None.
+        """
+        return None
+
+    @property
+    def available_funds(self) -> Decimal:
+        """
+        Calculates the true available funds, strictly limited to positive balances.
+
+        Evaluates the current ledger balance combined with any pending yields
+        that have accrued up to the current calendar day.
+
+        Returns:
+            Decimal: The total positive funds available for withdrawal.
+        """
+        return self._balance + self._pending_accrual
 
     @property
     def _pending_accrual(self) -> Decimal:
@@ -616,43 +729,43 @@ class SavingsAccount(Account):
 
         return earnings.quantize(Decimal("0.00"))
 
-    @property
-    def available_funds(self) -> Decimal:
-        """
-        Calculates the true available funds, strictly limited to positive balances.
+    # --------------------------------------------------------------------------
+    # Protected methods
+    # --------------------------------------------------------------------------
 
-        Evaluates the current ledger balance combined with any pending yields
-        that have accrued up to the current calendar day.
+    def _compose_withdrawal_event(
+        self,
+        amount: Decimal,
+        accrual_event: LedgerEventDTO | None,
+        start_balance: Decimal,
+    ) -> tuple[LedgerEventDTO, ...]:
+        """
+        Constructs the ledger event sequence for a savings account withdrawal.
+
+        Since savings accounts do not support overdraft, this simply chains the
+        optional accrual event (if materialized) with a standard withdrawal entry.
+
+        Args:
+            amount (Decimal): The amount withdrawn.
+            accrual_event (LedgerEventDTO | None): The materialized yield event, if any.
+            start_balance (Decimal): The balance prior to mutation.
 
         Returns:
-            Decimal: The total positive funds available for withdrawal.
+            tuple[LedgerEventDTO, ...]: The sequence of events for the savings audit trail.
         """
-        return self._balance + self._pending_accrual
-
-    @property
-    def financial_info(self) -> AccountFinancialDTO:
-        """
-        Projects the current financial state of the savings account, including yields.
-
-        Retrieves the calculated earnings dynamically applied over the elapsed days
-        since the last ledger update. Ensures the 'available_balance' directly
-        reflects the base balance plus all pending positive remuneration.
-
-        Returns:
-            AccountFinancialDTO: An immutable snapshot containing the projected
-                savings yields and total purchasing power.
-        """
-        earnings = self._pending_accrual
-
-        return AccountFinancialDTO(
-            balance=self._balance,
-            accrual=earnings,
-            accrual_type=AccrualType.YIELD if earnings else None,
-            overdraft_limit=None,
-            available_overdraft=None,
-            available_balance=self.available_funds,
-            issue_at=clock.get_today(),
+        withdrawal_event = LedgerEventDTO(
+            previous_balance=start_balance,
+            amount=-amount,
+            event_type=TransactionType.WITHDRAWAL,
         )
+        if accrual_event:
+            return (accrual_event, withdrawal_event)
+
+        return (withdrawal_event,)
+
+    # --------------------------------------------------------------------------
+    # Class methods
+    # --------------------------------------------------------------------------
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SavingsAccount:
@@ -672,67 +785,6 @@ class SavingsAccount(Account):
 
         return cast(SavingsAccount, super().from_dict(data))
 
-    def simulate_withdrawal(self, amount: Decimal) -> WithdrawalSimulationDTO:
-        """
-        Simulates a withdrawal strictly based on the mathematically precise available funds.
-
-        Since a Savings Account does not support credit limits, the simulation
-        only evaluates if the requested amount is lesser than or equal to the
-        total available funds (balance + pending yields).
-
-        Args:
-            amount (Decimal): The intended monetary amount to be withdrawn.
-
-        Returns:
-            WithdrawalSimulationDTO: A detailed projection indicating authorization
-                status. Overdraft fields will strictly be None.
-
-        Raises:
-            TypeError: If the value is not a Decimal instance.
-            ValueError: If the withdrawal amount is less than the MIN_ATM_TRANSACTION limit.
-        """
-
-        Account.validate_amount_entry(amount)
-
-        authorized = amount <= self.available_funds
-
-        return WithdrawalSimulationDTO(
-            authorized=authorized, use_overdraft=None, overdraft_required=None
-        )
-
-    def withdrawal(self, amount: Decimal) -> tuple[LedgerEventDTO, ...]:
-        """
-        Withdraws a given amount from the savings account.
-
-        Delegates the state mutation and invariant checks to the central
-        `_apply_withdrawal_event` mechanism. Ensures that pending yields
-        are materialized prior to evaluating the final withdrawal limits.
-
-        Args:
-            amount (Decimal): The strictly positive amount to withdraw.
-
-        Returns:
-            tuple[LedgerEventDTO, ...]: A chronological sequence of DTOs representing
-                the financial events, including yield materialization (if any) and
-                the standard withdrawal event.
-
-        Raises:
-            FrozenAccountError: If the account is currently frozen.
-            TypeError: If the value is not a Decimal instance.
-            ValueError: If the withdrawal amount is less than the MIN_ATM_TRANSACTION limit.
-            InsufficientFundsError: If the requested amount exceeds available funds.
-        """
-        Account.validate_amount_entry(amount)
-        accrual_event = self._apply_accrual()
-        withdrawal_event = self._apply_withdrawal_event(
-            amount, TransactionType.WITHDRAWAL
-        )
-
-        if accrual_event:
-            return (accrual_event, withdrawal_event)
-
-        return (withdrawal_event,)
-
 
 class CheckingAccount(Account):
     """
@@ -749,27 +801,63 @@ class CheckingAccount(Account):
     on elapsed calendar days.
     """
 
-    OVERDRAFT_LIMIT: ClassVar[Decimal] = Decimal("3000.00")
+    # --------------------------------------------------------------------------
+    # Class attributes
+    # --------------------------------------------------------------------------
+
+    _OVERDRAFT_LIMIT: ClassVar[Decimal] = Decimal("3000.00")
     DAILY_INTEREST_RATE: ClassVar[Decimal] = Decimal("0.0025")
 
-    @property
-    def available_overdraft(self) -> Decimal:
-        """
-        Calculates the remaining available credit limit dynamically.
+    # --------------------------------------------------------------------------
+    # Properties
+    # --------------------------------------------------------------------------
 
-        If the account operates with a positive balance or is exactly zero,
-        the full OVERDRAFT_LIMIT is available. If the account is operating in
-        the negative, the current debt is deducted directly from the limit to
-        reflect the remaining capacity.
+    @property
+    def credit_limit(self) -> Decimal:
+        """
+        Exposes the static overdraft limit authorized for the checking account.
 
         Returns:
-            Decimal: The exact monetary value available for credit operations.
+            Decimal: The absolute maximum overdraft limit defined by the
+                account's operational configuration.
         """
-        total_overdraft = self.OVERDRAFT_LIMIT
+        return self._OVERDRAFT_LIMIT
 
-        return (
-            total_overdraft if self._balance >= 0 else total_overdraft + self._balance
-        )
+    @property
+    def available_credit(self) -> Decimal | None:
+        """
+        Calculates the remaining available overdraft limit dynamically.
+
+        If the account operates with a positive or zero balance, the full
+        credit limit is preserved. If operating in the negative, the current
+        ledger debt and any pending compound interest charges are seamlessly
+        deducted from the total limit to reflect the true remaining capacity.
+
+        Returns:
+            Decimal | None: The exact, temporally accurate monetary value
+                available for credit operations.
+        """
+
+        accrual = self._pending_accrual
+        total_credit = self.credit_limit
+        available_credit = self._OVERDRAFT_LIMIT + self._balance + accrual
+
+        return total_credit if self._balance >= 0 else available_credit
+
+    @property
+    def available_funds(self) -> Decimal:
+        """
+        Calculates the true transaction capacity, including the overdraft limit.
+
+        Evaluates the total purchasing power by seamlessly combining the account's
+        real-time adjusted balance with its maximum authorized credit limit.
+        Delegates the resolution of time-based adjustments (such as interest)
+        directly to the 'balance' property to maintain single-responsibility.
+
+        Returns:
+            Decimal: The total absolute monetary value available for disbursement.
+        """
+        return self.credit_limit + self.balance
 
     @property
     def _pending_accrual(self) -> Decimal:
@@ -797,139 +885,70 @@ class CheckingAccount(Account):
 
         return -interest.quantize(Decimal("0.00"))
 
-    @property
-    def available_funds(self) -> Decimal:
+    # --------------------------------------------------------------------------
+    # Protected methods
+    # --------------------------------------------------------------------------
+
+    def _compose_withdrawal_event(
+        self,
+        amount: Decimal,
+        accrual_event: LedgerEventDTO | None,
+        start_balance: Decimal,
+    ) -> tuple[LedgerEventDTO, ...]:
         """
-        Calculates the true transaction capacity, including the overdraft limit.
+        Constructs the ledger event sequence for a checking account, handling zero-crossing logic.
 
-        Evaluates the total purchasing power by combining the predefined
-        OVERDRAFT_LIMIT with the current authoritative balance and deducting
-        any pending compound interest charges from utilized credit.
-
-        Returns:
-            Decimal: The total combined funds (balance + credit limit) adjusted
-                for pending debts.
-        """
-        accrual = self._pending_accrual
-        return self.OVERDRAFT_LIMIT + self._balance + accrual
-
-    @property
-    def financial_info(self) -> AccountFinancialDTO:
-        """
-        Projects the current financial state of the checking account, including debt charges.
-
-        Retrieves the calculated compound interest over utilized limits dynamically.
-        Crucially, it adjusts the 'available_overdraft' and the total 'available_balance'
-        based on the projected negative impact of these pending charges, ensuring
-        the presentation layer receives the absolute financial truth to prevent
-        over-withdrawal.
-
-        Returns:
-            AccountFinancialDTO: An immutable snapshot detailing the base balance,
-                pending debt charges, adjusted limits, and the true transaction capacity.
-        """
-        interest = self._pending_accrual
-
-        accrual_type = AccrualType.INTEREST if interest else None
-        total_overdraft = self.available_overdraft + interest
-        available_amount = self.available_funds
-
-        return AccountFinancialDTO(
-            balance=self._balance,
-            accrual=interest,
-            accrual_type=accrual_type,
-            overdraft_limit=self.OVERDRAFT_LIMIT,
-            available_overdraft=total_overdraft,
-            available_balance=available_amount,
-            issue_at=clock.get_today(),
-        )
-
-    def simulate_withdrawal(self, amount: Decimal) -> WithdrawalSimulationDTO:
-        """
-        Simulates a withdrawal evaluating precise available funds and the overdraft limit.
-
-        Calculates whether the transaction is possible against the dynamically
-        adjusted purchasing power (accounting for pending debt charges) and calculates
-        exactly how much of the credit limit would be consumed.
+        This implementation handles the overdraft complexity by strategically splitting
+        the transaction into 'Standard' and 'Overdraft' events when the requested
+        amount crosses the zero-balance threshold.
 
         Args:
-            amount (Decimal): The intended monetary amount to be withdrawn.
+            amount (Decimal): The amount withdrawn.
+            accrual_event (LedgerEventDTO | None): The materialized interest event, if any.
+            start_balance (Decimal): The balance prior to mutation.
 
         Returns:
-            WithdrawalSimulationDTO: A detailed projection indicating authorization
-                status, overdraft necessity, and the precise required credit amount.
-
-        Raises:
-            TypeError: If the value is not a Decimal instance.
-            ValueError: If the withdrawal amount is less than the MIN_ATM_TRANSACTION limit.
+            tuple[LedgerEventDTO, ...]: The chronological audit trail accounting for both
+                balance usage and credit limit consumption.
         """
-        Account.validate_amount_entry(amount)
-
-        authorized = amount <= self.available_funds
-        use_overdraft = amount > self._balance
-
-        if use_overdraft:
-            required = amount - self._balance if self._balance > 0 else amount
-        else:
-            required = Decimal("0.00")
-
-        return WithdrawalSimulationDTO(
-            authorized=authorized,
-            use_overdraft=use_overdraft,
-            overdraft_required=required,
-        )
-
-    def withdrawal(self, amount: Decimal) -> tuple[LedgerEventDTO, ...]:
-        """
-        Withdraws an amount, automatically utilizing the overdraft limit if necessary.
-
-        Applies any pending interest charges before delegating the state mutations to
-        `_apply_withdrawal_event`. If the withdrawal crosses the zero-balance
-        threshold, it strategically splits the execution to generate distinct
-        ledger events for positive balance usage versus credit limit usage.
-
-        Args:
-            amount (Decimal): The strictly positive amount to withdraw.
-
-        Returns:
-            tuple[LedgerEventDTO, ...]: A chronological sequence of DTOs representing
-                the financial events (interest materialization, standard withdrawal,
-                and/or overdraft withdrawal). All debited amounts are negative.
-
-        Raises:
-            FrozenAccountError: If the account is currently frozen.
-            TypeError: If the value is not a Decimal instance.
-            ValueError: If the withdrawal amount is less than the MIN_ATM_TRANSACTION limit.
-            InsufficientFundsError: If the amount exceeds the total available funds.
-        """
-        Account.validate_amount_entry(amount)
-        accrual_event = self._apply_accrual()
         events_list: list[LedgerEventDTO] = []
 
         if accrual_event:
             events_list.append(accrual_event)
 
         # Case 1: Fully covered by positive balance (including exact withdrawal)
-        if self._balance >= amount:
+        if start_balance >= amount:
             events_list.append(
-                self._apply_withdrawal_event(amount, TransactionType.WITHDRAWAL)
+                LedgerEventDTO(
+                    previous_balance=start_balance,
+                    amount=-amount,
+                    event_type=TransactionType.WITHDRAWAL,
+                )
             )
         # Case 2: Fully operating within overdraft limits (including starting exactly at zero)
-        elif self._balance <= 0:
+        elif start_balance <= 0:
             events_list.append(
-                self._apply_withdrawal_event(
-                    amount, TransactionType.OVERDRAFT_WITHDRAWAL
+                LedgerEventDTO(
+                    previous_balance=start_balance,
+                    amount=-amount,
+                    event_type=TransactionType.OVERDRAFT_WITHDRAWAL,
                 )
             )
         # Case 3: Zero-crossing (Partial standard, partial overdraft)
         else:
-            remaining = amount - self._balance
+            remaining = amount - start_balance
             events_list.append(
-                self._apply_withdrawal_event(self._balance, TransactionType.WITHDRAWAL)
+                LedgerEventDTO(
+                    previous_balance=start_balance,
+                    amount=-start_balance,
+                    event_type=TransactionType.WITHDRAWAL,
+                )
             )
             events_list.append(
-                self._apply_withdrawal_event(
-                    remaining, TransactionType.OVERDRAFT_WITHDRAWAL
+                LedgerEventDTO(
+                    previous_balance=Decimal("0.00"),
+                    amount=-remaining,
+                    event_type=TransactionType.OVERDRAFT_WITHDRAWAL,
                 )
             )
         return tuple(events_list)
