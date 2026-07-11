@@ -26,6 +26,7 @@ from shared.exceptions import (
     InvalidCpfError,
     InvalidNameError,
 )
+from shared.snapshots import AccountHolderSnapshot
 
 
 class AccountHolder:
@@ -139,43 +140,50 @@ class AccountHolder:
     # Public API
     # --------------------------------------------------------------------------
 
-    def to_snapshot(self) -> dict:
+    def to_snapshot(self) -> AccountHolderSnapshot:
         """
         Creates a persistence snapshot representing the current entity state.
 
+        Acts as a secure Write Model for the Anti-Corruption Layer (ACL).
+        Packages the core Personally Identifiable Information (PII) into an
+        immutable, strictly typed Data Transfer Object, ensuring the
+        infrastructure layer receives exactly what it needs for database
+        insertion without exposing the entity's internal mechanisms.
+
         Returns:
-            dict: A snapshot containing only primitive values and serializable
-            value objects required to reconstruct this entity.
+            AccountHolderSnapshot: An immutable payload containing the primitive
+                values required to persist this account holder.
         """
-        return {
-            "name": self._name,
-            "birth_date": self._birth_date,
-            "cpf": self._cpf,
-            "account_cards": [asdict(card) for card in self._account_cards],
-        }
+        cards = [asdict(c) for c in self._account_cards]
+
+        return AccountHolderSnapshot(
+            name=self._name, cpf=self._cpf, birth_date=self.birth_date, cards=cards
+        )
 
     # --------------------------------------------------------------------------
     # Class methods
     # --------------------------------------------------------------------------
 
     @classmethod
-    def from_snapshot(cls, data: dict) -> AccountHolder:
+    def from_snapshot(cls, data: AccountHolderSnapshot) -> AccountHolder:
         """
-        Rehydrates an AccountHolder from a previously captured persistence snapshot.
+        Rehydrates an AccountHolder aggregate from a persistence snapshot.
+
+        Restores the core entity state by passing the primitive values through
+        the standard domain validations (via __init__), and subsequently
+        rebuilds the collection of associated AccountCard value objects.
 
         Args:
-            data (dict): The dictionary containing account holder data and cards.
+            data (AccountHolderSnapshot): The strictly typed, immutable snapshot
+                containing the account holder's identity data and saved cards.
 
         Returns:
-            AccountHolder: The restored AccountHolder object with all its cards.
+            AccountHolder: The fully restored domain aggregate ready for operations.
         """
-        # Reconstruct the base instance running all domain validations via __init__
-        instance = cls(
-            name=data["name"], cpf=data["cpf"], birth_date=data["birth_date"]
-        )
+        instance = cls(name=data.name, cpf=data.cpf, birth_date=data.birth_date)
 
         # Restore the stored account cards
-        cards_list = data.get("account_cards", [])
+        cards_list = data.cards
         instance._account_cards = {AccountCard(**card) for card in cards_list}
 
         return instance

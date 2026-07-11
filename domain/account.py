@@ -16,7 +16,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from datetime import date
 from decimal import Decimal
-from typing import Any, ClassVar, cast
+from typing import ClassVar, cast
 
 from infra import verify
 from shared import clock
@@ -27,6 +27,7 @@ from shared.exceptions import (
     InvalidAccountError,
     InvalidBranchError,
 )
+from shared.snapshots import AccountSnapshot
 from shared.types import AccrualType, TransactionType
 
 
@@ -271,25 +272,28 @@ class Account(ABC):
     # Public API
     # --------------------------------------------------------------------------
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_snapshot(self) -> AccountSnapshot:
         """
-        Serializes the account state into a dictionary.
+        Generates a persistence snapshot of the current account state.
 
-        Includes a 'type' field (e.g., 'CheckingAccount') to allow the Factory method
-        to reconstruct the correct concrete class implementation upon deserialization.
+        Packages the raw ledger state, operational flags, and a polymorphic
+        'account_type' identifier (e.g., 'CheckingAccount') into a strictly
+        typed, immutable Data Transfer Object. This isolates the Domain from
+        infrastructure schemas while providing the Repository with everything
+        needed for storage and future hydration.
 
         Returns:
-            dict[str, Any]: The dictionary containing account number, balance,
-                            and class type.
+            AccountSnapshot: An immutable snapshot containing the account's base
+                identifiers, financial ledger balance, temporal anchor, and class type.
         """
-        return {
-            "branch_code": self._branch_code,
-            "account_num": self._account_num,
-            "type": type(self).__name__,
-            "is_frozen": self._is_frozen,
-            "balance": self._balance,
-            "last_balance_update": self._last_balance_update,
-        }
+        return AccountSnapshot(
+            branch_code=self._branch_code,
+            account_num=self._account_num,
+            account_type=type(self).__name__,
+            is_frozen=self._is_frozen,
+            balance=self._balance,
+            last_balance_update=self._last_balance_update,
+        )
 
     def freeze(self) -> None:
         """
@@ -535,29 +539,29 @@ class Account(ABC):
     # --------------------------------------------------------------------------
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> Account:
+    def from_snapshot(cls, data: AccountSnapshot) -> Account:
         """
-        Factory method to reconstruct an Account instance (or subclass) from a dictionary.
+        Factory method to reconstruct an Account instance (or subclass) from a persistence snapshot.
 
-        Implements a Dispatcher Pattern:
-        1. If called on the base Account class, it inspects the 'type' field in the data
-           and delegates instantiation to the correct subclass (Checking or Savings).
+        Implements a Dispatcher Pattern using typed Data Transfer Objects:
+        1. If called on the base Account class, it inspects the 'account_type' field
+           in the snapshot and delegates instantiation to the correct subclass.
         2. If called on (or dispatched to) a subclass, it restores the common state
            attributes (balance, frozen status, and temporal state) and returns
            the fully hydrated instance.
 
         Args:
-            data (dict[str, Any]): The dictionary containing raw account data.
-                Expects 'last_balance_update' to be a valid date object.
+            data (AccountSnapshot): The immutable snapshot containing the exact
+                account state retrieved from persistence.
 
         Returns:
             Account: A fully initialized instance of the specific Account subclass.
 
         Raises:
-            ValueError: If the 'type' field in the data is unknown or missing.
+            ValueError: If the 'account_type' field in the snapshot is unknown.
         """
         if cls is Account:
-            obj_type = data.get("type")
+            obj_type = data.account_type
 
             if obj_type:
                 account_types = {
@@ -568,17 +572,17 @@ class Account(ABC):
                 target_class = account_types.get(obj_type)
 
                 if target_class:
-                    return target_class.from_dict(data)
+                    return target_class.from_snapshot(data)
 
             raise ValueError(f"Unknown account type: {obj_type}")
 
         instance = cls(
-            branch_code=data["branch_code"],
-            account_num=data["account_num"],
+            branch_code=data.branch_code,
+            account_num=data.account_num,
         )
-        instance._is_frozen = data["is_frozen"]
-        instance._balance = data["balance"]
-        instance._last_balance_update = data["last_balance_update"]
+        instance._is_frozen = data.is_frozen
+        instance._balance = data.balance
+        instance._last_balance_update = data.last_balance_update
 
         return instance
 
@@ -768,22 +772,30 @@ class SavingsAccount(Account):
     # --------------------------------------------------------------------------
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> SavingsAccount:
+    def from_snapshot(cls, data: AccountSnapshot) -> SavingsAccount:
         """
-        Reconstructs a SavingsAccount instance from a dictionary.
+        Reconstructs a SavingsAccount instance from a persistence snapshot.
 
         Extends the base Account hydration process by enforcing a strict
-        data integrity check: Savings accounts cannot have negative balances.
+        domain integrity check: Savings accounts cannot be hydrated with
+        a negative balance.
+
+        Args:
+            data (AccountSnapshot): The snapshot containing the account state.
+
+        Returns:
+            SavingsAccount: The fully hydrated savings account instance.
 
         Raises:
-            RuntimeError: If the database state reflects a negative balance.
+            RuntimeError: If the persistent state reflects a negative balance,
+                indicating data corruption at the database level.
         """
-        if data["balance"] < 0:
+        if data.balance < 0:
             raise RuntimeError(
                 "SavingsAccount does not allow negative balance. Database state might be corrupted."
             )
 
-        return cast(SavingsAccount, super().from_dict(data))
+        return cast(SavingsAccount, super().from_snapshot(data))
 
 
 class CheckingAccount(Account):

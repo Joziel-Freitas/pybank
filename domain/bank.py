@@ -30,13 +30,10 @@ import bcrypt
 
 from infra import verify
 from shared import clock
-from shared.validators import boolean_validator_dec
 from shared.credentials import AccessToken, AccountCard, AuthToken
 from shared.dtos import (
-    AccountProjectionDTO,
     AccountSummaryDTO,
     DepositTargetDTO,
-    AccessProjectionDTO,
     LedgerEventDTO,
     NewAccountDTO,
     NewAccountHolderDTO,
@@ -52,7 +49,6 @@ from shared.exceptions import (
     BankPasswordError,
     BankSecurityError,
     BankUnavailableError,
-    BankError,
     DataNotFoundError,
     DuplicatedAccountError,
     DuplicatedAccountHolderError,
@@ -63,6 +59,8 @@ from shared.exceptions import (
     NotEmptyAccountError,
     RepositoryError,
 )
+from shared.projections import AccountProjectionDTO
+from shared.snapshots import AccountHolderSnapshot, AccountSnapshot
 
 from .account import Account, CheckingAccount, SavingsAccount
 from .account_holder import AccountHolder
@@ -85,7 +83,7 @@ class RepositoryProtocol(Protocol):
 
     def holder_has_account(self, cpf: str) -> bool: ...
 
-    def get_account_holder(self, cpf: str) -> AccountHolder: ...
+    def get_holder_snapshot(self, cpf: str) -> AccountHolderSnapshot: ...
 
     def get_account_projection(
         self,
@@ -96,27 +94,30 @@ class RepositoryProtocol(Protocol):
         for_update: bool = False,
     ) -> AccountProjectionDTO: ...
 
-    def get_account(
+    def get_account_snapshot(
         self, branch_code: str, account_num: str, for_update: bool = False
-    ) -> Account: ...
+    ) -> AccountSnapshot: ...
 
     def get_ledger_events(
         self, branch_code: str, account_num: str, start_date: date
     ) -> tuple[dict[str, Any], ...]: ...
 
     def register_account_bundle(
-        self, account: Account, holder_or_cpf: AccountHolder | str, password_hash: str
+        self,
+        account_snap: AccountSnapshot,
+        holder_snap_or_cpf: AccountHolderSnapshot | str,
+        password_hash: str,
     ) -> None: ...
 
     def save_transaction(
-        self, account: Account, events: tuple[LedgerEventDTO, ...]
+        self, account_snap: AccountSnapshot, events: tuple[LedgerEventDTO, ...]
     ) -> None: ...
 
     def register_failed_login(self, branch_code: str, account_num: str) -> None: ...
 
     def reset_login_attempts(self, branch_code: str, account_num: str) -> None: ...
 
-    def update_account_status(self, account: Account) -> None: ...
+    def update_account_status(self, account_snap: AccountSnapshot) -> None: ...
 
     def update_password(
         self, branch_code: str, account_num: str, new_password_hash: str
@@ -258,22 +259,24 @@ class Bank:
         Bank.validate_password(password)
 
         new_account = self._account_factory(account_dto)
+        account_snap = new_account.to_snapshot()
 
         if isinstance(holder_dto_or_cpf, NewAccountHolderDTO):
-            holder_or_cpf = self._account_holder_factory(holder_dto_or_cpf)
+            new_holder = self._account_holder_factory(holder_dto_or_cpf)
+            holder_snap_or_cpf = new_holder.to_snapshot()
         elif isinstance(holder_dto_or_cpf, str):
-            holder_or_cpf = holder_dto_or_cpf
+            holder_snap_or_cpf = holder_dto_or_cpf
 
         pwd_hash = self._generate_password_hash(password_str=password)
 
         try:
             self._repository.register_account_bundle(
-                new_account, holder_or_cpf, pwd_hash
+                account_snap, holder_snap_or_cpf, pwd_hash
             )
         except DuplicatedDataError as e:
             error_argument = e.argument
 
-            if error_argument is holder_or_cpf:
+            if error_argument is holder_snap_or_cpf:
                 raise DuplicatedAccountHolderError(
                     "Account holder already registered in the system"
                 ) from e
@@ -626,9 +629,10 @@ class Bank:
                 access_info=request_financial,
             )
             if request_financial:
-                account_obj = self._repository.get_account(
+                account_db_snap = self._repository.get_account_snapshot(
                     token.branch_code, token.account_num
                 )
+                account_obj = Account.from_snapshot(account_db_snap)
         except DataNotFoundError:
             raise BankAuthenticationError(
                 "Authentication failed: Account no longer exists"
@@ -687,16 +691,18 @@ class Bank:
 
         try:
             with self._repository.unit_of_work():
-                account_obj = self._repository.get_account(
+                account_db_snap = self._repository.get_account_snapshot(
                     branch_code, account_num, for_update=True
                 )
+                account_obj = Account.from_snapshot(account_db_snap)
                 try:
                     events = account_obj.deposit(amount)
                 except FrozenAccountError as e:
                     raise BankAccessError(
                         "This account is frozen and cannot be accessed"
                     ) from e
-                self._repository.save_transaction(account_obj, events)
+                account_snap = account_obj.to_snapshot()
+                self._repository.save_transaction(account_snap, events)
         except DataNotFoundError as e:
             raise AccountNotFoundError(
                 "The requested account does not exist in our records"
@@ -763,9 +769,10 @@ class Bank:
 
         try:
             with self._repository.unit_of_work():
-                account_obj = self._repository.get_account(
+                account_db_snap = self._repository.get_account_snapshot(
                     access_token.branch_code, access_token.account_num, for_update=True
                 )
+                account_obj = Account.from_snapshot(account_db_snap)
                 simulation = account_obj.simulate_withdrawal(amount)
                 yield simulation
                 try:
@@ -774,7 +781,8 @@ class Bank:
                     raise BankAccessError(
                         "This account is frozen and cannot be accessed"
                     )
-                self._repository.save_transaction(account_obj, events)
+                account_snap = account_obj.to_snapshot()
+                self._repository.save_transaction(account_snap, events)
         except DataNotFoundError as e:
             raise BankAuthenticationError(
                 "Authentication failed: Account no longer exists"
@@ -965,13 +973,13 @@ class Bank:
                 self._repository.reset_login_attempts(
                     auth_token.branch_code, auth_token.account_num
                 )
-
-                account = self._repository.get_account(
+                account_db_snap = self._repository.get_account_snapshot(
                     auth_token.branch_code, auth_token.account_num, for_update=True
                 )
-
+                account = Account.from_snapshot(account_db_snap)
                 account.unfreeze()
-                self._repository.update_account_status(account)
+                account_snap = account.to_snapshot()
+                self._repository.update_account_status(account_snap)
         except DataNotFoundError as e:
             raise BankAuthenticationError(
                 "Authentication failed: Account no longer exists"
@@ -1043,9 +1051,11 @@ class Bank:
                 if account_info.is_frozen:
                     raise BankAccessError("This account is frozen and cannot be closed")
 
-                account_obj = self._repository.get_account(
+                account_db_snap = self._repository.get_account_snapshot(
                     access_token.branch_code, access_token.account_num
                 )
+                account_obj = Account.from_snapshot(account_db_snap)
+
                 if account_obj.balance != 0:
                     raise NotEmptyAccountError(
                         "The account cannot be closed because it has a non-zero balance"
@@ -1289,7 +1299,8 @@ class Bank:
             AccountHolderNotFoundError: If the CPF is not registered in the system.
         """
         try:
-            holder_obj = self._repository.get_account_holder(cpf=cpf)
+            holder_db_snap = self._repository.get_holder_snapshot(cpf=cpf)
+            holder_obj = AccountHolder.from_snapshot(holder_db_snap)
             return holder_obj
         except DataNotFoundError as e:
             raise AccountHolderNotFoundError(
@@ -1401,13 +1412,15 @@ class Bank:
         )
 
         if (failed_attempts + 1) >= self.MAX_LOGIN_ATTEMPTS:
-            account = self._repository.get_account(
+            account_db_snap = self._repository.get_account_snapshot(
                 auth_token.branch_code,
                 auth_token.account_num,
                 for_update=True,
             )
+            account = Account.from_snapshot(account_db_snap)
             account.freeze()
-            self._repository.update_account_status(account)
+            account_snap = account.to_snapshot()
+            self._repository.update_account_status(account_snap)
             return BankAccessError(
                 "The account was frozen due to 3 consecutive failed login attempts"
             )
