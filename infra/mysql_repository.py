@@ -19,13 +19,8 @@ from pymysql import connect, cursors, err
 from pymysql.connections import Connection
 from pymysql.constants import CLIENT
 
-from domain.account import Account
-from domain.account_holder import AccountHolder
 from infra import verify
 from shared.dtos import (
-    AccessProjectionDTO,
-    AccountProjectionDTO,
-    HolderProjectionDTO,
     LedgerEventDTO,
 )
 from shared.exceptions import (
@@ -34,6 +29,12 @@ from shared.exceptions import (
     RepositoryError,
     SystemBaseException,
 )
+from shared.projections import (
+    AccessProjectionDTO,
+    AccountProjectionDTO,
+    HolderProjectionDTO,
+)
+from shared.snapshots import AccountHolderSnapshot, AccountSnapshot
 
 load_dotenv()
 
@@ -125,46 +126,54 @@ class MySQLRepository:
             self._in_transaction = False
 
     def register_account_bundle(
-        self, account: Account, holder_or_cpf: AccountHolder | str, password_hash: str
+        self,
+        account_snap: AccountSnapshot,
+        holder_snap_or_cpf: AccountHolderSnapshot | str,
+        password_hash: str,
     ) -> None:
-        """
-        Executes an ACID-compliant transaction to register an account and its holder.
+        """Executes an ACID-compliant transaction to register an account and its holder.
 
-        Acts as a Facade that unifies the creation of a new account holder (if provided as
-        a Domain object) or resolves an existing holder (if provided as a CPF string),
-        ensuring that the Account is safely linked and committed indivisibly.
+        Acts as a transactional Facade that coordinates the atomicity of the onboarding
+        process. If provided with a new AccountHolderSnapshot, it persists the holder
+        record and extracts its auto-generated primary key. If provided with a CPF string,
+        it resolves the existing holder's internal ID. Finally, it links and inserts the
+        new account record within the same isolated boundary.
 
         Args:
-            account (Account): The new domain Account entity to be saved.
-            holder_or_cpf (AccountHolder | str): The owner AccountHolder object, or their CPF.
-            password_hash (str): The hashed password for account access.
+            account_snap (AccountSnapshot): The static persistence snapshot capturing
+                the new account's configuration.
+            holder_snap_or_cpf (AccountHolderSnapshot | str): The static snapshot of
+                a new account holder, or the 11-digit CPF string of an existing one.
+            password_hash (str): The pre-computed secure cryptographic password hash.
 
         Raises:
             TypeError: If any of the arguments do not match the expected types.
             DataNotFoundError: If a CPF string is provided but the holder does not exist.
-            DuplicatedDataError: If a unique constraint (CPF or Account Num) is violated.
+            DuplicatedDataError: If a unique database constraint (CPF or Account Num)
+                is violated, carrying the respective snapshot reference.
             RepositoryError: If a generic database or connection error occurs.
         """
-        verify.verify_instance(account, Account)
-        verify.verify_instance(holder_or_cpf, (AccountHolder, str))
+        verify.verify_instance(account_snap, AccountSnapshot)
+        verify.verify_instance(holder_snap_or_cpf, (AccountHolderSnapshot, str))
         verify.verify_instance(password_hash, str)
 
         with self.unit_of_work():
             with self._connection.cursor() as cursor:
-                if isinstance(holder_or_cpf, AccountHolder):
+                if isinstance(holder_snap_or_cpf, AccountHolderSnapshot):
                     holder_id = self._insert_account_holder_record(
-                        cursor, holder_or_cpf
+                        cursor, holder_snap_or_cpf
                     )
                 else:
-                    holder_id = self._get_account_holder_id(cursor, holder_or_cpf)
+                    holder_id = self._get_account_holder_id(cursor, holder_snap_or_cpf)
 
-                self._insert_account_record(cursor, account, holder_id, password_hash)
+                self._insert_account_record(
+                    cursor, account_snap, holder_id, password_hash
+                )
 
     def save_transaction(
-        self, account: Account, events: tuple[LedgerEventDTO, ...]
+        self, account_snap: AccountSnapshot, events: tuple[LedgerEventDTO, ...]
     ) -> None:
-        """
-        Executes an atomic sub-operation to update the account state and
+        """Executes an atomic sub-operation to update the account state and
         record the corresponding financial events in the ledger.
 
         This method is a subordinate operation and strictly requires an active
@@ -172,9 +181,10 @@ class MySQLRepository:
         It locks the specific account row to prevent race conditions during updates.
 
         Args:
-            account (Account): The domain Account entity containing the new updated state.
+            account_snap (AccountSnapshot): The static snapshot capturing the
+                newly calculated financial balance and timestamp state.
             events (tuple[LedgerEventDTO, ...]): The sequence of chronological events
-                that led to the new state.
+                that led to the new state, to be written to the ledger.
 
         Raises:
             RuntimeError: If called outside an active `unit_of_work()` block.
@@ -186,20 +196,20 @@ class MySQLRepository:
                 "Invalid method call. Use the context manager MySQLRepository.unit_of_work()"
             )
 
-        verify.verify_instance(account, Account)
+        verify.verify_instance(account_snap, AccountSnapshot)
         verify.verify_instance(events, tuple)
-        for e in events:
-            verify.verify_instance(e, LedgerEventDTO)
+        for event in events:
+            verify.verify_instance(event, LedgerEventDTO)
 
         select_sql = "SELECT id FROM accounts WHERE branch_code = %s AND account_num = %s FOR UPDATE"
         update_sql = (
             "UPDATE accounts SET balance = %s, last_balance_update = %s WHERE id = %s"
         )
 
-        branch_code = account.branch_code
-        account_num = account.account_num
-        balance = account.balance
-        last_balance_update = account.last_balance_update
+        branch_code = account_snap.branch_code
+        account_num = account_snap.account_num
+        balance = account_snap.balance
+        last_balance_update = account_snap.last_balance_update
 
         with self._connection.cursor() as cursor:
             cursor.execute(select_sql, (branch_code, account_num))
@@ -305,21 +315,21 @@ class MySQLRepository:
 
         return bool(result)
 
-    def get_account_holder(self, cpf: str) -> AccountHolder:
-        """
-        Retrieves a fully hydrated AccountHolder domain entity and their associated account cards.
+    def get_holder_snapshot(self, cpf: str) -> AccountHolderSnapshot:
+        """Retrieves a static snapshot of an account holder and their associated cards.
 
         Executes two sequential, lightweight queries to fetch the core holder
         data and their account credentials. This KISS approach prevents cartesian
         products (JOINs) and simplifies the data reconstruction process.
-        The raw database records are mapped directly into a domain object before returning.
+        The raw database records are mapped directly into a data transfer snapshot
+        before returning, preserving domain boundaries.
 
         Args:
             cpf (str): The 11-digit string representing the account holder's CPF.
 
         Returns:
-            AccountHolder: A fully populated AccountHolder domain object, including their
-                wallet of AccountCards.
+            AccountHolderSnapshot: An immutable snapshot containing the holder's
+                identity details and their wallet of active account credentials.
 
         Raises:
             TypeError: If the provided CPF is not a string.
@@ -334,12 +344,12 @@ class MySQLRepository:
 
         with self._connection.cursor() as cursor:
             cursor.execute(holder_sql, (cpf,))
-            result = cursor.fetchone()
+            db_dict = cursor.fetchone()
 
-            if not result:
+            if not db_dict:
                 raise DataNotFoundError(f"Data not found in the database for {cpf=}")
 
-            holder_id = result.pop("id")
+            holder_id = db_dict.pop("id")
             cursor.execute(account_sql, (holder_id,))
             rows = cursor.fetchall()
 
@@ -348,14 +358,13 @@ class MySQLRepository:
             row["cpf"] = cpf
             cards_list.append(row)
 
-        holder_dict = {}
-
-        holder_dict["cpf"] = result["cpf"]
-        holder_dict["name"] = result["holder_name"]
-        holder_dict["birth_date"] = result["birth_date"]
-        holder_dict["account_cards"] = cards_list
-        holder_obj = AccountHolder.from_snapshot(holder_dict)
-        return holder_obj
+        snapshot = AccountHolderSnapshot(
+            name=db_dict["holder_name"],
+            cpf=db_dict["cpf"],
+            birth_date=db_dict["birth_date"],
+            cards=cards_list,
+        )
+        return snapshot
 
     def get_account_projection(
         self,
@@ -460,16 +469,15 @@ class MySQLRepository:
             holder_info=holder_dto,
         )
 
-    def get_account(
+    def get_account_snapshot(
         self, branch_code: str, account_num: str, for_update: bool = False
-    ) -> Account:
-        """
-        Retrieves an account from the database.
+    ) -> AccountSnapshot:
+        """Retrieves a static persistence snapshot of an account from the database.
 
-        Acts as an Anti-Corruption Layer, mapping raw database columns back to
-        the keys expected by the domain's `Account.from_dict()` factory.
-        This method is highly optimized and fetches only the current state
-        of the account, omitting the transaction history for performance.
+        Acts as an Anti-Corruption Layer (ACL), selecting explicitly typed columns
+        and mapping the raw database dictionary record directly into a domain-neutral
+        AccountSnapshot. This method is highly optimized and fetches only the active
+        financial state of the account, omitting transaction history for performance.
 
         Args:
             branch_code (str): The 4-digit string representing the branch.
@@ -478,12 +486,13 @@ class MySQLRepository:
                 Defaults to False.
 
         Returns:
-            Account: A fully hydrated Account domain object.
+            AccountSnapshot: An immutable snapshot container capturing the complete
+                operational and financial balance state of the account.
 
         Raises:
             TypeError: If the provided arguments are not of expected types.
             RuntimeError: If `for_update` is True but the method is called outside
-                an active `transaction()` block, preventing dangling database locks.
+                an active `unit_of_work()` block, preventing dangling database locks.
             DataNotFoundError: If the account does not exist in the database.
         """
         verify.verify_instance(branch_code, str)
@@ -497,15 +506,18 @@ class MySQLRepository:
 
         lock_clause = "FOR UPDATE" if for_update else ""
 
-        acc_keys_mapper = {
-            "branch_code": "branch_code",
-            "account_num": "account_num",
-            "account_type": "type",
-            "is_frozen": "is_frozen",
-            "balance": "balance",
-            "last_balance_update": "last_balance_update",
-        }
-        sql = f"SELECT * FROM accounts WHERE branch_code = %s AND account_num = %s {lock_clause}"
+        sql = (
+            "SELECT branch_code, "
+            "account_num, "
+            "account_type, "
+            "is_frozen, "
+            "balance, "
+            "last_balance_update "
+            "FROM accounts "
+            "WHERE branch_code = %s "
+            "AND account_num = %s "
+            f"{lock_clause}"
+        )
 
         with self._connection.cursor() as cursor:
             cursor.execute(sql, (branch_code, account_num))
@@ -516,14 +528,14 @@ class MySQLRepository:
                     f"Data not found in the database for {branch_code=}, {account_num=}"
                 )
 
-            acc_dict: dict[str, Any] = {
-                acc_keys_mapper[k]: v
-                for k, v in db_acc_dict.items()
-                if k in acc_keys_mapper
-            }
-
-            account_obj = Account.from_dict(acc_dict)
-            return account_obj
+        return AccountSnapshot(
+            branch_code=db_acc_dict["branch_code"],
+            account_num=db_acc_dict["account_num"],
+            account_type=db_acc_dict["account_type"],
+            is_frozen=db_acc_dict["is_frozen"],
+            balance=db_acc_dict["balance"],
+            last_balance_update=db_acc_dict["last_balance_update"],
+        )
 
     def get_ledger_events(
         self, branch_code: str, account_num: str, start_date: date
@@ -662,30 +674,28 @@ class MySQLRepository:
                     f"Data not found in the database for {branch_code=}, {account_num=}"
                 )
 
-    def update_account_status(self, account: Account) -> None:
-        """
-        Updates the frozen status (frozen/unfrozen) of a specific account.
+    def update_account_status(self, account_snap: AccountSnapshot) -> None:
+        """Updates the frozen status (frozen/unfrozen) of a specific account record.
 
         This method is a subordinate operation and strictly requires an active
         Unit of Work. It MUST be executed within a `with self.unit_of_work():` block.
 
         Args:
-            account (Account): The domain Account entity containing the target branch,
-                account number, and the new frozen status.
+            account_snap (AccountSnapshot): The static snapshot containing the
+                target branch, account number, and the active frozen security status.
 
         Raises:
-            RuntimeError: If called outside an active `unit_of_work()` block, enforcing the Unit of Work.
-            TypeError: If the provided argument is not an Account instance.
+            RuntimeError: If called outside an active `unit_of_work()` block.
+            TypeError: If the provided argument is not an AccountSnapshot instance.
             DataNotFoundError: If the account does not exist in the database,
                 detected by a zero rowcount during the update.
-            RepositoryError: If a database error occurs during the operation.
         """
         if not self._in_transaction:
             raise RuntimeError(
                 "Invalid method call. Use the context manager MySQLRepository.unit_of_work()"
             )
 
-        verify.verify_instance(account, Account)
+        verify.verify_instance(account_snap, AccountSnapshot)
 
         sql = (
             "UPDATE accounts SET is_frozen = %s "
@@ -694,11 +704,16 @@ class MySQLRepository:
 
         with self._connection.cursor() as cursor:
             cursor.execute(
-                sql, (account.is_frozen, account.branch_code, account.account_num)
+                sql,
+                (
+                    account_snap.is_frozen,
+                    account_snap.branch_code,
+                    account_snap.account_num,
+                ),
             )
             if cursor.rowcount == 0:
                 raise DataNotFoundError(
-                    f"Data not found in the database for {account.branch_code=}, {account.account_num=}"
+                    f"Data not found in the database for {account_snap.branch_code=}, {account_snap.account_num=}"
                 )
 
     def update_password(
@@ -853,53 +868,61 @@ class MySQLRepository:
         return result["id"]
 
     def _insert_account_holder_record(
-        self, cursor: cursors.DictCursor, holder: AccountHolder
+        self, cursor: cursors.DictCursor, holder_snap: AccountHolderSnapshot
     ) -> int:
-        """
-        Internal helper to persist a new AccountHolder entity within an active transaction.
+        """Internal helper to persist a new account holder record within an active transaction.
+
+        Directly extracts raw primitive data from the persistence snapshot to execute
+        the INSERT query against the 'account_holders' table.
 
         Args:
-            cursor (cursors.DictCursor): The active database cursor.
-            holder (AccountHolder): The domain AccountHolder instance to be saved.
+            cursor (cursors.DictCursor): The active database transaction cursor.
+            holder_snap (AccountHolderSnapshot): The static snapshot containing
+                the holder's identity details.
 
         Returns:
-            int: The auto-generated database ID of the newly inserted account holder.
+            int: The auto-generated database ID (primary key) of the newly inserted record.
 
         Raises:
             DuplicatedDataError: If an account holder with the same CPF already exists.
         """
-        query = "INSERT INTO account_holders (cpf, holder_name, birth_date) VALUES (%(cpf)s, %(name)s, %(birth_date)s)"
-        data = holder.to_snapshot()
+        query = (
+            "INSERT INTO account_holders (cpf, holder_name, birth_date) "
+            "VALUES (%s, %s, %s)"
+        )
 
         try:
-            cursor.execute(query, data)
+            cursor.execute(
+                query, (holder_snap.cpf, holder_snap.name, holder_snap.birth_date)
+            )
             return cursor.lastrowid
         except err.IntegrityError as e:
             raise DuplicatedDataError(
-                f"Duplicated data in the database for {holder.cpf=}", holder
+                f"Duplicated data in the database for {holder_snap.cpf=}", holder_snap
             ) from e
 
     def _insert_account_record(
         self,
         cursor: cursors.DictCursor,
-        account: Account,
+        acc_snap: AccountSnapshot,
         holder_id: int,
         password_hash: str,
     ) -> None:
-        """
-        Internal helper to persist a newly created Account.
+        """Internal helper to persist a newly created base account record.
 
-        This method is solely responsible for inserting
-        the base account entity into the database.
+        Directly maps the financial and state variables from the provided AccountSnapshot
+        into the columns of the 'accounts' table, linking it to its parent holder ID.
 
         Args:
-            cursor (cursors.DictCursor): The active database cursor.
-            account (Account): The domain Account instance to be saved.
-            holder_id (int): The primary key ID of the parent account holder.
-            password_hash (str): The hashed password for account access.
+            cursor (cursors.DictCursor): The active database transaction cursor.
+            acc_snap (AccountSnapshot): The static snapshot capturing the initial
+                financial and operational state of the account.
+            holder_id (int): The primary key ID of the parent account holder record.
+            password_hash (str): The pre-computed secure cryptographic password hash.
 
         Raises:
-            DuplicatedDataError: If an account with the same branch code and account_num already exists.
+            DuplicatedDataError: If an account with the same branch code and
+                account number already exists.
         """
         sql = (
             "INSERT INTO accounts ( "
@@ -911,27 +934,27 @@ class MySQLRepository:
             "last_balance_update, "
             "password_hash, "
             "account_holder_id) "
-            "VALUES ("
-            "%(branch_code)s, "
-            "%(account_num)s, "
-            "%(type)s, "
-            "%(is_frozen)s, "
-            "%(balance)s, "
-            "%(last_balance_update)s, "
-            "%(password_hash)s, "
-            "%(holder_id)s)"
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
         )
 
-        acc_dict = account.to_dict()
-        acc_dict["password_hash"] = password_hash
-        acc_dict["holder_id"] = holder_id
-
         try:
-            cursor.execute(sql, acc_dict)
+            cursor.execute(
+                sql,
+                (
+                    acc_snap.branch_code,
+                    acc_snap.account_num,
+                    acc_snap.account_type,
+                    acc_snap.is_frozen,
+                    acc_snap.balance,
+                    acc_snap.last_balance_update,
+                    password_hash,
+                    holder_id,
+                ),
+            )
         except err.IntegrityError as e:
             raise DuplicatedDataError(
-                f"Duplicated data in the database for {account.branch_code}, {account.account_num}",
-                account,
+                f"Duplicated data in the database for {acc_snap.branch_code}, {acc_snap.account_num}",
+                acc_snap,
             ) from e
 
     def _insert_ledger_entries(
