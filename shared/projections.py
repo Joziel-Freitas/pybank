@@ -1,9 +1,5 @@
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal
-from typing import Any
-
-from shared.types import AccrualType, FinancialType
 
 
 @dataclass(frozen=True, slots=True)

@@ -570,9 +570,9 @@ class TransactionController(BaseController):
 
         Requests the withdrawal amount and initiates an isolated transaction context
         with the Bank. It evaluates the resulting `WithdrawalSimulationDTO`:
-        - If overdraft is required, it dynamically pauses the execution, holding
-          the database lock, to prompt the user for explicit consent with the
-          exact required credit amount.
+        - If credit lines are required to fulfill the amount, it dynamically pauses
+          execution, holding the database lock, to prompt the user for explicit
+          consent with the exact required credit amount.
         - If consent is denied, it raises a UserAbortError, gracefully rolling
           back the transaction context.
         - If consent is granted (or not needed), the context yields, and the
@@ -585,12 +585,12 @@ class TransactionController(BaseController):
                 self._active_access_token, amount
             ) as simulation:
 
-                if simulation.use_overdraft:
+                if simulation.use_credit is True:
                     self._handle_info_ui(
                         "info",
                         "use_limit",
                         wait=True,
-                        required=simulation.overdraft_required,
+                        required=simulation.credit_required,
                     )
                     proceed = self._confirm_overdraft()
 
@@ -604,33 +604,24 @@ class TransactionController(BaseController):
 
     def _handle_deposit(self) -> None:
         """
-        Manages the hybrid deposit workflow (Smart Deposit).
+        Orchestrates the public-facing and smart deposit transaction flow.
 
-        Operates seamlessly in two modes:
-        - Authenticated (Lobby/Vault): Extracts target routing info directly from
-          the active session token, bypassing manual input.
-        - Unauthenticated (Public): Prompts the user to manually input the target
-          branch and account.
-
-        Collects the deposit amount, validates it at the boundary (Fail-Fast),
-        presents a confirmation summary, and dispatches the transaction request
-        to the core Bank aggregate.
+        This method coordinates the high-level steps of the deposit workflow:
+        1. Resolves the target routing (either automatically from session tokens
+           or via manual input).
+        2. Retrieves and displays pre-sanitized target identity data from the
+           Bank core for confirmation.
+        3. Enforces explicit user confirmation before authorizing state mutation.
+        4. Dispatches the deposit execution to the core Bank aggregate root.
 
         Raises:
-            ValueError: If the user provides a syntactically valid but business-invalid
-                amount (e.g., below MIN_ATM_TRANSACTION) that bypasses initial I/O checks.
+            ControllerOperationError: If the target account does not exist, if the
+                account is blocked/frozen, or if an internal repository failure occurs.
+            UserAbortError: If the user cancels the routing input or explicitly
+                declines the transaction at the confirmation screen.
         """
-        if self._token:
-            branch_code = self._token.branch_code
-            account_num = self._token.account_num
-        else:
-            user_in_dict = io_utils.get_selected_inputs(
-                ("branch_code", "account_num"),
-                self._controller_config,
-                self._controller_validator_cb,
-            )
-            branch_code = _assert_input(user_in_dict["branch_code"], str)
-            account_num = _assert_input(user_in_dict["account_num"], str)
+        target_account = self._get_target_account()
+        branch_code, account_num = target_account
 
         amount = self._get_transaction_value()
 
@@ -644,6 +635,61 @@ class TransactionController(BaseController):
             self._handle_exception_ui("deposit_errors", e)
             raise ControllerOperationError
 
+        self._confirm_deposit()
+
+        try:
+            self._bank_instance.execute_deposit(branch_code, account_num, amount)
+            self._handle_info_ui("info", "deposit_ok", wait=True)
+        except (AccountNotFoundError, BankAccessError) as e:
+            self._handle_exception_ui("deposit_errors", e)
+            raise ControllerOperationError
+
+    def _get_target_account(self) -> tuple[str, str]:
+        """
+        Determines the destination routing coordinates for the deposit.
+
+        Implements the dual-mode routing selection. If an active, authenticated
+        session exists, the routing identifiers are securely extracted directly
+        from the token to streamline the UX. Otherwise, it triggers the manual
+        I/O collection workflow to prompt for the target branch and account.
+
+        Returns:
+            tuple[str, str]: A tuple containing the validated 'branch_code'
+                and 'account_num' in that exact order.
+
+        Raises:
+            UserAbortError: If the user explicitly cancels the manual routing input.
+            TypeError: If the captured inputs fail the boundary type enforcement.
+        """
+
+        if self._token:
+            branch_code = self._token.branch_code
+            account_num = self._token.account_num
+        else:
+            user_in_dict = io_utils.get_selected_inputs(
+                ("branch_code", "account_num"),
+                self._controller_config,
+                self._controller_validator_cb,
+            )
+            branch_code = _assert_input(user_in_dict["branch_code"], str)
+            account_num = _assert_input(user_in_dict["account_num"], str)
+
+        return (branch_code, account_num)
+
+    def _confirm_deposit(self) -> None:
+        """
+        Enforces explicit user confirmation before committing the transaction.
+
+        Displays a terminal prompt asking the user to confirm the deposit after
+        reviewing the formatted target details. If the user opts to cancel,
+        the transaction is rolled back immediately.
+
+        Raises:
+            UserAbortError: If the user selects the 'NO' option, halting
+                the deposit workflow.
+            TypeError: If the captured confirmation input cannot be cast
+                to a valid integer.
+        """
         user_in = io_utils.get_single_input(
             "confirmation", self._controller_config, self._controller_validator_cb
         )
@@ -653,13 +699,6 @@ class TransactionController(BaseController):
 
         if confirm_operation == UserConfirmType.NO:
             raise UserAbortError
-
-        try:
-            self._bank_instance.execute_deposit(branch_code, account_num, amount)
-            self._handle_info_ui("info", "deposit_ok", wait=True)
-        except (AccountNotFoundError, BankAccessError) as e:
-            self._handle_exception_ui("deposit_errors", e)
-            raise ControllerOperationError
 
     def _handle_balance_statement(self) -> None:
         """
@@ -1008,7 +1047,10 @@ class BankSystemController(BaseController, SharedPromptsMixin):
     def _update_password(self) -> None:
         """
         Handles the workflow for modifying an account's security password.
-        Ensures the active session token is destroyed upon success.
+
+        Prompts the user for a new matching password sequence and delegates the
+        cryptographic hashing and update operation to the Bank core. Forcefully
+        triggers a credential reset to invalidate the active session upon success.
         """
         if not self._access_token:
             raise RuntimeError("Access token required to update the password")
@@ -1027,8 +1069,11 @@ class BankSystemController(BaseController, SharedPromptsMixin):
 
     def _unfreeze_account(self) -> None:
         """
-        Provides the specialized workflow for recovering a blocked account
-        using identity verification (birth date confirmation).
+        Provides the specialized workflow for recovering a blocked account.
+
+        Coordinates the collection of the account holder's registered birth date
+        for identity verification. Once verified, prompts for password creation,
+        resets failed authentication counters, and restores the account's operational state.
         """
         if self._auth_token is None:
             raise RuntimeError("AuthToken required to perform the operation")
@@ -1057,11 +1102,11 @@ class BankSystemController(BaseController, SharedPromptsMixin):
         """
         Handles the complete account termination workflow.
 
-        Enforces strict domain constraints, most notably a absolute zero-balance
+        Enforces strict domain constraints, most notably an absolute zero-balance
         policy prior to deletion. If the account is not empty, it dynamically
-        fetches the 'available_balance' (which factors in pending yields or
-        unpaid interest) to precisely inform the client of the exact settlement
-        amount required before closure can proceed.
+        fetches the live adjusted 'balance' (disregarding credit limit inflation)
+        to precisely inform the client of the exact settlement amount required
+        before closure can proceed.
         """
         if self._access_token is None:
             raise RuntimeError("AccessToken is required to close an account")
@@ -1071,24 +1116,19 @@ class BankSystemController(BaseController, SharedPromptsMixin):
             self._handle_info_ui("info", "close_acc_ok", wait=True, clean=True)
             raise ControllerCredentialsError
         except NotEmptyAccountError:
-            account_summary_dto = self._bank_instance.get_account_summary(
+            account_summary = self._bank_instance.get_account_summary(
                 self._access_token, request_financial=True
             )
 
-            if not account_summary_dto.financial_info:
-                raise RuntimeError("Invalid DTO state")
+            financial_info = account_summary.unwrap_financial()
 
             key = (
                 "close_acc_positive"
-                if account_summary_dto.financial_info.available_balance > 0
+                if financial_info.balance > 0
                 else "close_acc_negative"
             )
             self._handle_info_ui(
-                "info",
-                key,
-                wait=True,
-                clean=True,
-                balance=account_summary_dto.financial_info.available_balance,
+                "info", key, wait=True, clean=True, balance=financial_info.balance
             )
             raise ControllerOperationError
         except HomeBranchRestrictionError as e:
@@ -1169,26 +1209,6 @@ class BankSystemController(BaseController, SharedPromptsMixin):
             case _:
                 raise RuntimeError("Critical error: Unmapped type")
 
-    def _start_session(self) -> AuthToken | None:
-        """
-        Initiates the authentication workflow for the session.
-
-        Wraps the lobby access routine to gracefully capture and handle expected
-        credential failures at the UI level, ensuring the controller does not
-        crash during the initial handshake.
-
-        Returns:
-            AuthToken | None: A valid authentication token if successful,
-                or None if the user failed to authenticate or aborted.
-        """
-        try:
-            if not self._auth_token:
-                token = self._ensure_lobby_access()
-                return token
-        except ControllerCredentialsError as e:
-            self._handle_exception_ui("errors", e)
-            return None
-
     def _greet_user(self, account_summary) -> None:
         """
         Extracts the account holder's first name and dispatches the welcome UI.
@@ -1251,49 +1271,93 @@ class BankSystemController(BaseController, SharedPromptsMixin):
             case _:
                 raise RuntimeError("Critical error: Unmapped type")
 
+    def _initialize_lobby_session(self) -> AccountSummaryDTO | None:
+        """
+        Executes the atomic handshake protocol to establish a Lobby session.
+
+        This helper orchestrates the sequential authentication of a client:
+        1. Prompts for credentials (hardware card or manual indices).
+        2. Signs and registers the AuthToken inside the application state.
+        3. Fetches a lightweight, non-financial projection (AccountSummaryDTO).
+        4. Triggers the personalized client greeting.
+
+        Returns:
+            AccountSummaryDTO | None: The active session's summary data if the
+                handshake is successful; None if authentication, credentials,
+                or signature validation fails.
+        """
+        try:
+            token = self._ensure_lobby_access()
+            self._transition_to_lobby(token)
+            summary = self._bank_instance.get_account_summary(token)
+            self._greet_user(summary)
+            return summary
+        except (
+            BankAuthenticationError,
+            ControllerCredentialsError,
+            SecurityError,
+        ) as e:
+            self._handle_exception_ui("errors", e)
+            return None
+
+    def _execute_lobby_operation(
+        self, account_summary: AccountSummaryDTO
+    ) -> OperationMenuType | RestrictedMenuType | None:
+        """
+        Orchestrates a single, isolated execution loop of an ATM option.
+
+        Captures user navigation choices, dynamically evaluating if the target
+        account status is operational or frozen (presenting the appropriate
+        menu). Once an option is selected, it routes execution to the corresponding
+        operational controllers or security procedures.
+
+        Args:
+            account_summary (AccountSummaryDTO): The current cached state
+                of the active account session.
+
+        Returns:
+            OperationMenuType | RestrictedMenuType | None: The evaluated action
+                taken by the user; None if the user explicitly aborts/cancels
+                the operation selection prompt.
+        """
+        operation = None
+        try:
+            operation = self._select_operation(account_summary)
+        except UserAbortError:
+            self._handle_info_ui("info", "user_cancel", wait=True)
+
+        if operation:
+            self._dispatch_operation(operation)
+
+        return operation
+
     def _lobby_hub(self) -> None:
         """
-        The authenticated environment loop.
+        The authenticated environment loop (Lobby State Machine).
 
-        Operates as a declarative state machine for the session. It establishes
-        initial lobby access, coordinates the continuous presentation-selection-dispatch
-        loop, and manages state transitions dynamically.
+        Acts as the primary orchestrator for active client sessions. It leverages
+        clean state transitions to secure the transition between the Lobby and
+        the Vault, ensuring that the continuous select-and-dispatch loop remains
+        active until explicitly terminated by user logout, transaction finalization,
+        inactivity timeout, or critical exceptions.
 
-        Operations requiring vault access are delegated safely, while critical
-        domain or UI errors are caught to cleanly sever the session state
-        prior to termination.
+        If a sensitive withdrawal completes or if a session-severing security block
+        is triggered, this hub purges credentials from memory and gracefully returns
+        the terminal to the main public kiosk.
         """
-        token = self._start_session()
+        account_summary = None
 
-        if token:
-            self._transition_to_lobby(token)
+        if not self._auth_token:
+            account_summary = self._initialize_lobby_session()
 
-        greeted = False
+        if account_summary is None or self._auth_token is None:
+            return None
 
         while self._auth_token is not None:
-            operation = None
             try:
-                account_summary = self._bank_instance.get_account_summary(
-                    self._auth_token
-                )
-
-                if not greeted:
-                    self._greet_user(account_summary)
-                    greeted = True
-
-                try:
-                    operation = self._select_operation(account_summary)
-                except UserAbortError:
-                    self._handle_info_ui("info", "user_cancel", wait=True)
+                operation = self._execute_lobby_operation(account_summary)
+                if operation == OperationMenuType.WITHDRAWAL or operation is None:
                     self._end_session()
-                    break
-
-                if operation:
-                    self._dispatch_operation(operation)
-
-                if operation == OperationMenuType.WITHDRAWAL:
-                    self._end_session()
-
             except UserAbortError:
                 self._handle_info_ui("info", "user_cancel", wait=True)
                 continue
