@@ -836,7 +836,7 @@ class CheckingAccount(Account):
         return self._OVERDRAFT_LIMIT
 
     @property
-    def available_credit(self) -> Decimal | None:
+    def available_credit(self) -> Decimal:
         """
         Calculates the remaining available overdraft limit dynamically.
 
@@ -845,14 +845,19 @@ class CheckingAccount(Account):
         ledger debt and any pending compound interest charges are seamlessly
         deducted from the total limit to reflect the true remaining capacity.
 
+        This calculation enforces a strict non-negative floor policy. If accumulated
+        interest charges exceed the remaining buffer of the overdraft limit, the
+        returned value is saturated at zero to maintain domain semantic coherence.
+
         Returns:
-            Decimal | None: The exact, temporally accurate monetary value
+            Decimal: The exact, temporally accurate monetary value
                 available for credit operations.
         """
-
+        min_available = Decimal("0.00")
         accrual = self._pending_accrual
         total_credit = self.credit_limit
-        available_credit = self._OVERDRAFT_LIMIT + self._balance + accrual
+        calculated_available = self._OVERDRAFT_LIMIT + self._balance + accrual
+        available_credit = max(min_available, calculated_available)
 
         return total_credit if self._balance >= 0 else available_credit
 
@@ -866,10 +871,16 @@ class CheckingAccount(Account):
         Delegates the resolution of time-based adjustments (such as interest)
         directly to the 'balance' property to maintain single-responsibility.
 
+        Guarantees that the purchasing power never drops below zero, even if
+        unpaid accumulated interest charges exceed the maximum authorized overdraft
+        limit, isolating the client's spending capacity from negative arithmetic spikes.
+
         Returns:
             Decimal: The total absolute monetary value available for disbursement.
         """
-        return self.credit_limit + self.balance
+        min_available = Decimal("0.00")
+        calculated_available = self.credit_limit + self.balance
+        return max(min_available, calculated_available)
 
     @property
     def _pending_accrual(self) -> Decimal:
