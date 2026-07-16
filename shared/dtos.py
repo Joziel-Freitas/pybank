@@ -181,11 +181,12 @@ class AccountSummaryDTO:
     """
     A comprehensive, multi-stage read-only snapshot of an account's state.
 
-    Functions as a flexible facade for the Presentation layer. In the 'Lobby' phase,
-    it contains only basic routing and identity data to render menus safely.
-    Upon strict Vault authorization, it acts as an aggregate root, composing purely
-    financial and accrual data DTOs into a single transport object without leaking
-    the core domain entities.
+    Functions as a flexible, read-only projection for the Presentation layer.
+    It operates in two distinct execution phases:
+    1. Lobby Phase: Contains only basic routing and non-sensitive identity
+       data to safely render general menus.
+    2. Vault Phase: Composes rich, real-time financial and temporal metrics
+       (AccountFinancialDTO) after strict cryptographic authorization.
 
     Attributes:
         holder_name (str): The full name of the account holder.
@@ -195,8 +196,6 @@ class AccountSummaryDTO:
         is_frozen (bool): Flag indicating if the account is active or frozen.
         financial_info (AccountFinancialDTO | None): The account's core financial metrics.
             Hydrated only after explicit Vault authorization; otherwise None.
-        accrual_info (AccrualEventDTO | None): Pending time-based financial adjustments
-            (yields or interests) ready to be applied or displayed.
     """
 
     holder_name: str
@@ -205,6 +204,26 @@ class AccountSummaryDTO:
     account_type: str
     is_frozen: bool
     financial_info: AccountFinancialDTO | None
+
+    def unwrap_financial(self) -> AccountFinancialDTO:
+        """
+        Safely extracts the nested financial projection.
+
+        Enforces strict temporal access control by raising an exception if
+        the presentation layer attempts to read financial metrics that have
+        not been cryptographically unlocked and hydrated.
+
+        Returns:
+            AccountFinancialDTO: The live, temporally accurate financial state of the account.
+
+        Raises:
+            RuntimeError: If called during an unauthenticated 'Lobby' session
+                where financial info was not hydrated.
+        """
+        if self.financial_info is None:
+            raise RuntimeError("financial_info was not hydrated in this projection")
+
+        return self.financial_info
 
 
 @dataclass(frozen=True, slots=True)
