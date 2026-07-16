@@ -37,7 +37,11 @@ from infra.io_utils import CallbackReturn, InputType
 from settings import ADMIN_EXIT_CODE
 from shared import clock, exceptions, validators
 from shared.credentials import AccessToken, AccountCard, AuthToken
-from shared.dtos import AccountSummaryDTO, NewAccountDTO, NewAccountHolderDTO
+from shared.dtos import (
+    AccountSummaryDTO,
+    NewAccountDTO,
+    NewAccountHolderDTO,
+)
 from shared.exceptions import (
     AccountAlreadyActiveError,
     AccountHolderNotFoundError,
@@ -597,9 +601,9 @@ class TransactionController(BaseController):
                     if proceed == UserConfirmType.NO:
                         raise UserAbortError
 
-            self._handle_info_ui("info", "withdraw_ok", wait=True)
+            self._handle_info_ui("info", "withdrawal_ok", wait=True)
         except (BankAccessError, InsufficientFundsError) as e:
-            self._handle_exception_ui("withdraw_errors", e)
+            self._handle_exception_ui("withdrawal_errors", e)
             raise ControllerOperationError
 
     def _handle_deposit(self) -> None:
@@ -716,10 +720,23 @@ class TransactionController(BaseController):
         account_summary = self._bank_instance.get_account_summary(
             self._active_access_token, request_financial=True
         )
-        account_summary_dict = asdict(account_summary)
+        summary_dicts = self._get_summary_dicts(account_summary)
+        base_summary_dict, financial_dict = summary_dicts
+        views.views_balance_statement(base_summary_dict, financial_dict)
 
-        views.views_balance_statement(account_summary_dict)
+        start_date = self._get_start_date()
+        statement_dto = self._bank_instance.generate_statement(
+            self._active_access_token, start_date
+        )
 
+        summary_dicts = self._get_summary_dicts(statement_dto.account_info)
+        base_summary_dict, financial_dict = summary_dicts
+
+        views.views_balance_statement(
+            base_summary_dict, financial_dict, statement_dto.financial_events
+        )
+
+    def _get_start_date(self) -> date:
         days_mapper = {1: 30, 2: 90, 3: 180}
         user_in_raw = io_utils.get_single_input(
             "statement", self._controller_config, self._controller_validator_cb
@@ -728,15 +745,16 @@ class TransactionController(BaseController):
         days = days_mapper[int_user_in]
         start_date = clock.get_today() - timedelta(days=days)
 
-        statement_dto = self._bank_instance.generate_statement(
-            self._active_access_token, start_date
-        )
+        return start_date
 
-        account_summary = statement_dto.account_info
-        account_summary_dict = asdict(account_summary)
-        events = statement_dto.financial_events
+    def _get_summary_dicts(
+        self, summary_dto: AccountSummaryDTO
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
 
-        views.views_balance_statement(account_summary_dict, events)
+        account_summary_dict = asdict(summary_dto)
+        financial_dict = account_summary_dict.pop("financial_info")
+
+        return (account_summary_dict, financial_dict)
 
     def run_controller(self) -> None:
         """

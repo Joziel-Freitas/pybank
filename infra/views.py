@@ -28,9 +28,9 @@ TRANSLATION_MAP = {
     "financial_events": {
         "DEPOSIT": "DEPOSITO",
         "WITHDRAWAL": "SAQUE",
-        "OVERDRAFT_WITHDRAWAL": "SAQUE CHEQUE ESP.",
+        "CREDIT_WITHDRAWAL": "SAQUE CRÉDITO ESP.",
         "YIELD": "RENDIMENTOS",
-        "INTEREST": "JUROS CHEQUE ESP.",
+        "INTEREST": "JUROS CRÉDITO ESP.",
     },
     "account_type": {
         "CheckingAccount": "CONTA CORRENTE",
@@ -62,7 +62,7 @@ def _format_currency(value_raw: Decimal) -> str:
     Returns:
         str: The formatted currency string.
     """
-    fmt_value = f"{value_raw:.2f}".replace(".", ",")
+    fmt_value = f"{value_raw:_.2f}".replace(".", ",").replace("_", ".")
     return fmt_value
 
 
@@ -109,8 +109,8 @@ def system_output(
         print(line)
 
     if wait:
-        for i in (1, 5, 11, 13, 15):
-            print(i * ".", end="", flush=True)
+        for _ in range(5):
+            print("." * 9, end="", flush=True)
             sleep(1)
 
 
@@ -183,7 +183,7 @@ def _balance_statement_header(account_info: dict[str, Any]) -> None:
     account_type = TRANSLATION_MAP["account_type"][account_info["account_type"]]
 
     print(f"{BANK_NAME.upper():^45}")
-    print(f"{date:<10} - {'AUTO-ATENDIMENTO':^23} - {time:>10}")
+    print(f"{date:<10}{' -  AUTO-ATENDIMENTO  - ':^25}{time:>10}")
     print(f"{f'EXTRATO DE {account_type}':^45}")
     print(f"{'PARA SIMPLES CONFERÊNCIA':^45}")
     print()
@@ -205,8 +205,8 @@ def _balance_statement_footer(financial_info: dict[str, Any]) -> None:
         financial_info (dict[str, Any]): A dictionary containing the account's
             financial data (balance, accrual, available_balance, limits, etc.).
     """
-    balance = financial_info["balance"]
     accrual = financial_info["accrual"]
+    balance = financial_info["balance"]
     available_balance = financial_info["available_balance"]
     issue_at = financial_info["issue_at"].strftime("%d/%m/%Y")
     raw_accrual_type = financial_info["accrual_type"]
@@ -216,23 +216,25 @@ def _balance_statement_footer(financial_info: dict[str, Any]) -> None:
             financial_info["accrual_type"]
         ]
 
-    overdraft = financial_info["overdraft_limit"]
-    available_overdraft = financial_info["available_overdraft"]
+    credit_limit = financial_info["credit_limit"]
+    available_credit = financial_info["available_credit"]
 
     print("\n" + "-" * 45)
-    print(f"{'SALDO BASE:':<25} R$ {_format_currency(balance):>16}")
-
     if accrual_type:
         print(f"{f'{accrual_type}:':<25} R$ {_format_currency(accrual):>16}")
 
-    print(f"{'SALDO DISPONÍVEL:':<25} R$ {_format_currency(available_balance):>16}")
-    print(f"{'VALOR DISPONÍVEL EM:':<25} {issue_at:>16}")
+    print(f"{'SALDO:':<25} R$ {_format_currency(balance):>16}")
 
-    if overdraft is not None and available_overdraft is not None:
-        print(f"{'LIMITE CHEQUE ESPECIAL:':<25} R$ {_format_currency(overdraft):>16}")
+    if credit_limit is not None and available_credit is not None:
         print(
-            f"{'LIMITE DISPONÍVEL:':<25} R$ {_format_currency(available_overdraft):>16}"
+            f"{'LIMITE CRÉDITO ESPECIAL:':<25} R$ {_format_currency(credit_limit):>16}"
         )
+        print(f"{'LIMITE DISPONÍVEL:':<25} R$ {_format_currency(available_credit):>16}")
+
+    print(
+        f"{'SALDO TOTAL DISPONÍVEL:':<25} R$ {_format_currency(available_balance):>16}"
+    )
+    print(f"{'VALOR DISPONÍVEL EM:':<25}{issue_at:>20}")
 
     print("-" * 45 + "\n")
 
@@ -243,7 +245,8 @@ def _balance_statement_footer(financial_info: dict[str, Any]) -> None:
 
 
 def views_balance_statement(
-    account_summary: dict[str, Any],
+    base_summary: dict[str, Any],
+    financial_info: dict[str, Any],
     financial_events: tuple[dict[str, Any], ...] | None = None,
 ) -> None:
     """
@@ -261,8 +264,7 @@ def views_balance_statement(
         financial_events (tuple[dict[str, Any], ...] | None, optional): A chronological
             sequence of ledger event dictionaries. Defaults to None.
     """
-    financial_info = account_summary.pop("financial_info")
-    _balance_statement_header(account_summary)
+    _balance_statement_header(base_summary)
 
     if not financial_events:
         if financial_events is not None:
@@ -287,7 +289,7 @@ def views_balance_statement(
         t_type = TRANSLATION_MAP["financial_events"][event["event_type"]]
         t_amount = event["amount"]
 
-        print(f"{t_date:<6}{t_type:<22} {_format_currency(t_amount):>17}")
+        print(f"{t_date:<6}{t_type:<22} {_format_currency(abs(t_amount)):>17}")
 
     _balance_statement_footer(financial_info)
 
@@ -305,6 +307,7 @@ def show_cards(client_cards: list[str]) -> None:
                                   of each card available to the client.
     """
     subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
+    client_cards.sort()
     print(f"{' Escolha seu cartão ':-^45}")
     for idx, card in enumerate(client_cards):
         print(f"{idx}: {card}")
