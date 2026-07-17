@@ -161,12 +161,12 @@ class TransactionType(FinancialType):
     Attributes:
         DEPOSIT: Represents funds added to the account.
         WITHDRAWAL: Represents funds removed using standard positive balance.
-        OVERDRAFT_WITHDRAWAL: Represents funds removed utilizing the account's credit limit.
+        CREDIT_WITHDRAWAL: Represents funds removed utilizing the account's credit limit.
     """
 
     DEPOSIT = "DEPOSIT"
     WITHDRAWAL = "WITHDRAWAL"
-    OVERDRAFT_WITHDRAWAL = "OVERDRAFT_WITHDRAWAL"
+    CREDIT_WITHDRAWAL = "CREDIT_WITHDRAWAL"
 
 
 class AccrualType(FinancialType):

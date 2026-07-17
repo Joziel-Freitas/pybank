@@ -921,8 +921,8 @@ class CheckingAccount(Account):
         """
         Constructs the ledger event sequence for a checking account, handling zero-crossing logic.
 
-        This implementation handles the overdraft complexity by strategically splitting
-        the transaction into 'Standard' and 'Overdraft' events when the requested
+        This implementation handles the credit complexity by strategically splitting
+        the transaction into 'Standard' and 'Credit' events when the requested
         amount crosses the zero-balance threshold.
 
         Args:
@@ -948,16 +948,16 @@ class CheckingAccount(Account):
                     event_type=TransactionType.WITHDRAWAL,
                 )
             )
-        # Case 2: Fully operating within overdraft limits (including starting exactly at zero)
+        # Case 2: Fully operating within credit limits (including starting exactly at zero)
         elif start_balance <= 0:
             events_list.append(
                 LedgerEventDTO(
                     previous_balance=start_balance,
                     amount=-amount,
-                    event_type=TransactionType.OVERDRAFT_WITHDRAWAL,
+                    event_type=TransactionType.CREDIT_WITHDRAWAL,
                 )
             )
-        # Case 3: Zero-crossing (Partial standard, partial overdraft)
+        # Case 3: Zero-crossing (Partial standard, partial credit)
         else:
             remaining = amount - start_balance
             events_list.append(
@@ -971,7 +971,7 @@ class CheckingAccount(Account):
                 LedgerEventDTO(
                     previous_balance=Decimal("0.00"),
                     amount=-remaining,
-                    event_type=TransactionType.OVERDRAFT_WITHDRAWAL,
+                    event_type=TransactionType.CREDIT_WITHDRAWAL,
                 )
             )
         return tuple(events_list)
