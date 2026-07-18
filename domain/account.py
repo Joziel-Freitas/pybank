@@ -30,6 +30,10 @@ from shared.exceptions import (
 from shared.snapshots import AccountSnapshot
 from shared.types import AccrualType, TransactionType
 
+# =====================================================================
+# Account (ABC)
+# =====================================================================
+
 
 class Account(ABC):
     """
@@ -46,16 +50,14 @@ class Account(ABC):
         _is_frozen (bool): The operational status of the account (True if blocked).
         _balance (Decimal): The current authoritative account balance.
         _last_balance_update (date): The exact temporal anchor of the last
-        balance mutation, used for calculating precise daily accruals.
+            balance mutation, used for calculating precise daily accruals.
     """
 
     # --------------------------------------------------------------------------
     # Class attributes
     # --------------------------------------------------------------------------
-
     MIN_ATM_TRANSACTION: ClassVar[Decimal] = Decimal(2.00)
 
-    # Type hints for the instance's variables
     _branch_code: str
     _account_num: str
     _is_frozen: bool
@@ -65,7 +67,6 @@ class Account(ABC):
     # --------------------------------------------------------------------------
     # Constructor
     # --------------------------------------------------------------------------
-
     def __init__(self, branch_code: str, account_num: str):
         """
         Initializes a new Account instance with validated identifiers.
@@ -91,9 +92,13 @@ class Account(ABC):
     # --------------------------------------------------------------------------
     # Dunder methods
     # --------------------------------------------------------------------------
-
     def __repr__(self) -> str:
-        """Returns the canonical string representation of the Account instance."""
+        """
+        Returns the canonical string representation of the Account instance.
+
+        Returns:
+            str: Diagnostic state representation containing internal ledger properties.
+        """
         class_name = type(self).__name__
 
         return (
@@ -106,14 +111,17 @@ class Account(ABC):
 
     def __eq__(self, other: object) -> bool:
         """
-        Determines equality between Account instances based on branch code and account number.
+        Determines equality between Account instances based on identity coordinates.
 
         Two Account objects are considered equal if they share the same branch code
-        and account number, regardless of other attributes. This definition of equality
-        is consistent with the __hash__ method, ensuring reliable behavior when Account
-        objects are stored in hash-based collections such as sets or used as dictionary keys.
-        """
+        and account number, regardless of other state metrics.
 
+        Args:
+            other (object): The target object to compare against.
+
+        Returns:
+            bool: True if identity components match perfectly, False otherwise.
+        """
         if isinstance(other, Account):
             return (self._branch_code, self._account_num) == (
                 other._branch_code,
@@ -121,35 +129,49 @@ class Account(ABC):
             )
         return False
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         """
-        Returns a hash value for the Account instance based on its branch code and account number.
+        Returns a hash value for the Account instance based on its business identity.
 
-        This ensures that Account objects can be used reliably as keys in dictionaries
-        or stored in sets. The hash is consistent with the __eq__ method, which also
-        defines equality by branch code and account number, guaranteeing that two Account
-        instances with the same identifiers are treated as identical in hash-based collections.
+        Guarantees safe collection hashing behavior when stored inside sets or
+        dictionary key lookups, mirroring the logic found in __eq__.
+
+        Returns:
+            int: The generated hash footprint of the routing variables.
         """
-
         return hash((self._branch_code, self._account_num))
 
     # --------------------------------------------------------------------------
     # Properties
     # --------------------------------------------------------------------------
-
     @property
     def branch_code(self) -> str:
-        """Returns the branch code of the account."""
+        """
+        Returns the branch code of the account.
+
+        Returns:
+            str: The structural branch location identifier.
+        """
         return self._branch_code
 
     @property
     def account_num(self) -> str:
-        """Returns the account number."""
+        """
+        Returns the account number.
+
+        Returns:
+            str: The unique account numeric index.
+        """
         return self._account_num
 
     @property
     def is_frozen(self) -> bool:
-        """Returns the current status of the account"""
+        """
+        Returns the current operational block status of the account.
+
+        Returns:
+            bool: True if the account is frozen, False otherwise.
+        """
         return self._is_frozen
 
     @property
@@ -159,12 +181,20 @@ class Account(ABC):
 
         Combines the raw ledger balance with any pending time-based accruals
         (yields or interest) up to the current moment.
+
+        Returns:
+            Decimal: The high-precision true balance amount.
         """
         return self._balance + self._pending_accrual
 
     @property
     def last_balance_update(self) -> date:
-        """Returns the calendar date of the last balance update."""
+        """
+        Returns the calendar date of the last balance update.
+
+        Returns:
+            date: The temporal execution date anchor point.
+        """
         return self._last_balance_update
 
     @property
@@ -269,9 +299,8 @@ class Account(ABC):
         pass
 
     # --------------------------------------------------------------------------
-    # Public API
+    # Public API (Orchestrators)
     # --------------------------------------------------------------------------
-
     def to_snapshot(self) -> AccountSnapshot:
         """
         Generates a persistence snapshot of the current account state.
@@ -392,7 +421,6 @@ class Account(ABC):
             TypeError: If the provided amount is not a Decimal instance.
             ValueError: If the withdrawal amount is less than the MIN_ATM_TRANSACTION limit.
         """
-
         Account.validate_amount_entry(amount)
         authorized = amount <= self.available_funds
         balance = self.balance
@@ -457,9 +485,36 @@ class Account(ABC):
         return events
 
     # --------------------------------------------------------------------------
-    # Protected methods
+    # Abstract methods (Hooks for internal orchestration)
     # --------------------------------------------------------------------------
+    @abstractmethod
+    def _compose_withdrawal_event(
+        self,
+        amount: Decimal,
+        accrual_event: LedgerEventDTO | None,
+        start_balance: Decimal,
+    ) -> tuple[LedgerEventDTO, ...]:
+        """
+        Abstract hook for constructing account-specific ledger events.
 
+        Concrete subclasses must implement this to define the semantic sequencing
+        of withdrawal events, ensuring that the audit trail accurately reflects
+        the nature of the transaction (e.g., standard vs. overdraft usage) relative
+        to the account's state before mutation.
+
+        Args:
+            amount (Decimal): The amount withdrawn.
+            accrual_event (LedgerEventDTO | None): The materialized interest/yield event, if any.
+            start_balance (Decimal): The authoritative balance prior to the withdrawal.
+
+        Returns:
+            tuple[LedgerEventDTO, ...]: The chronological sequence of finalized ledger events.
+        """
+        pass
+
+    # --------------------------------------------------------------------------
+    # Protected methods (Internal Helpers)
+    # --------------------------------------------------------------------------
     def _update_balance(self, amount: Decimal) -> None:
         """
         Mutates the account balance and synchronizes the domain clock.
@@ -506,47 +561,17 @@ class Account(ABC):
         )
 
     # --------------------------------------------------------------------------
-    # Abstract methods
-    # --------------------------------------------------------------------------
-
-    @abstractmethod
-    def _compose_withdrawal_event(
-        self,
-        amount: Decimal,
-        accrual_event: LedgerEventDTO | None,
-        start_balance: Decimal,
-    ) -> tuple[LedgerEventDTO, ...]:
-        """
-        Abstract hook for constructing account-specific ledger events.
-
-        Concrete subclasses must implement this to define the semantic sequencing
-        of withdrawal events, ensuring that the audit trail accurately reflects
-        the nature of the transaction (e.g., standard vs. overdraft usage) relative
-        to the account's state before mutation.
-
-        Args:
-            amount (Decimal): The amount withdrawn.
-            accrual_event (LedgerEventDTO | None): The materialized interest/yield event, if any.
-            start_balance (Decimal): The authoritative balance prior to the withdrawal.
-
-        Returns:
-            tuple[LedgerEventDTO, ...]: The chronological sequence of finalized ledger events.
-        """
-        pass
-
-    # --------------------------------------------------------------------------
     # Class methods
     # --------------------------------------------------------------------------
-
     @classmethod
     def from_snapshot(cls, data: AccountSnapshot) -> Account:
         """
-        Factory method to reconstruct an Account instance (or subclass) from a persistence snapshot.
+        Factory method to reconstruct an Account instance from a persistence snapshot.
 
         Implements a Dispatcher Pattern using typed Data Transfer Objects:
         1. If called on the base Account class, it inspects the 'account_type' field
            in the snapshot and delegates instantiation to the correct subclass.
-        2. If called on (or dispatched to) a subclass, it restores the common state
+        2. If called on a subclass, it restores the common state
            attributes (balance, frozen status, and temporal state) and returns
            the fully hydrated instance.
 
@@ -589,7 +614,6 @@ class Account(ABC):
     # --------------------------------------------------------------------------
     # Static methods
     # --------------------------------------------------------------------------
-
     @staticmethod
     def validate_branch_code(code: str) -> str:
         """
@@ -659,6 +683,11 @@ class Account(ABC):
         verify.verify_interval(target_value=amount, min_val=Account.MIN_ATM_TRANSACTION)
 
 
+# =====================================================================
+# SavingsAccount
+# =====================================================================
+
+
 class SavingsAccount(Account):
     """
     Represents a standard Savings Account.
@@ -672,13 +701,11 @@ class SavingsAccount(Account):
     # --------------------------------------------------------------------------
     # Class attributes
     # --------------------------------------------------------------------------
-
     DAILY_EARNINGS_RATE: ClassVar[Decimal] = Decimal("0.00016")
 
     # --------------------------------------------------------------------------
     # Properties
     # --------------------------------------------------------------------------
-
     @property
     def credit_limit(self) -> None:
         """
@@ -734,9 +761,8 @@ class SavingsAccount(Account):
         return earnings.quantize(Decimal("0.00"))
 
     # --------------------------------------------------------------------------
-    # Protected methods
+    # Protected methods (Hook Implementations)
     # --------------------------------------------------------------------------
-
     def _compose_withdrawal_event(
         self,
         amount: Decimal,
@@ -770,7 +796,6 @@ class SavingsAccount(Account):
     # --------------------------------------------------------------------------
     # Class methods
     # --------------------------------------------------------------------------
-
     @classmethod
     def from_snapshot(cls, data: AccountSnapshot) -> SavingsAccount:
         """
@@ -798,6 +823,11 @@ class SavingsAccount(Account):
         return cast(SavingsAccount, super().from_snapshot(data))
 
 
+# =====================================================================
+# CheckingAccount
+# =====================================================================
+
+
 class CheckingAccount(Account):
     """
     Represents a Checking Account with an integrated overdraft limit.
@@ -816,14 +846,12 @@ class CheckingAccount(Account):
     # --------------------------------------------------------------------------
     # Class attributes
     # --------------------------------------------------------------------------
-
     _OVERDRAFT_LIMIT: ClassVar[Decimal] = Decimal("3000.00")
     DAILY_INTEREST_RATE: ClassVar[Decimal] = Decimal("0.0025")
 
     # --------------------------------------------------------------------------
     # Properties
     # --------------------------------------------------------------------------
-
     @property
     def credit_limit(self) -> Decimal:
         """
@@ -909,9 +937,8 @@ class CheckingAccount(Account):
         return -interest.quantize(Decimal("0.00"))
 
     # --------------------------------------------------------------------------
-    # Protected methods
+    # Protected methods (Hook Implementations)
     # --------------------------------------------------------------------------
-
     def _compose_withdrawal_event(
         self,
         amount: Decimal,
