@@ -39,6 +39,7 @@ from shared import clock, exceptions, validators
 from shared.credentials import AccessToken, AccountCard, AuthToken
 from shared.dtos import (
     AccountSummaryDTO,
+    DepositTargetDTO,
     NewAccountDTO,
     NewAccountHolderDTO,
 )
@@ -162,13 +163,22 @@ class SharedPromptsMixin(ABC):
     # Abstract methods
     # --------------------------------------------------------------------------
     @abstractmethod
-    def _handle_info_ui(self, context_key: str, info_key: str, **kwargs) -> None:
+    def _handle_info_ui(
+        self,
+        context_key: str,
+        info_key: str,
+        wait: bool = False,
+        clean: bool = False,
+        **kwargs,
+    ) -> None:
         """
         Abstract contract to trigger contextual presentation outputs.
 
         Args:
             context_key (str): The category inside the message catalog.
             info_key (str): The specific lookup key for the message.
+            wait (bool, optional): If True, pauses execution. Defaults to False.
+            clean (bool, optional): If True, clears screen. Defaults to False.
             **kwargs: Dynamic arguments to be formatted into the message template.
         """
         raise NotImplementedError
@@ -184,15 +194,23 @@ class SharedPromptsMixin(ABC):
             str: The validated, matching 6-digit password string.
         """
         while True:
-            self._handle_info_ui("info", "pwd_input")
             raw_pwd_1 = io_utils.get_single_input(
-                "password", self._auth_config, self._controller_validator_cb
+                "password",
+                self._auth_config,
+                self._controller_validator_cb,
+                loop_header=partial(
+                    self._handle_info_ui, context_key="info", info_key="pwd_input"
+                ),
             )
             pwd_1 = _assert_input(raw_pwd_1, str)
 
-            self._handle_info_ui("info", "pwd_confirm")
             raw_pwd_2 = io_utils.get_single_input(
-                "password", self._auth_config, self._controller_validator_cb
+                "password",
+                self._auth_config,
+                self._controller_validator_cb,
+                loop_header=partial(
+                    self._handle_info_ui, context_key="info", info_key="pwd_confirm"
+                ),
             )
             pwd_2 = _assert_input(raw_pwd_2, str)
 
@@ -201,7 +219,7 @@ class SharedPromptsMixin(ABC):
             if matched:
                 return pwd_1
 
-            self._handle_info_ui("info", "pwd_error")
+            self._handle_info_ui("info", "pwd_error", wait=True)
 
     def _prompt_cpf(self) -> str:
         """
@@ -677,8 +695,8 @@ class TransactionController(BaseController):
         Orchestrates the public-facing and smart deposit transaction flow.
 
         Coordinates target coordinate resolution, pulls pre-sanitized confirmation
-        metadata records from the aggregate domain root, presents confirmation screens,
-        and safely commits the ledger transaction state mutation.
+        metadata records from the aggregate domain root, and safely triggers the
+        parameterized confirmation loop before committing the ledger transaction state mutation.
 
         Raises:
             ControllerOperationError: If the destination target account coordinates
@@ -693,13 +711,11 @@ class TransactionController(BaseController):
             target_info = self._bank_instance.get_deposit_target_info(
                 branch_code, account_num
             )
-            info_dict = asdict(target_info)
-            views.confirm_deposit(info_dict, amount)
         except AccountNotFoundError as e:
             self._handle_exception_ui("deposit_errors", e)
             raise ControllerOperationError
 
-        self._confirm_deposit()
+        self._confirm_deposit(target_info, amount)
 
         try:
             self._bank_instance.execute_deposit(branch_code, account_num, amount)
@@ -713,12 +729,15 @@ class TransactionController(BaseController):
         Manages the complete stateful withdrawal workflow using a pessimistic lock.
 
         Requests financial transaction magnitudes and initiates an isolated transaction context.
-        If credit lines are required to fulfill the amount, it holds the critical database lock,
+        Evaluates domain authorization parameters immediately; if the transaction is flagged
+        as unauthorized (e.g., exceeding total combined limits), execution is aborted to prevent
+        UI drift. If credit lines are required and valid, it holds the critical database lock,
         pauses execution threads, and prompts the client for explicit overdraft terms approval.
 
         Raises:
-            ControllerOperationError: If underlying balances are insufficient, if the aggregate
-                session validation rejects parameters, or if infrastructural errors emerge.
+            ControllerOperationError: If underlying balances or total credit limits are
+                insufficient (simulation.authorized is False), if the aggregate session
+                validation rejects parameters, or if infrastructural errors emerge.
             UserAbortError: If credit limit approval is explicitly declined by the user.
         """
         amount = self._get_transaction_value()
@@ -727,6 +746,10 @@ class TransactionController(BaseController):
             with self._bank_instance.execute_withdraw(
                 self._active_access_token, amount
             ) as simulation:
+
+                if not simulation.authorized:
+                    self._handle_info_ui("withdrawal_errors", "value", wait=True)
+                    raise ControllerOperationError
 
                 if simulation.use_credit is True:
                     self._handle_info_ui(
@@ -794,12 +817,18 @@ class TransactionController(BaseController):
             raise RuntimeError(
                 "Method doesn't handle {} operation".format(self._transaction_type)
             )
-        self._handle_info_ui(
-            "info", "min_value", min_atm=Account.MIN_ATM_TRANSACTION, clean=True
-        )
+
         transaction_key = transaction_mapper[self._transaction_type]
         value_raw = io_utils.get_single_input(
-            transaction_key, self._controller_config, self._controller_validator_cb
+            transaction_key,
+            self._controller_config,
+            self._controller_validator_cb,
+            loop_header=partial(
+                self._handle_info_ui,
+                context_key="info",
+                info_key="min_value",
+                min_atm=Account.MIN_ATM_TRANSACTION,
+            ),
         )
         value = _assert_input(value_raw, Decimal)
         return value
@@ -828,18 +857,31 @@ class TransactionController(BaseController):
 
         return (branch_code, account_num)
 
-    def _confirm_deposit(self) -> None:
+    def _confirm_deposit(self, target_dto: DepositTargetDTO, amount: Decimal) -> None:
         """
         Enforces explicit user confirmation before committing the transaction.
 
-        Displays a final diagnostic review state and waits for explicit client agreement
-        before allowing the state machine to register state mutations.
+        Converts the target metadata into primitive mappings and injects the dynamic
+        deposit diagnostic review screen as a loop header callback, waiting for explicit
+        client agreement while maintaining terminal screen resilience.
+
+        Args:
+            target_dto (DepositTargetDTO): Data transfer object containing target account
+                ownership details to be displayed on the confirmation screen.
+            amount (Decimal): The high-precision monetary magnitude of the deposit.
 
         Raises:
             UserAbortError: If the operator explicitly declines terms or cancels input screens.
         """
+        target_dict = asdict(target_dto)
+
         user_in = io_utils.get_single_input(
-            "confirmation", self._controller_config, self._controller_validator_cb
+            "confirmation",
+            self._controller_config,
+            self._controller_validator_cb,
+            loop_header=partial(
+                views.confirm_deposit, deposit_info=target_dict, amount=amount
+            ),
         )
 
         user_in_int = _assert_input(user_in, int)
@@ -1215,12 +1257,12 @@ class BankSystemController(BaseController, SharedPromptsMixin):
         Returns:
             MainMenuType | AdminCodeType: The wrapper option type stating choice indices.
         """
-        views.welcome()
 
         user_in = io_utils.get_single_input(
             "main_menu",
             self._menu_config,
             self._controller_validator_cb,
+            loop_header=views.welcome,
             use_timeout=False,
         )
         int_user_in = _assert_input(user_in, int)
@@ -1337,7 +1379,9 @@ class BankSystemController(BaseController, SharedPromptsMixin):
                 a critical error occurs in the I/O password validation logic.
             TypeError: If the domain layer returns an unexpected token type.
             ControllerCredentialsError: If access is blocked (account frozen)
-                or if the user explicitly aborts the operation.
+                after brute-force exhaustion or isolation boundaries.
+            UserAbortError: Raised naturally if the operator explicitly cancels
+                the password prompt screen to return to the operational lobby.
         """
         if not self._auth_token:
             raise RuntimeError(
@@ -1371,15 +1415,12 @@ class BankSystemController(BaseController, SharedPromptsMixin):
                 return token
             except BankAuthenticationError as e:
                 if e.argument is password:
-                    self._handle_info_ui("info", "pwd_wrong")
+                    self._handle_info_ui("info", "pwd_wrong", wait=True)
                     continue
                 raise
             except BankAccessError as e:
                 self._handle_exception_ui("errors", e)
                 raise ControllerCredentialsError from e
-            except UserAbortError:
-                self._handle_info_ui("info", "user_cancel", wait=True)
-                raise ControllerCredentialsError
             except BankPasswordError:
                 raise RuntimeError("Critical error in I/O password validation logic")
 
@@ -1463,11 +1504,17 @@ class BankSystemController(BaseController, SharedPromptsMixin):
             "CheckingAccount": "Conta corrente",
             "SavingsAccount": "Conta poupança",
         }
-        self._handle_info_ui(
-            "info", "lobby_restrict", acc_type=acc_type_map[acc_summary.account_type]
-        )
+        acc_type = acc_type_map[acc_summary.account_type]
         user_in_raw = io_utils.get_single_input(
-            "restricted_menu", self._menu_config, self._controller_validator_cb
+            "restricted_menu",
+            self._menu_config,
+            self._controller_validator_cb,
+            loop_header=partial(
+                self._handle_info_ui,
+                context_key="info",
+                info_key="lobby_restrict",
+                acc_type=acc_type,
+            ),
         )
         user_in_int = _assert_input(user_in_raw, int)
 
@@ -1491,7 +1538,7 @@ class BankSystemController(BaseController, SharedPromptsMixin):
         new_password = self._prompt_new_password()
         try:
             self._bank_instance.update_password(self._access_token, new_password)
-            self._handle_info_ui("info", "pwd_update_ok")
+            self._handle_info_ui("info", "pwd_update_ok", wait=True)
             raise ControllerCredentialsError
         except BankAccessError as e:
             raise RuntimeError(
@@ -1617,10 +1664,12 @@ class BankSystemController(BaseController, SharedPromptsMixin):
             return {"result": 0 <= user_in < len(cards_list)}
 
         cards_views: list[str] = [str(card) for card in cards_list]
-        views.show_cards(cards_views)
 
         card_idx_raw = io_utils.get_single_input(
-            "card", self._auth_config, local_validator_cb
+            "card",
+            self._auth_config,
+            local_validator_cb,
+            loop_header=partial(views.show_cards, client_cards=cards_views),
         )
         card_idx = _assert_input(card_idx_raw, int)
 
