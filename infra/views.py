@@ -206,7 +206,7 @@ def _balance_statement_footer(financial_info: dict[str, Any]) -> None:
             financial data (balance, accrual, available_balance, limits, etc.).
     """
     accrual = financial_info["accrual"]
-    balance = financial_info["balance"]
+    ledger_balance = financial_info["ledger_balance"]
     available_balance = financial_info["available_balance"]
     issue_at = financial_info["issue_at"].strftime("%d/%m/%Y")
     raw_accrual_type = financial_info["accrual_type"]
@@ -223,7 +223,7 @@ def _balance_statement_footer(financial_info: dict[str, Any]) -> None:
     if accrual_type:
         print(f"{f'{accrual_type}:':<25} R$ {_format_currency(accrual):>16}")
 
-    print(f"{'SALDO:':<25} R$ {_format_currency(balance):>16}")
+    print(f"{'SALDO EM CONTA:':<25} R$ {_format_currency(ledger_balance):>16}")
 
     if credit_limit is not None and available_credit is not None:
         print(
@@ -307,7 +307,6 @@ def show_cards(client_cards: list[str]) -> None:
                                   of each card available to the client.
     """
     subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
-    client_cards.sort()
     print(f"{' Escolha seu cartão ':-^45}")
     for idx, card in enumerate(client_cards):
         print(f"{idx}: {card}")

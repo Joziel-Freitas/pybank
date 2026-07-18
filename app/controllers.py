@@ -1610,6 +1610,8 @@ class BankSystemController(BaseController, SharedPromptsMixin):
             AccountCard: The selected card object matching interaction indexes.
         """
 
+        cards_list.sort(key=lambda card: (card.branch_code, card.account_num))
+
         def local_validator_cb(field: str, user_in_raw: InputType) -> CallbackReturn:
             user_in = _assert_input(user_in_raw, int)
             return {"result": 0 <= user_in < len(cards_list)}
