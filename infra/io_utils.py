@@ -7,6 +7,8 @@ based on configuration maps. It is agnostic to domain rules and relies on the
 `verify` module for strict type safety at the public boundaries.
 """
 
+import os
+import subprocess
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Callable, NotRequired, TypedDict
@@ -150,7 +152,11 @@ def validate_entry(
     return {"result": result}
 
 
-def _get_user_input(field_config: InnerConfig, use_timeout: bool) -> InputType:
+def _get_user_input(
+    field_config: InnerConfig,
+    use_timeout: bool,
+    loop_header: Callable[[], None] | None = None,
+) -> InputType:
     """
     Collects user input, handles type conversion, and optionally checks for exit/timeout conditions.
 
@@ -161,6 +167,11 @@ def _get_user_input(field_config: InnerConfig, use_timeout: bool) -> InputType:
     Args:
         field_config (InnerConfig): The validated dictionary configuration for a single field.
         use_timeout (bool): Flag indicating if the Kiosk inactivity timeout should be enforced.
+        loop_header (Callable[[], None], optional):
+            A parameterless callback function executed at the beginning of each
+            input retry cycle. Used to redraw persistent visual contexts (such as
+            menus, tables, or selection lists) after a terminal screen clear.
+            Defaults to None.
 
     Returns:
         InputType: The user input value cast to the type specified by 'input_type'.
@@ -175,24 +186,32 @@ def _get_user_input(field_config: InnerConfig, use_timeout: bool) -> InputType:
     input_type = field_config["input_type"]
     error_msg = field_config["error_msg"]
 
-    print()
-    print(f"{info:^45}")
-    print(f"{">> 'S' para sair <<":^45}")
-    print("-" * 45)
-
     while True:
+        subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
+
+        if loop_header:
+            loop_header()
+
+        print()
+        print(f"{info:^45}")
+        print(f"{">> 'S' para sair <<":^45}")
+        print("-" * 45)
+
         try:
             if use_timeout:
                 user_in = inputimeout(prompt=prompt, timeout=SYSTEM_TIMEOUT).strip()
             else:
                 user_in = input(prompt).strip()
 
+            if user_in == "":
+                continue
+
             if user_in.upper() == EXIT_CMD:
                 raise UserAbortError("Input aborted by user")
 
             return input_type(user_in)
         except (ValueError, InvalidOperation):
-            views.system_output(error_msg)
+            views.system_output(error_msg, wait=True)
             views.system_output(f"Tente novamente ou digite {EXIT_CMD} para sair")
         except TimeoutOccurred as e:
             raise InactiveUserError from e
@@ -202,6 +221,7 @@ def config_loop(
     config_map: ConfigMap,
     callback_fn: Callable[[str, InputType], CallbackReturn],
     skip_fields: list[str | None] | None = None,
+    loop_header: Callable[[], None] | None = None,
     use_timeout: bool = True,
 ) -> dict[str, InputType]:
     """
@@ -213,6 +233,11 @@ def config_loop(
             called for each collected input.
         skip_fields (list[str | None], optional): A mutable list of accumulated skip keys.
             Defaults to an empty list.
+        loop_header (Callable[[], None], optional):
+            A parameterless callback function executed at the beginning of each
+            input retry cycle. Used to redraw persistent visual contexts (such as
+            menus, tables, or selection lists) after a terminal screen clear.
+            Defaults to None.
         use_timeout (bool, optional): Flag to activate inactivity tracking. Defaults to True.
 
     Returns:
@@ -245,6 +270,12 @@ def config_loop(
             f"callback_fn expects a callable, got {type(callback_fn).__name__}"
         )
 
+    if loop_header:
+        if not callable(loop_header):
+            raise TypeError(
+                f"loop_header expects a callable, got {type(loop_header).__name__}"
+            )
+
     user_inputs: dict[str, InputType] = {}
 
     for field, config_dict in config_map.items():
@@ -253,7 +284,9 @@ def config_loop(
         if None in skip_fields:
             break
         while True:
-            user_in = _get_user_input(config_dict, use_timeout)
+            user_in = _get_user_input(
+                config_dict, use_timeout=use_timeout, loop_header=loop_header
+            )
 
             callback_return = callback_fn(field, user_in)
             result = callback_return.get("result")
@@ -267,7 +300,7 @@ def config_loop(
                 break
             elif result is False:
                 msg = config_map[field]["error_msg"]
-                views.system_output(msg)
+                views.system_output(msg, wait=True)
                 continue
 
             raise RuntimeError(f"Unexpected callback return: {callback_return}")
@@ -279,6 +312,7 @@ def get_single_input(
     field_key: str,
     config_map: ConfigMap,
     callback_fn: Callable[[str, InputType], CallbackReturn],
+    loop_header: Callable[[], None] | None = None,
     use_timeout: bool = True,
 ) -> InputType:
     """
@@ -291,6 +325,11 @@ def get_single_input(
         field_key (str): The key of the specific field within the config_map to be retrieved.
         config_map (ConfigMap): The full configuration dictionary containing the field's settings.
         callback_fn (Callable[[str, InputType], CallbackReturn]): The validation callback function.
+        loop_header (Callable[[], None], optional):
+            A parameterless callback function executed at the beginning of each
+            input retry cycle. Used to redraw persistent visual contexts (such as
+            menus, tables, or selection lists) after a terminal screen clear.
+            Defaults to None.
         use_timeout (bool, optional): Flag to activate inactivity tracking. Defaults to True.
 
     Returns:
@@ -311,8 +350,16 @@ def get_single_input(
             f"callback_fn expects a callable, got {type(callback_fn).__name__}"
         )
 
+    if loop_header:
+        if not callable(loop_header):
+            raise TypeError(
+                f"loop_header expects a callable, got {type(loop_header).__name__}"
+            )
+
     field_config = {field_key: config_map[field_key]}
-    user_inputs = config_loop(field_config, callback_fn, use_timeout=use_timeout)
+    user_inputs = config_loop(
+        field_config, callback_fn, use_timeout=use_timeout, loop_header=loop_header
+    )
     return user_inputs[field_key]
 
 
@@ -320,6 +367,7 @@ def get_selected_inputs(
     target_fields: tuple[str, ...],
     config_map: ConfigMap,
     callback_fn: Callable[[str, InputType], CallbackReturn],
+    loop_header: Callable[[], None] | None = None,
     use_timeout: bool = True,
 ) -> dict[str, InputType]:
     """
@@ -332,7 +380,13 @@ def get_selected_inputs(
         target_fields (tuple[str, ...]): The exact keys of the fields to be prompted.
         config_map (ConfigMap): The full configuration dictionary containing the fields' settings.
         callback_fn (Callable[[str, InputType], CallbackReturn]): The contextual validation callback.
+        loop_header (Callable[[], None], optional):
+            A parameterless callback function executed at the beginning of each
+            input retry cycle. Used to redraw persistent visual contexts (such as
+            menus, tables, or selection lists) after a terminal screen clear.
+            Defaults to None.
         use_timeout (bool, optional): Flag to activate inactivity tracking. Defaults to True.
+
 
     Returns:
         dict[str, InputType]: A dictionary containing only the requested fields mapped
@@ -356,6 +410,14 @@ def get_selected_inputs(
             f"callback_fn expects a callable, got {type(callback_fn).__name__}"
         )
 
+    if loop_header:
+        if not callable(loop_header):
+            raise TypeError(
+                f"loop_header expects a callable, got {type(loop_header).__name__}"
+            )
+
     sub_config = {k: config_map[k] for k in target_fields}
-    user_in_dict = config_loop(sub_config, callback_fn, use_timeout=use_timeout)
+    user_in_dict = config_loop(
+        sub_config, callback_fn, use_timeout=use_timeout, loop_header=loop_header
+    )
     return user_in_dict
