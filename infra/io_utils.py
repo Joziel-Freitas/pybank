@@ -7,8 +7,6 @@ based on configuration maps. It is agnostic to domain rules and relies on the
 `verify` module for strict type safety at the public boundaries.
 """
 
-import os
-import subprocess
 from collections.abc import Callable
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -188,7 +186,7 @@ def _get_user_input(
     error_msg = field_config["error_msg"]
 
     while True:
-        subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
+        print("\033[2J\033[3J\033[H", end="", flush=True)
 
         if loop_header:
             loop_header()

@@ -8,8 +8,6 @@ of business logic, error mapping, or decision-making, ensuring complete
 decoupling from the application's internal states.
 """
 
-import os
-import subprocess
 import textwrap
 from datetime import datetime
 from decimal import Decimal
@@ -41,7 +39,7 @@ TRANSLATION_MAP = {
 
 def welcome() -> None:
     """Displays the application's startup banner and initial instructions."""
-    subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
+    print("\033[H\033[2J", end="", flush=True)
     print("*" * 45)
     print(f"{' PyBank System 3.0 ':*^45}")
     print("*" * 45)
@@ -100,7 +98,7 @@ def system_output(
         msg = msg.format(**kwargs)
 
     if clean:
-        subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
+        print("\033[2J\033[3J\033[H", end="", flush=True)
 
     print()
 
@@ -171,7 +169,7 @@ def _balance_statement_header(account_info: dict[str, Any]) -> None:
         account_info (dict[str, Any]): A dictionary containing the account's
             metadata (holder_name, branch_code, account_num, account_type).
     """
-    subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
+    print("\033[2J\033[3J\033[H", end="", flush=True)
 
     now = clock.get_now()
     date = now.strftime("%d/%m/%Y")
@@ -306,7 +304,7 @@ def show_cards(client_cards: list[str]) -> None:
         client_cards (list[str]): A list containing the string representation
                                   of each card available to the client.
     """
-    subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
+    print("\033[2J\033[3J\033[H", end="", flush=True)
     print(f"{' Escolha seu cartão ':-^45}")
     for idx, card in enumerate(client_cards):
         print(f"{idx}: {card}")
