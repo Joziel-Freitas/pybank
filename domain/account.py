@@ -56,7 +56,7 @@ class Account(ABC):
     # --------------------------------------------------------------------------
     # Class attributes
     # --------------------------------------------------------------------------
-    MIN_ATM_TRANSACTION: ClassVar[Decimal] = Decimal(2.00)
+    MIN_ATM_TRANSACTION: ClassVar[Decimal] = Decimal("2.00")
 
     _branch_code: str
     _account_num: str
@@ -246,7 +246,6 @@ class Account(ABC):
             Decimal | None: The absolute monetary value of the credit limit,
                 or None if the account type does not support credit operations.
         """
-        pass
 
     @property
     @abstractmethod
@@ -262,7 +261,6 @@ class Account(ABC):
             Decimal | None: The precise monetary value still available from the
                 credit limit, or None if credit operations are not supported.
         """
-        pass
 
     @property
     @abstractmethod
@@ -280,7 +278,6 @@ class Account(ABC):
                 yields, negative for interest charges, and exactly Decimal("0.00")
                 if no accruals apply.
         """
-        pass
 
     @property
     @abstractmethod
@@ -296,7 +293,6 @@ class Account(ABC):
         Returns:
             Decimal: The absolute monetary value available for disbursement.
         """
-        pass
 
     # --------------------------------------------------------------------------
     # Public API (Orchestrators)
@@ -510,7 +506,6 @@ class Account(ABC):
         Returns:
             tuple[LedgerEventDTO, ...]: The chronological sequence of finalized ledger events.
         """
-        pass
 
     # --------------------------------------------------------------------------
     # Protected methods (Internal Helpers)

@@ -9,9 +9,10 @@ based on configuration maps. It is agnostic to domain rules and relies on the
 
 import os
 import subprocess
+from collections.abc import Callable
 from datetime import date
 from decimal import Decimal, InvalidOperation
-from typing import Callable, NotRequired, TypedDict
+from typing import NotRequired, TypedDict
 
 from inputimeout import TimeoutOccurred, inputimeout
 
@@ -270,11 +271,10 @@ def config_loop(
             f"callback_fn expects a callable, got {type(callback_fn).__name__}"
         )
 
-    if loop_header:
-        if not callable(loop_header):
-            raise TypeError(
-                f"loop_header expects a callable, got {type(loop_header).__name__}"
-            )
+    if loop_header and not callable(loop_header):
+        raise TypeError(
+            f"loop_header expects a callable, got {type(loop_header).__name__}"
+        )
 
     user_inputs: dict[str, InputType] = {}
 
@@ -299,7 +299,7 @@ def config_loop(
                 user_inputs[field] = user_in
                 break
             elif result is False:
-                msg = config_map[field]["error_msg"]
+                msg = config_dict["error_msg"]
                 views.system_output(msg, wait=True)
                 continue
 
@@ -350,11 +350,10 @@ def get_single_input(
             f"callback_fn expects a callable, got {type(callback_fn).__name__}"
         )
 
-    if loop_header:
-        if not callable(loop_header):
-            raise TypeError(
-                f"loop_header expects a callable, got {type(loop_header).__name__}"
-            )
+    if loop_header and not callable(loop_header):
+        raise TypeError(
+            f"loop_header expects a callable, got {type(loop_header).__name__}"
+        )
 
     field_config = {field_key: config_map[field_key]}
     user_inputs = config_loop(
@@ -410,11 +409,10 @@ def get_selected_inputs(
             f"callback_fn expects a callable, got {type(callback_fn).__name__}"
         )
 
-    if loop_header:
-        if not callable(loop_header):
-            raise TypeError(
-                f"loop_header expects a callable, got {type(loop_header).__name__}"
-            )
+    if loop_header and not callable(loop_header):
+        raise TypeError(
+            f"loop_header expects a callable, got {type(loop_header).__name__}"
+        )
 
     sub_config = {k: config_map[k] for k in target_fields}
     user_in_dict = config_loop(

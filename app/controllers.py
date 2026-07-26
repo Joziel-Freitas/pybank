@@ -23,11 +23,12 @@ domain state directly.
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import asdict
 from datetime import date, timedelta
 from decimal import Decimal
 from functools import partial
-from typing import Any, Callable, ClassVar, TypeVar, cast
+from typing import Any, ClassVar, TypeVar, cast
 
 from domain.account import Account
 from domain.account_holder import AccountHolder
@@ -377,7 +378,7 @@ class OnboardingController(BaseController, SharedPromptsMixin):
     # --------------------------------------------------------------------------
     # Class attributes
     # --------------------------------------------------------------------------
-    _validation_mapper = {
+    _validation_mapper: ClassVar[dict[str, ValidatorCallback]] = {
         "name": validators.boolean_validator_dec(AccountHolder.validate_name),
         "cpf": validators.boolean_validator_dec(AccountHolder.validate_cpf),
         "birth_date": validators.boolean_validator_dec(
@@ -552,7 +553,7 @@ class TransactionController(BaseController):
     # --------------------------------------------------------------------------
     # Class attributes
     # --------------------------------------------------------------------------
-    _validation_mapper = {
+    _validation_mapper: ClassVar[dict[str, ValidatorCallback]] = {
         "branch_code": validators.boolean_validator_dec(Account.validate_branch_code),
         "account_num": validators.boolean_validator_dec(
             Account.validate_account_number
@@ -658,12 +659,11 @@ class TransactionController(BaseController):
             AccessToken: The verified cryptographic session token.
 
         Raises:
-            RuntimeError: If the internal session token state is insufficient for
-                elevated vault clearance.
+            TypeError: If the internal session token is not an AccessToken instance.
         """
         if not isinstance(self._token, AccessToken):
-            raise RuntimeError(
-                "Vault clearance (AccessToken) required for this operation."
+            raise TypeError(
+                f"_token must be an AccessToken, not {type(self._token).__name__}."
             )
         return self._token
 
@@ -815,7 +815,7 @@ class TransactionController(BaseController):
 
         if self._transaction_type not in transaction_mapper:
             raise RuntimeError(
-                "Method doesn't handle {} operation".format(self._transaction_type)
+                f"Method doesn't handle {self._transaction_type} operation"
             )
 
         transaction_key = transaction_mapper[self._transaction_type]
@@ -971,7 +971,7 @@ class BankSystemController(BaseController, SharedPromptsMixin):
     # --------------------------------------------------------------------------
     # Class attributes
     # --------------------------------------------------------------------------
-    _validation_mapper = {
+    _validation_mapper: ClassVar[dict[str, ValidatorCallback]] = {
         "main_menu": validators.boolean_validator_dec(
             lambda user_in: (
                 AdminCodeType(user_in)
@@ -1128,7 +1128,7 @@ class BankSystemController(BaseController, SharedPromptsMixin):
             account_summary = self._initialize_lobby_session()
 
         if account_summary is None or self._auth_token is None:
-            return None
+            return
 
         while self._auth_token is not None:
             try:

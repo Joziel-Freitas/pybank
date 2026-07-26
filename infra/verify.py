@@ -28,13 +28,11 @@ def verify_instance(
     if not isinstance(inst_type, (type, tuple)):
         raise TypeError("inst_type must be a type or a tuple of types")
 
-    if isinstance(inst_type, tuple):
-        if not all(isinstance(t, type) for t in inst_type):
-            raise TypeError("All elements in inst_type tuple must be types")
+    if isinstance(inst_type, tuple) and not all(isinstance(t, type) for t in inst_type):
+        raise TypeError("All elements in inst_type tuple must be types")
 
-    if error_msg is not None:
-        if not isinstance(error_msg, str):
-            raise TypeError("error_msg must be a string")
+    if error_msg is not None and not isinstance(error_msg, str):
+        raise TypeError("error_msg must be a string")
 
     if not isinstance(param, inst_type):
         if isinstance(inst_type, tuple):
@@ -51,9 +49,9 @@ def verify_instance(
 
 
 def verify_interval(
-    target_value: int | float | Decimal,
-    min_val: int | float | Decimal | None = None,
-    max_val: int | float | Decimal | None = None,
+    target_value: float | Decimal,
+    min_val: float | Decimal | None = None,
+    max_val: float | Decimal | None = None,
 ) -> None:
     """
     Ensures that a numeric value falls within a specified interval and enforces strict type matching.

@@ -157,18 +157,15 @@ class MySQLRepository:
         verify.verify_instance(holder_snap_or_cpf, (AccountHolderSnapshot, str))
         verify.verify_instance(password_hash, str)
 
-        with self.unit_of_work():
-            with self._connection.cursor() as cursor:
-                if isinstance(holder_snap_or_cpf, AccountHolderSnapshot):
-                    holder_id = self._insert_account_holder_record(
-                        cursor, holder_snap_or_cpf
-                    )
-                else:
-                    holder_id = self._get_account_holder_id(cursor, holder_snap_or_cpf)
-
-                self._insert_account_record(
-                    cursor, account_snap, holder_id, password_hash
+        with self.unit_of_work(), self._connection.cursor() as cursor:
+            if isinstance(holder_snap_or_cpf, AccountHolderSnapshot):
+                holder_id = self._insert_account_holder_record(
+                    cursor, holder_snap_or_cpf
                 )
+            else:
+                holder_id = self._get_account_holder_id(cursor, holder_snap_or_cpf)
+
+            self._insert_account_record(cursor, account_snap, holder_id, password_hash)
 
     def save_transaction(
         self, account_snap: AccountSnapshot, events: tuple[LedgerEventDTO, ...]
