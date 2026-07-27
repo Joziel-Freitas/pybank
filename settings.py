@@ -40,7 +40,7 @@ BANK_SECRET_KEY: str = environ.get(
 ADMIN_EXIT_CODE: int = int(environ.get("PYBANK_ADMIN_CODE", "999999"))
 
 # Maximum allowed idle time (in seconds) before killing a user session
-SYSTEM_TIMEOUT: float = float(environ.get("SYSTEM_TIMEOUT", "30.0"))
+SYSTEM_TIMEOUT: int = int(environ.get("SYSTEM_TIMEOUT", "30"))
 
 # ==============================================================================
 # System Locality & Time
