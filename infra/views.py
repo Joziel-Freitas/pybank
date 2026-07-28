@@ -14,9 +14,8 @@ from decimal import Decimal
 from time import sleep
 from typing import Any
 
-from inputimeout import TimeoutOccurred, inputimeout
-
-from settings import BANK_NAME
+from infra import terminal_input
+from settings import BANK_NAME, INACTIVITY_TIMEOUT, TOTAL_TIMEOUT
 from shared import clock
 from shared.exceptions import InactiveUserError
 
@@ -237,8 +236,12 @@ def _balance_statement_footer(financial_info: dict[str, Any]) -> None:
     print("-" * 45 + "\n")
 
     try:
-        inputimeout(prompt="Pressione ENTER para sair...", timeout=90)
-    except TimeoutOccurred as e:
+        terminal_input.custom_input(
+            prompt="Pressione ENTER para sair...",
+            inactive_timeout=INACTIVITY_TIMEOUT,
+            total_timeout=TOTAL_TIMEOUT,
+        )
+    except TimeoutError as e:
         raise InactiveUserError("Inactivity timeout during statement view") from e
 
 
