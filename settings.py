@@ -39,8 +39,11 @@ BANK_SECRET_KEY: str = environ.get(
 # The secret numeric code used to safely shutdown the Kiosk terminal loop
 ADMIN_EXIT_CODE: int = int(environ.get("PYBANK_ADMIN_CODE", "999999"))
 
-# Maximum allowed idle time (in seconds) before killing a user session
-SYSTEM_TIMEOUT: int = int(environ.get("SYSTEM_TIMEOUT", "30"))
+# Maximum allowed idle time (in seconds) between keypresses before killing a user session
+INACTIVITY_TIMEOUT: int = int(environ.get("INACTIVITY_TIMEOUT", "30"))
+
+# Maximum total duration (in seconds) allowed for a single input session regardless of activity
+TOTAL_TIMEOUT: int = int(environ.get("TOTAL_TIMEOUT", "120"))
 
 # ==============================================================================
 # System Locality & Time
