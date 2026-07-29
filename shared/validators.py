@@ -1,9 +1,8 @@
 from collections.abc import Callable
 from typing import Any
 
-from infra import verify
-
-from .exceptions import DomainError
+from shared import verify
+from shared.exceptions import DomainError
 
 type ValidatorCallback = Callable[[Any], bool]
 

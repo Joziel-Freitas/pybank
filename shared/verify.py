@@ -61,9 +61,9 @@ def verify_interval(
     must exactly match the type of the 'target_value'.
 
     Args:
-        target_value (int | float | Decimal): The numeric value to validate.
-        min_val (int | float | Decimal | None): The minimum allowed value (inclusive).
-        max_val (int | float | Decimal | None): The maximum allowed value (inclusive).
+        target_value (float | Decimal): The numeric value to validate.
+        min_val (float | Decimal | None): The minimum allowed value (inclusive).
+        max_val (float | Decimal | None): The maximum allowed value (inclusive).
 
     Raises:
         TypeError: If 'target_value' is not a valid numeric type, if no bounds are provided,

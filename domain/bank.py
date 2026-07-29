@@ -28,8 +28,7 @@ from typing import Any, ClassVar, Protocol
 
 import bcrypt
 
-from infra import verify
-from shared import clock
+from shared import clock, verify
 from shared.credentials import AccessToken, AccountCard, AuthToken
 from shared.dtos import (
     AccountSummaryDTO,

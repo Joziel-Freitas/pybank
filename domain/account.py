@@ -18,8 +18,7 @@ from datetime import date
 from decimal import Decimal
 from typing import ClassVar, cast
 
-from infra import verify
-from shared import clock
+from shared import clock, verify
 from shared.dtos import AccountFinancialDTO, LedgerEventDTO, WithdrawalSimulationDTO
 from shared.exceptions import (
     FrozenAccountError,

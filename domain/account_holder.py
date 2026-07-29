@@ -18,8 +18,7 @@ from dataclasses import asdict
 from datetime import date
 from typing import ClassVar
 
-from infra import verify
-from shared import clock, validators
+from shared import clock, validators, verify
 from shared.credentials import AccountCard
 from shared.exceptions import (
     InvalidBirthDateError,

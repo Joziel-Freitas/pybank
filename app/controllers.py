@@ -33,10 +33,10 @@ from typing import Any, ClassVar, TypeVar, cast
 from domain.account import Account
 from domain.account_holder import AccountHolder
 from domain.bank import Bank
-from infra import config, io_utils, ui_messages, verify, views
+from infra import config, io_utils, ui_messages, views
 from infra.io_utils import CallbackReturn, InputType
 from settings import ADMIN_EXIT_CODE
-from shared import clock, exceptions, validators
+from shared import clock, exceptions, validators, verify
 from shared.credentials import AccessToken, AccountCard, AuthToken
 from shared.dtos import (
     AccountSummaryDTO,

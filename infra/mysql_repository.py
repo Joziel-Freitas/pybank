@@ -19,7 +19,7 @@ from pymysql import connect, cursors, err
 from pymysql.connections import Connection
 from pymysql.constants import CLIENT
 
-from infra import verify
+from shared import verify
 from shared.dtos import (
     LedgerEventDTO,
 )
