@@ -8,7 +8,7 @@ ACID compliance for financial operations, and maps raw database rows back
 into pure Python domain objects.
 """
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import date
 from os import environ
@@ -86,7 +86,7 @@ class MySQLRepository:
     # --------------------------------------------------------------------------
 
     @contextmanager
-    def unit_of_work(self) -> Iterator[None]:
+    def unit_of_work(self) -> Generator[None]:
         """
         Macro Context Manager for orchestrating Units of Work (Unit of Work Pattern).
 

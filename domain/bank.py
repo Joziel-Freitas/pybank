@@ -20,7 +20,7 @@ verification, maintaining absolute consistency across the financial domain.
 
 import hashlib
 import hmac
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import AbstractContextManager, contextmanager
 from datetime import date, timedelta
 from decimal import Decimal
@@ -714,7 +714,7 @@ class Bank:
     @contextmanager
     def execute_withdraw(
         self, access_token: AccessToken, amount: Decimal
-    ) -> Iterator[WithdrawalSimulationDTO]:
+    ) -> Generator[WithdrawalSimulationDTO]:
         """
         Orchestrates a secure withdrawal operation using a state-locked context manager.
 
