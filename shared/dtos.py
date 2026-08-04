@@ -17,10 +17,9 @@ circular dependencies between the system's core modules.
 
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal
 from typing import Any
 
-from shared.types import AccrualType, FinancialType
+from domain.value_objects import AccountFinancial
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,111 +67,15 @@ class DepositTargetDTO:
 
 
 @dataclass(frozen=True, slots=True)
-class LedgerEventDTO:
-    """
-    Data Transfer Object representing a discrete event bound for the ledger.
-
-    Designed to decompose complex account operations (such as a withdrawal
-    that crosses into overdraft limits, or a deposit that triggers pending
-    yield materialization) into immutable, atomic segments. This ensures
-    accurate ledger tracking, precise auditing, and correct statement
-    generation for the end user without exposing internal domain logic
-    to the outer layers.
-
-    Attributes:
-        previous_balance (Decimal): The exact account balance immediately
-            prior to the execution of this specific event segment, ensuring
-            chronological consistency in the database ledger.
-        amount (Decimal): The specific monetary amount associated with this
-            discrete segment of the operation. Negative values represent
-            debits (e.g., withdrawals, interest charges), while positive
-            values represent credits (e.g., deposits, yields).
-        event_type (FinancialType): The semantic label (e.g., WITHDRAWAL,
-            DEPOSIT, YIELD, INTEREST) categorizing the exact business nature
-            of the event.
-    """
-
-    previous_balance: Decimal
-    amount: Decimal
-    event_type: FinancialType
-
-
-@dataclass(frozen=True, slots=True)
-class WithdrawalSimulationDTO:
-    """
-    Data Transfer Object representing the projected outcome of a withdrawal.
-
-    This DTO is utilized by the application layer (Controllers) to safely evaluate
-    the financial and operational impact of a withdrawal before committing to the
-    state mutation. It provides the necessary data to prompt the user for explicit
-    consent when credit limits are involved.
-
-    Attributes:
-        authorized (bool): Indicates if the operation is mathematically and operationally
-            possible (e.g., account is active and the requested amount does not exceed
-            the total available funds).
-        use_credit (bool | None): True if the requested amount exceeds the standard positive
-            balance, requiring the use of the account's credit limit. False if the limit
-            exists but won't be used. None if the account type does not support credit.
-        credit_required (Decimal | None): The exact monetary value that will be drawn from
-            the credit limit if the transaction proceeds. Expected to be Decimal("0.00")
-            if `use_credit` is False. Expected to be None if the account type does not
-            support credit (`use_credit` is None).
-    """
-
-    authorized: bool
-    use_credit: bool | None
-    credit_required: Decimal | None
-
-
-@dataclass(frozen=True, slots=True)
-class AccountFinancialDTO:
-    """
-    Data Transfer Object representing the absolute financial truth of an Account.
-
-    Acts as a highly cohesive, composable payload containing all calculated monetary
-    metrics. By separating the historical ledger state ('ledger_balance') from the
-    temporally accurate current state ('balance') and the total purchasing power
-    ('available_balance'), it ensures the Presentation layer renders precise and
-    unambiguous information to the user at the specific timestamp ('issue_at').
-
-    Attributes:
-        ledger_balance (Decimal): The historical, unadjusted balance retrieved directly
-            from the accounting records.
-        accrual (Decimal): The specific monetary value of any pending time-based adjustment.
-            Evaluates to Decimal("0.00") if no adjustment is pending.
-        balance (Decimal): The true, real-time adjusted current balance, fully evaluated
-            by the account's specific business rules.
-        accrual_type (AccrualType | None): The semantic label of the adjustment
-            (e.g., YIELD or INTEREST). Strictly None if the accrual is exactly zero.
-        credit_limit (Decimal | None): The maximum credit limit, or None if not supported.
-        available_credit (Decimal | None): The currently available credit amount, or None.
-        available_balance (Decimal): The true total purchasing power, factoring in the
-            adjusted balance and any available credit lines.
-        issue_at (date): The exact temporal anchor validating the accuracy of this snapshot.
-    """
-
-    ledger_balance: Decimal
-    accrual: Decimal
-    balance: Decimal
-    accrual_type: AccrualType | None
-    credit_limit: Decimal | None
-    available_credit: Decimal | None
-    available_balance: Decimal
-    issue_at: date
-
-
-@dataclass(frozen=True, slots=True)
 class AccountSummaryDTO:
-    """
-    A comprehensive, multi-stage read-only snapshot of an account's state.
+    """A comprehensive, multi-stage read-only snapshot of an account's state.
 
     Functions as a flexible, read-only projection for the Presentation layer.
     It operates in two distinct execution phases:
     1. Lobby Phase: Contains only basic routing and non-sensitive identity
        data to safely render general menus.
     2. Vault Phase: Composes rich, real-time financial and temporal metrics
-       (AccountFinancialDTO) after strict cryptographic authorization.
+       (AccountFinancial) after strict cryptographic authorization.
 
     Attributes:
         holder_name (str): The full name of the account holder.
@@ -180,7 +83,7 @@ class AccountSummaryDTO:
         account_num (str): The unique account identifier.
         account_type (str): The class name representing the account type (e.g., 'CheckingAccount').
         is_frozen (bool): Flag indicating if the account is active or frozen.
-        financial_info (AccountFinancialDTO | None): The account's core financial metrics.
+        financial_info (AccountFinancial | None): The account's core financial metrics.
             Hydrated only after explicit Vault authorization; otherwise None.
     """
 
@@ -189,18 +92,17 @@ class AccountSummaryDTO:
     account_num: str
     account_type: str
     is_frozen: bool
-    financial_info: AccountFinancialDTO | None
+    financial_info: AccountFinancial | None
 
-    def unwrap_financial(self) -> AccountFinancialDTO:
-        """
-        Safely extracts the nested financial projection.
+    def unwrap_financial(self) -> AccountFinancial:
+        """Safely extracts the nested financial projection.
 
         Enforces strict temporal access control by raising an exception if
         the presentation layer attempts to read financial metrics that have
         not been cryptographically unlocked and hydrated.
 
         Returns:
-            AccountFinancialDTO: The live, temporally accurate financial state of the account.
+            AccountFinancial: The live, temporally accurate financial state of the account.
 
         Raises:
             RuntimeError: If called during an unauthenticated 'Lobby' session

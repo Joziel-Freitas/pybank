@@ -19,10 +19,9 @@ from pymysql import connect, cursors, err
 from pymysql.connections import Connection
 from pymysql.constants import CLIENT
 
+from domain.snapshots import AccountHolderSnapshot, AccountSnapshot
+from domain.value_objects import LedgerEvent
 from shared import verify
-from shared.dtos import (
-    LedgerEventDTO,
-)
 from shared.exceptions import (
     DataNotFoundError,
     DuplicatedDataError,
@@ -34,7 +33,6 @@ from shared.projections import (
     AccountProjectionDTO,
     HolderProjectionDTO,
 )
-from shared.snapshots import AccountHolderSnapshot, AccountSnapshot
 
 load_dotenv()
 
@@ -168,7 +166,7 @@ class MySQLRepository:
             self._insert_account_record(cursor, account_snap, holder_id, password_hash)
 
     def save_transaction(
-        self, account_snap: AccountSnapshot, events: tuple[LedgerEventDTO, ...]
+        self, account_snap: AccountSnapshot, events: tuple[LedgerEvent, ...]
     ) -> None:
         """Executes an atomic sub-operation to update the account state and
         record the corresponding financial events in the ledger.
@@ -180,7 +178,7 @@ class MySQLRepository:
         Args:
             account_snap (AccountSnapshot): The static snapshot capturing the
                 newly calculated financial balance and timestamp state.
-            events (tuple[LedgerEventDTO, ...]): The sequence of chronological events
+            events (tuple[LedgerEvent, ...]): The sequence of chronological domain events
                 that led to the new state, to be written to the ledger.
 
         Raises:
@@ -196,7 +194,7 @@ class MySQLRepository:
         verify.verify_instance(account_snap, AccountSnapshot)
         verify.verify_instance(events, tuple)
         for event in events:
-            verify.verify_instance(event, LedgerEventDTO)
+            verify.verify_instance(event, LedgerEvent)
 
         select_sql = "SELECT id FROM accounts WHERE branch_code = %s AND account_num = %s FOR UPDATE"
         update_sql = (
@@ -318,7 +316,7 @@ class MySQLRepository:
         Executes two sequential, lightweight queries to fetch the core holder
         data and their account credentials. This KISS approach prevents cartesian
         products (JOINs) and simplifies the data reconstruction process.
-        The raw database records are mapped directly into a data transfer snapshot
+        The raw database records are mapped directly into a domain persistence snapshot
         before returning, preserving domain boundaries.
 
         Args:
@@ -534,11 +532,10 @@ class MySQLRepository:
             last_balance_update=db_acc_dict["last_balance_update"],
         )
 
-    def get_ledger_events(
+    def get_ledger_entries(
         self, branch_code: str, account_num: str, start_date: date
     ) -> tuple[dict[str, Any], ...]:
-        """
-        Retrieves a chronological record of financial events (ledger entries) for a specific account.
+        """Retrieves a chronological record of financial events (ledger entries) for a specific account.
 
         Enforces a Fail-Fast validation by explicitly verifying the account's
         existence before executing the main query. This mitigates TOCTOU
@@ -547,7 +544,7 @@ class MySQLRepository:
         in another session.
 
         Filters events based on a provided start date, pushing the
-        computational load of date filtering and ordering to the database motor
+        computational load of date filtering and ordering to the database engine
         using an optimized JOIN operation.
 
         Args:
@@ -558,7 +555,7 @@ class MySQLRepository:
 
         Returns:
             tuple[dict[str, Any], ...]: A tuple of dictionaries, where each dictionary
-                represents a ledger event containing 'previous_balance' (Decimal),
+                represents a ledger entry containing 'previous_balance' (Decimal),
                 'created_at' (datetime), 'event_type' (str), and 'amount' (Decimal).
                 Ordered from oldest to newest.
 
@@ -958,19 +955,18 @@ class MySQLRepository:
         self,
         cursor: cursors.DictCursor,
         account_id: int,
-        events: tuple[LedgerEventDTO, ...],
+        events: tuple[LedgerEvent, ...],
     ) -> None:
-        """
-        Helper method to insert ledger event records for auditing purposes.
+        """Helper method to insert ledger event records for auditing purposes.
 
-        Bulk inserts a sequence of discrete ledger events, recording the exact
+        Bulk inserts a sequence of discrete domain ledger events, recording the exact
         balance prior to each operation alongside the amount and its semantic
         business type, ensuring chronological consistency. Does NOT manage commits.
 
         Args:
             cursor (cursors.DictCursor): The active database cursor.
             account_id (int): The primary key ID of the account.
-            events (tuple[LedgerEventDTO, ...]): A sequence of immutable event
+            events (tuple[LedgerEvent, ...]): A sequence of immutable domain event
                 payloads to be persisted.
         """
         sql = """INSERT INTO ledger_entries (account_id, previous_balance, amount, event_type)

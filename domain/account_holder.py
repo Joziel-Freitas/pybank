@@ -18,6 +18,7 @@ from dataclasses import asdict
 from datetime import date
 from typing import ClassVar
 
+from domain.snapshots import AccountHolderSnapshot
 from shared import clock, validators, verify
 from shared.credentials import AccountCard
 from shared.exceptions import (
@@ -25,7 +26,6 @@ from shared.exceptions import (
     InvalidCpfError,
     InvalidNameError,
 )
-from shared.snapshots import AccountHolderSnapshot
 
 # =====================================================================
 # Global Helpers (Procedural Level)
@@ -204,14 +204,13 @@ class AccountHolder:
     # Public API (Orchestrators)
     # --------------------------------------------------------------------------
     def to_snapshot(self) -> AccountHolderSnapshot:
-        """
-        Creates a persistence snapshot representing the current entity state.
+        """Creates a persistence snapshot representing the current entity state.
 
         Acts as a secure Write Model for the Anti-Corruption Layer (ACL).
         Packages the core Personally Identifiable Information (PII) into an
-        immutable, strictly typed Data Transfer Object, ensuring the
-        infrastructure layer receives exactly what it needs for database
-        insertion without exposing the entity's internal mechanisms.
+        immutable, strictly typed domain snapshot, ensuring the infrastructure
+        layer receives exactly what it needs for database insertion without
+        exposing the entity's internal mechanisms.
 
         Returns:
             AccountHolderSnapshot: An immutable payload containing the primitive
@@ -228,8 +227,7 @@ class AccountHolder:
     # --------------------------------------------------------------------------
     @classmethod
     def from_snapshot(cls, data: AccountHolderSnapshot) -> AccountHolder:
-        """
-        Rehydrates an AccountHolder aggregate from a persistence snapshot.
+        """Rehydrates an AccountHolder aggregate from a persistence snapshot.
 
         Restores the core entity state by passing the primitive values through
         the standard domain validations (via __init__), and subsequently

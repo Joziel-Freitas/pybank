@@ -7,7 +7,7 @@ for UI navigation states and operation routing, promoting type safety and
 eliminating the use of magic numbers in the user interface menus.
 """
 
-from enum import Enum, StrEnum
+from enum import Enum
 
 from settings import ADMIN_EXIT_CODE
 
@@ -36,20 +36,6 @@ class MenuType(Enum):
     and Controller layers to strictly type hint against any valid navigation
     menu (e.g., accepting MainMenuType or OperationMenuType interchangeably)
     while rejecting arbitrary integers or unrelated enums.
-
-    Attributes:
-        None: This is an abstract marker class and contains no specific options.
-    """
-
-
-class FinancialType(StrEnum):
-    """
-    Base enumeration for all domain-level financial event classifiers.
-
-    Acts as a polymorphic marker class for enumerations that represent
-    immutable, historical financial events (such as transactions or accruals).
-    Ensures that event labels persisted in the database or transported via DTOs
-    belong to a strictly defined set of business categories.
 
     Attributes:
         None: This is an abstract marker class and contains no specific options.
@@ -147,40 +133,3 @@ class TransactionMenuType(MenuType):
     DEPOSIT = 1
     WITHDRAWAL = 2
     STATEMENT = 3
-
-
-class TransactionType(FinancialType):
-    """
-    Value Object representing the semantic business event of a financial operation.
-
-    Unlike 'TransactionMenuType' (which routes UI logic), this enumeration acts
-    as the official ledger entry type, ensuring the database records the exact
-    nature of the movement (e.g., distinguishing a standard withdrawal from
-    an overdraft usage).
-
-    Attributes:
-        DEPOSIT: Represents funds added to the account.
-        WITHDRAWAL: Represents funds removed using standard positive balance.
-        CREDIT_WITHDRAWAL: Represents funds removed utilizing the account's credit limit.
-    """
-
-    DEPOSIT = "DEPOSIT"
-    WITHDRAWAL = "WITHDRAWAL"
-    CREDIT_WITHDRAWAL = "CREDIT_WITHDRAWAL"
-
-
-class AccrualType(FinancialType):
-    """
-    Value Object representing the semantic classification of a time-based financial adjustment.
-
-    Categorizes the automatic mathematical operations applied to an account
-    based on the passage of time, distinguishing between positive remuneration
-    and negative debt charges.
-
-    Attributes:
-        YIELD: Represents positive earnings applied to a positive balance (e.g., Savings interest).
-        INTEREST: Represents negative charges applied to a utilized credit limit (e.g., Overdraft fees).
-    """
-
-    YIELD = "YIELD"
-    INTEREST = "INTEREST"

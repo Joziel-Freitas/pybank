@@ -1,14 +1,13 @@
-"""
-Account Management Module.
+"""Account Management Module.
 
 Defines the abstract base class Account and its concrete implementations:
 SavingsAccount and CheckingAccount. This module orchestrates the core domain logic
 of the banking system, including account initialization, strict structural validation,
 state-safe withdrawal simulations, and time-based financial adjustments (accruals).
 
-It employs Domain-Driven Design (DDD) principles to return immutable ledger events
-(LedgerEventDTO) instead of simple primitives, ensuring a robust, append-only
-audit trail for the repository layer.
+It employs Domain-Driven Design (DDD) principles to return immutable domain events
+(LedgerEvent) instead of simple primitives, ensuring a robust, append-only audit
+trail for persistence.
 """
 
 from __future__ import annotations
@@ -18,16 +17,16 @@ from datetime import date
 from decimal import Decimal
 from typing import ClassVar, cast
 
+from domain.snapshots import AccountSnapshot
+from domain.types import AccrualType, TransactionType
+from domain.value_objects import AccountFinancial, LedgerEvent, WithdrawalSimulation
 from shared import clock, verify
-from shared.dtos import AccountFinancialDTO, LedgerEventDTO, WithdrawalSimulationDTO
 from shared.exceptions import (
     FrozenAccountError,
     InsufficientFundsError,
     InvalidAccountError,
     InvalidBranchError,
 )
-from shared.snapshots import AccountSnapshot
-from shared.types import AccrualType, TransactionType
 
 # =====================================================================
 # Account (ABC)
@@ -197,19 +196,18 @@ class Account(ABC):
         return self._last_balance_update
 
     @property
-    def financial_info(self) -> AccountFinancialDTO:
-        """
-        Projects the complete, mathematically accurate financial state of the account.
+    def financial_info(self) -> AccountFinancial:
+        """Projects the complete, mathematically accurate financial state of the account.
 
         Acts as a strict Read-Only facade (Lazy Materialization). By orchestrating
         subclass-specific implementations of credit limits, accruals, and available
         funds, this method enforces the Information Expert principle. It centralizes
-        the construction of the AccountFinancialDTO, applying the DRY principle and
-        ensuring that the Application layer receives a uniform, predictable, and
+        the construction of the AccountFinancial value object, applying the DRY
+        principle and ensuring that outer layers receive a uniform, predictable, and
         temporally accurate snapshot of the account's true state.
 
         Returns:
-            AccountFinancialDTO: An immutable, composed snapshot detailing the ledger
+            AccountFinancial: An immutable, composed value object detailing the ledger
                 balance, pending accruals, true current balance, operational limits,
                 and the total purchasing power at the exact moment of invocation.
         """
@@ -219,7 +217,7 @@ class Account(ABC):
         if accrual:
             accrual_type = AccrualType.YIELD if accrual > 0 else AccrualType.INTEREST
 
-        return AccountFinancialDTO(
+        return AccountFinancial(
             ledger_balance=self._balance,
             accrual=accrual,
             balance=self.balance,
@@ -297,14 +295,13 @@ class Account(ABC):
     # Public API (Orchestrators)
     # --------------------------------------------------------------------------
     def to_snapshot(self) -> AccountSnapshot:
-        """
-        Generates a persistence snapshot of the current account state.
+        """Generates a persistence snapshot of the current account state.
 
         Packages the raw ledger state, operational flags, and a polymorphic
-        'account_type' identifier (e.g., 'CheckingAccount') into a strictly
-        typed, immutable Data Transfer Object. This isolates the Domain from
-        infrastructure schemas while providing the Repository with everything
-        needed for storage and future hydration.
+        'account_type' identifier (e.g., 'CheckingAccount') into a strictly typed,
+        immutable domain snapshot. This isolates the Domain from infrastructure schemas
+        while providing the Repository with everything needed for storage and future
+        hydration.
 
         Returns:
             AccountSnapshot: An immutable snapshot containing the account's base
@@ -350,9 +347,8 @@ class Account(ABC):
 
         self._is_frozen = False
 
-    def deposit(self, amount: Decimal) -> tuple[LedgerEventDTO, ...]:
-        """
-        Performs a standard deposit operation.
+    def deposit(self, amount: Decimal) -> tuple[LedgerEvent, ...]:
+        """Performs a standard deposit operation.
 
         Enforces the strict domain rule that an account must be active to receive funds.
         Validates the input value, processes any pending time-based accruals, and
@@ -363,8 +359,8 @@ class Account(ABC):
             amount (Decimal): The amount to deposit.
 
         Returns:
-            tuple[LedgerEventDTO, ...]: A tuple containing the DTOs that represent
-                the financial events generated by this operation (e.g., the deposit
+            tuple[LedgerEvent, ...]: A tuple containing the domain events that represent
+                the financial operations generated by this transaction (e.g., the deposit
                 itself, potentially preceded by a yield or interest materialization).
                 Each event accurately captures its preceding balance point.
 
@@ -383,7 +379,7 @@ class Account(ABC):
 
         start_balance = self._balance
         self._update_balance(amount)
-        deposit_event = LedgerEventDTO(
+        deposit_event = LedgerEvent(
             previous_balance=start_balance,
             amount=amount,
             event_type=TransactionType.DEPOSIT,
@@ -394,9 +390,8 @@ class Account(ABC):
 
         return (deposit_event,)
 
-    def simulate_withdrawal(self, amount: Decimal) -> WithdrawalSimulationDTO:
-        """
-        Simulates the financial projection of a withdrawal without mutating state.
+    def simulate_withdrawal(self, amount: Decimal) -> WithdrawalSimulation:
+        """Simulates the financial projection of a withdrawal without mutating state.
 
         Acts as a universal financial oracle for all account types. It evaluates
         transaction viability strictly based on the polymorphic 'available_funds'
@@ -408,9 +403,9 @@ class Account(ABC):
             amount (Decimal): The intended monetary amount to be withdrawn.
 
         Returns:
-            WithdrawalSimulationDTO: A detailed projection detailing authorization
-                status, the necessity of utilizing an overdraft, and the precise
-                monetary value required from the credit line.
+            WithdrawalSimulation: A detailed projection detailing authorization status,
+                the necessity of utilizing an overdraft, and the precise monetary value
+                required from the credit line.
 
         Raises:
             TypeError: If the provided amount is not a Decimal instance.
@@ -430,33 +425,31 @@ class Account(ABC):
             else:
                 credit_required = Decimal("0.00")
 
-        return WithdrawalSimulationDTO(
+        return WithdrawalSimulation(
             authorized=authorized,
             use_credit=use_credit,
             credit_required=credit_required,
         )
 
-    def withdrawal(self, amount: Decimal) -> tuple[LedgerEventDTO, ...]:
-        """
-        Orchestrates the secure withdrawal workflow.
+    def withdrawal(self, amount: Decimal) -> tuple[LedgerEvent, ...]:
+        """Orchestrates the secure withdrawal workflow.
 
-        This template method enforces mandatory business invariants—specifically
-        checking account active status and sufficient liquidity—before performing
-        the state mutation. It handles the financial calculation and domain clock
-        synchronization, concluding by delegating the semantic construction of
-        ledger events to concrete subclasses via the `_compose_withdrawal_event` hook.
+        This template method enforces mandatory business invariants—specifically checking
+        account active status and sufficient liquidity—before performing the state mutation.
+        It handles financial calculation and domain clock synchronization, concluding by
+        delegating the semantic construction of ledger events to concrete subclasses
+        via the `_compose_withdrawal_event` hook.
 
         Args:
             amount (Decimal): The strictly positive amount to withdraw.
 
         Returns:
-            tuple[LedgerEventDTO, ...]: A chronological sequence of ledger events
-                representing the transaction, including potential interest materialization.
+            tuple[LedgerEvent, ...]: A chronological sequence of ledger events representing
+                the transaction, including potential interest materialization.
 
         Raises:
             FrozenAccountError: If the account is locked and cannot dispense funds.
-            InsufficientFundsError: If the requested amount exceeds the mathematically
-                precise 'available_funds'.
+            InsufficientFundsError: If the requested amount exceeds 'available_funds'.
             TypeError: If the provided amount is not a Decimal instance.
             ValueError: If the withdrawal amount is less than the MIN_ATM_TRANSACTION limit.
         """
@@ -486,11 +479,10 @@ class Account(ABC):
     def _compose_withdrawal_event(
         self,
         amount: Decimal,
-        accrual_event: LedgerEventDTO | None,
+        accrual_event: LedgerEvent | None,
         start_balance: Decimal,
-    ) -> tuple[LedgerEventDTO, ...]:
-        """
-        Abstract hook for constructing account-specific ledger events.
+    ) -> tuple[LedgerEvent, ...]:
+        """Abstract hook for constructing account-specific ledger events.
 
         Concrete subclasses must implement this to define the semantic sequencing
         of withdrawal events, ensuring that the audit trail accurately reflects
@@ -499,11 +491,11 @@ class Account(ABC):
 
         Args:
             amount (Decimal): The amount withdrawn.
-            accrual_event (LedgerEventDTO | None): The materialized interest/yield event, if any.
+            accrual_event (LedgerEvent | None): The materialized interest/yield event, if any.
             start_balance (Decimal): The authoritative balance prior to the withdrawal.
 
         Returns:
-            tuple[LedgerEventDTO, ...]: The chronological sequence of finalized ledger events.
+            tuple[LedgerEvent, ...]: The chronological sequence of finalized ledger events.
         """
 
     # --------------------------------------------------------------------------
@@ -526,9 +518,8 @@ class Account(ABC):
         self._balance += amount
         self._last_balance_update = clock.get_today()
 
-    def _apply_accrual(self) -> LedgerEventDTO | None:
-        """
-        Materializes pending accruals into the account balance and ledger.
+    def _apply_accrual(self) -> LedgerEvent | None:
+        """Materializes pending accruals into the account balance and ledger.
 
         Acts as an internal orchestrator that evaluates if any time-based
         financial adjustments (yields or charges) have accrued. If a non-zero
@@ -536,9 +527,9 @@ class Account(ABC):
         and generates an immutable ledger event for persistence.
 
         Returns:
-            LedgerEventDTO | None: A data transfer object representing the applied
-                accrual event ready for database insertion, or None if no
-                time has elapsed or the calculated amount is zero.
+            LedgerEvent | None: A domain event representing the applied accrual event
+                ready for persistence, or None if no time has elapsed or the calculated
+                amount is zero.
         """
         accrual = self._pending_accrual
 
@@ -548,7 +539,7 @@ class Account(ABC):
         start_balance = self._balance
         self._update_balance(accrual)
 
-        return LedgerEventDTO(
+        return LedgerEvent(
             previous_balance=start_balance,
             amount=accrual,
             event_type=AccrualType.YIELD if accrual > 0 else AccrualType.INTEREST,
@@ -559,15 +550,13 @@ class Account(ABC):
     # --------------------------------------------------------------------------
     @classmethod
     def from_snapshot(cls, data: AccountSnapshot) -> Account:
-        """
-        Factory method to reconstruct an Account instance from a persistence snapshot.
+        """Factory method to reconstruct an Account instance from a persistence snapshot.
 
-        Implements a Dispatcher Pattern using typed Data Transfer Objects:
+        Implements a Dispatcher Pattern using typed domain snapshots:
         1. If called on the base Account class, it inspects the 'account_type' field
            in the snapshot and delegates instantiation to the correct subclass.
-        2. If called on a subclass, it restores the common state
-           attributes (balance, frozen status, and temporal state) and returns
-           the fully hydrated instance.
+        2. If called on a subclass, it restores the common state attributes
+           (balance, frozen status, and temporal state) and returns the fully hydrated instance.
 
         Args:
             data (AccountSnapshot): The immutable snapshot containing the exact
@@ -760,24 +749,23 @@ class SavingsAccount(Account):
     def _compose_withdrawal_event(
         self,
         amount: Decimal,
-        accrual_event: LedgerEventDTO | None,
+        accrual_event: LedgerEvent | None,
         start_balance: Decimal,
-    ) -> tuple[LedgerEventDTO, ...]:
-        """
-        Constructs the ledger event sequence for a savings account withdrawal.
+    ) -> tuple[LedgerEvent, ...]:
+        """Constructs the ledger event sequence for a savings account withdrawal.
 
         Since savings accounts do not support overdraft, this simply chains the
         optional accrual event (if materialized) with a standard withdrawal entry.
 
         Args:
             amount (Decimal): The amount withdrawn.
-            accrual_event (LedgerEventDTO | None): The materialized yield event, if any.
+            accrual_event (LedgerEvent | None): The materialized yield event, if any.
             start_balance (Decimal): The balance prior to mutation.
 
         Returns:
-            tuple[LedgerEventDTO, ...]: The sequence of events for the savings audit trail.
+            tuple[LedgerEvent, ...]: The sequence of events for the savings audit trail.
         """
-        withdrawal_event = LedgerEventDTO(
+        withdrawal_event = LedgerEvent(
             previous_balance=start_balance,
             amount=-amount,
             event_type=TransactionType.WITHDRAWAL,
@@ -792,8 +780,7 @@ class SavingsAccount(Account):
     # --------------------------------------------------------------------------
     @classmethod
     def from_snapshot(cls, data: AccountSnapshot) -> SavingsAccount:
-        """
-        Reconstructs a SavingsAccount instance from a persistence snapshot.
+        """Reconstructs a SavingsAccount instance from a persistence snapshot.
 
         Extends the base Account hydration process by enforcing a strict
         domain integrity check: Savings accounts cannot be hydrated with
@@ -936,11 +923,10 @@ class CheckingAccount(Account):
     def _compose_withdrawal_event(
         self,
         amount: Decimal,
-        accrual_event: LedgerEventDTO | None,
+        accrual_event: LedgerEvent | None,
         start_balance: Decimal,
-    ) -> tuple[LedgerEventDTO, ...]:
-        """
-        Constructs the ledger event sequence for a checking account, handling zero-crossing logic.
+    ) -> tuple[LedgerEvent, ...]:
+        """Constructs the ledger event sequence for a checking account, handling zero-crossing logic.
 
         This implementation handles the credit complexity by strategically splitting
         the transaction into 'Standard' and 'Credit' events when the requested
@@ -948,14 +934,14 @@ class CheckingAccount(Account):
 
         Args:
             amount (Decimal): The amount withdrawn.
-            accrual_event (LedgerEventDTO | None): The materialized interest event, if any.
+            accrual_event (LedgerEvent | None): The materialized interest event, if any.
             start_balance (Decimal): The balance prior to mutation.
 
         Returns:
-            tuple[LedgerEventDTO, ...]: The chronological audit trail accounting for both
+            tuple[LedgerEvent, ...]: The chronological audit trail accounting for both
                 balance usage and credit limit consumption.
         """
-        events_list: list[LedgerEventDTO] = []
+        events_list: list[LedgerEvent] = []
 
         if accrual_event:
             events_list.append(accrual_event)
@@ -963,7 +949,7 @@ class CheckingAccount(Account):
         # Case 1: Fully covered by positive balance (including exact withdrawal)
         if start_balance >= amount:
             events_list.append(
-                LedgerEventDTO(
+                LedgerEvent(
                     previous_balance=start_balance,
                     amount=-amount,
                     event_type=TransactionType.WITHDRAWAL,
@@ -972,7 +958,7 @@ class CheckingAccount(Account):
         # Case 2: Fully operating within credit limits (including starting exactly at zero)
         elif start_balance <= 0:
             events_list.append(
-                LedgerEventDTO(
+                LedgerEvent(
                     previous_balance=start_balance,
                     amount=-amount,
                     event_type=TransactionType.CREDIT_WITHDRAWAL,
@@ -982,14 +968,14 @@ class CheckingAccount(Account):
         else:
             remaining = amount - start_balance
             events_list.append(
-                LedgerEventDTO(
+                LedgerEvent(
                     previous_balance=start_balance,
                     amount=-start_balance,
                     event_type=TransactionType.WITHDRAWAL,
                 )
             )
             events_list.append(
-                LedgerEventDTO(
+                LedgerEvent(
                     previous_balance=Decimal("0.00"),
                     amount=-remaining,
                     event_type=TransactionType.CREDIT_WITHDRAWAL,
