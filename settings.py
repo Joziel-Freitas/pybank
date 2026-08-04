@@ -1,5 +1,4 @@
-"""
-Application Settings Module.
+"""Application Settings Module.
 
 This module acts as the central configuration hub for the PyBank system.
 Following the 12-Factor App methodology, it loads environment variables
@@ -7,6 +6,7 @@ from the .env file and provides safe fallbacks and type casting for the
 entire application.
 """
 
+from datetime import timedelta
 from os import environ
 from zoneinfo import ZoneInfo
 
@@ -32,6 +32,12 @@ BRANCH_CODE: str = environ.get("BRANCH_CODE", "0001")
 BANK_SECRET_KEY: str = environ.get(
     "BANK_SECRET_KEY", "default-dev-secret-key-do-not-use-in-prod"
 )
+
+# Time-To-Live (TTL) duration for Lobby authentication tokens (default: 300s / 5 min)
+LOBBY_TIME_SECONDS: timedelta = timedelta(seconds=int(environ.get("LOBBY_TIME", "300")))
+
+# Time-To-Live (TTL) duration for Vault authorization tokens (default: 120s / 2 min)
+VAULT_TIME_SECONDS: timedelta = timedelta(seconds=int(environ.get("VAULT_TIME", "120")))
 
 # ==============================================================================
 # Kiosk Terminal Controls
