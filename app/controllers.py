@@ -28,7 +28,7 @@ from dataclasses import asdict
 from datetime import date, timedelta
 from decimal import Decimal
 from functools import partial
-from typing import Any, ClassVar, TypeVar, cast
+from typing import Any, ClassVar, TypeVar
 
 from domain.account import Account
 from domain.account_holder import AccountHolder
@@ -38,12 +38,7 @@ from infra.io_utils import CallbackReturn, InputType
 from settings import ADMIN_EXIT_CODE
 from shared import clock, exceptions, validators, verify
 from shared.credentials import AccessToken, AccountCard, AuthToken
-from shared.dtos import (
-    AccountSummaryDTO,
-    DepositTargetDTO,
-    NewAccountDTO,
-    NewAccountHolderDTO,
-)
+from shared.dtos import AccountSummaryDTO, DepositTargetDTO, NewAccountDTO
 from shared.exceptions import (
     AccountAlreadyActiveError,
     AccountHolderNotFoundError,
@@ -444,15 +439,18 @@ class OnboardingController(BaseController, SharedPromptsMixin):
         """
         try:
             cpf = self._prompt_cpf()
-            holder_dto_or_cpf = self._handle_account_holder_data(cpf)
-            account_dto = self._handle_account_data()
+            name_date_tuple = self._handle_account_holder_data(cpf)
+            account_dict = self._handle_account_data()
+            account_dict["holder_cpf"] = cpf
+            if name_date_tuple:
+                account_dict["holder_name"], account_dict["holder_birth_date"] = (
+                    name_date_tuple
+                )
             password = self._prompt_new_password()
 
             self._handle_info_ui("info", "pwd_ok")
             self._bank_instance.register_account(
-                account_dto=account_dto,
-                holder_dto_or_cpf=holder_dto_or_cpf,
-                password=password,
+                NewAccountDTO(**account_dict), password
             )
             self._handle_info_ui("info", "register_ok", wait=True)
         except UserAbortError:
@@ -472,19 +470,18 @@ class OnboardingController(BaseController, SharedPromptsMixin):
     # --------------------------------------------------------------------------
     # Protected methods
     # --------------------------------------------------------------------------
-    def _handle_account_holder_data(self, cpf: str) -> NewAccountHolderDTO | str:
-        """
-        Handles the account holder data gathering workflow.
+    def _handle_account_holder_data(self, cpf: str) -> tuple[str, date] | None:
+        """Handles the account holder data gathering workflow.
 
-        Checks if the CPF is already registered. If so, returns the CPF.
-        Otherwise, prompts the user for the remaining registration fields.
+        Checks if the CPF is already registered. If so, informs the user and returns None.
+        Otherwise, prompts the user for the remaining registration fields (name and birth date).
 
         Args:
             cpf (str): The validated CPF string.
 
         Returns:
-            NewAccountHolderDTO | str: The DTO containing the new account holder's data,
-                or the CPF string if the account holder already exists.
+            tuple[str, date] | None: A tuple containing (name, birth_date) if the holder is new,
+                or None if the holder already exists in the system.
         """
         is_holder = self._bank_instance.check_account_holder_exists(cpf)
 
@@ -492,7 +489,7 @@ class OnboardingController(BaseController, SharedPromptsMixin):
             self._handle_info_ui(
                 "info", "already_account_holder", wait=True, clean=True
             )
-            return cpf
+            return None
 
         self._handle_info_ui("info", "new_account_holder", wait=True, clean=True)
         obj_attr = io_utils.config_loop(
@@ -500,20 +497,20 @@ class OnboardingController(BaseController, SharedPromptsMixin):
             self._controller_validator_cb,
             skip_fields=["cpf"],
         )
-        obj_attr["cpf"] = cpf
-        obj_attr = cast(dict[str, Any], obj_attr)
-        return NewAccountHolderDTO(**obj_attr)
+        name = _assert_input(obj_attr["name"], str)
+        birth_date = _assert_input(obj_attr["birth_date"], date)
 
-    def _handle_account_data(self) -> NewAccountDTO:
-        """
-        Orchestrates the collection of account-specific configurations.
+        return (name, birth_date)
+
+    def _handle_account_data(self) -> dict[str, Any]:
+        """Orchestrates the collection of account-specific configurations.
 
         Prompts the user to select the account type and desired number via the
-        I/O engine, performing preventative verification against the core database.
+        I/O engine, performing preventative verification against the database.
 
         Returns:
-            NewAccountDTO: The immutable payload containing the verified parameters
-                for account instantiation.
+            dict[str, Any]: A dictionary containing key parameters (account_type,
+                branch_code, account_num) ready to populate the NewAccountDTO.
 
         Raises:
             ControllerRegisterError: If the proposed account coordinates collide
@@ -532,11 +529,11 @@ class OnboardingController(BaseController, SharedPromptsMixin):
             self._handle_info_ui("errors", "acc_duplicated", wait=True, clean=True)
             raise ControllerRegisterError
 
-        return NewAccountDTO(
-            account_type=acc_type,
-            branch_code=self._bank_instance.bank_branch_code,
-            account_num=acc_num,
-        )
+        return {
+            "account_type": acc_type,
+            "branch_code": self._bank_instance.bank_branch_code,
+            "account_num": acc_num,
+        }
 
 
 class TransactionController(BaseController):

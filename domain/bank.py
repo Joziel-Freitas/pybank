@@ -35,7 +35,6 @@ from shared.dtos import (
     DepositTargetDTO,
     LedgerEventDTO,
     NewAccountDTO,
-    NewAccountHolderDTO,
     StatementDTO,
     WithdrawalSimulationDTO,
 )
@@ -227,44 +226,41 @@ class Bank:
 
     def register_account(
         self,
-        account_dto: NewAccountDTO,
-        holder_dto_or_cpf: NewAccountHolderDTO | str,
+        new_account_dto: NewAccountDTO,
         password: str,
     ) -> None:
-        """
-        Registers a newly created account and links it to an account holder.
+        """Registers a newly created account and links it to an account holder.
 
         Acts as the strict Domain boundary for the onboarding process.
-        It accepts immutable Data Transfer Objects (DTOs) from the Presentation
-        layer, delegates instantiation to internal factories, securely hashes
-        the password, and persists the domain entities via the repository.
+        It accepts an immutable NewAccountDTO payload from the external layer,
+        delegates entity instantiation to internal factories, securely hashes
+        the password, and persists the domain snapshot via the repository.
 
         Args:
-            account_dto (NewAccountDTO): The immutable payload containing account setup data.
-            holder_dto_or_cpf (NewAccountHolderDTO | str): The payload for a new account holder, or an existing holder's CPF.
+            new_account_dto (NewAccountDTO): The immutable unified payload containing
+                account setup and holder data.
             password (str): The raw 6-digit password for the new account.
 
         Raises:
             TypeError: If any arguments do not match expected types.
-            BankPasswordError: If the password format is invalid.
-            DuplicatedAccountError: If the account number is already taken.
+            BankPasswordError: If the password format fails domain validation.
+            DuplicatedAccountError: If the account number is already registered.
             DuplicatedAccountHolderError: If a new account holder CPF is already registered.
             AccountHolderNotFoundError: If an existing account holder CPF is not found.
-            BankUnavailableError: If the operation fails due to an internal database error.
+            BankUnavailableError: If the operation fails due to an internal persistence error.
         """
-        verify.verify_instance(account_dto, NewAccountDTO)
-        verify.verify_instance(holder_dto_or_cpf, (str, NewAccountHolderDTO))
+        verify.verify_instance(new_account_dto, NewAccountDTO)
         verify.verify_instance(password, str)
         Bank.validate_password(password)
 
-        new_account = self._account_factory(account_dto)
+        new_account = self._account_factory(new_account_dto)
         account_snap = new_account.to_snapshot()
 
-        if isinstance(holder_dto_or_cpf, NewAccountHolderDTO):
-            new_holder = self._account_holder_factory(holder_dto_or_cpf)
+        if new_account_dto.holder_name and new_account_dto.holder_birth_date:
+            new_holder = self._account_holder_factory(new_account_dto)
             holder_snap_or_cpf = new_holder.to_snapshot()
-        elif isinstance(holder_dto_or_cpf, str):
-            holder_snap_or_cpf = holder_dto_or_cpf
+        else:
+            holder_snap_or_cpf = new_account_dto.holder_cpf
 
         pwd_hash = self._generate_password_hash(password_str=password)
 
@@ -1078,15 +1074,10 @@ class Bank:
     # --------------------------------------------------------------------------
 
     def _account_factory(self, account_dto: NewAccountDTO) -> Account:
-        """
-        Internal factory to instantiate Account entities from a DTO.
-
-        Translates the integer flag within the DTO into the correct Account
-        subclass (CheckingAccount or SavingsAccount), keeping the Presentation
-        layer entirely decoupled from Domain implementations.
+        """Internal factory to instantiate Account entities from a DTO.
 
         Args:
-            account_dto (NewAccountDTO): The immutable payload from the UI.
+            account_dto (NewAccountDTO): The immutable payload from the UI or Application layer.
 
         Returns:
             Account: A fully initialized domain Account instance.
@@ -1101,20 +1092,25 @@ class Bank:
 
         return account_obj
 
-    def _account_holder_factory(
-        self, acc_holder_dto: NewAccountHolderDTO
-    ) -> AccountHolder:
-        """
-        Internal factory to instantiate an AccountHolder entity from a DTO.
+    def _account_holder_factory(self, new_acc_dto: NewAccountDTO) -> AccountHolder:
+        """Internal factory to instantiate an AccountHolder entity from a DTO.
 
         Args:
-            acc_holder_dto (NewAccountHolderDTO): The immutable payload containing the new account holder's data.
+            new_acc_dto (NewAccountDTO): The unified onboarding payload containing holder details.
 
         Returns:
             AccountHolder: A fully initialized domain AccountHolder instance.
+
+        Raises:
+            RuntimeError: If holder_name or holder_birth_date are missing in the DTO.
         """
+        if not new_acc_dto.holder_name or not new_acc_dto.holder_birth_date:
+            raise RuntimeError("Invalid DTO state")
+
         holder_obj = AccountHolder(
-            acc_holder_dto.name, acc_holder_dto.cpf, acc_holder_dto.birth_date
+            name=new_acc_dto.holder_name,
+            cpf=new_acc_dto.holder_cpf,
+            birth_date=new_acc_dto.holder_birth_date,
         )
 
         return holder_obj

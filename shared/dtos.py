@@ -24,44 +24,30 @@ from shared.types import AccrualType, FinancialType
 
 
 @dataclass(frozen=True, slots=True)
-class NewAccountHolderDTO:
-    """
-    Data Transfer Object containing the validated data required to register a new account holder.
-
-    Acts as a secure, immutable payload traveling from the OnboardingController
-    to the Bank aggregate. It relies strictly on primitive types to ensure the
-    Presentation layer does not need to import or construct Domain Entities.
-
-    Attributes:
-        name (str): The validated full name of the account holder.
-        cpf (str): The validated 11-digit CPF string.
-        birth_date (date): The validated birth date of the account holder.
-    """
-
-    name: str
-    cpf: str
-    birth_date: date
-
-
-@dataclass(frozen=True, slots=True)
 class NewAccountDTO:
-    """
-    Data Transfer Object containing the validated data required to open a new Account.
+    """Data Transfer Object containing the validated data required to open a new Account.
 
-    Transports the user's choices and initial setup information. It uses an integer
-    mapping (`account_type`) to indicate the specific account model (e.g., Checking
-    vs. Savings) so the external layers remain completely decoupled from the specific
-    Domain Entity implementations.
+    Transports user choices and onboarding information into a unified payload.
+    Supports both new account holder creation and attaching a new account to an
+    existing account holder.
 
     Attributes:
-        account_type (int): An integer flag mapping to the account type (e.g., 1 or 2).
+        account_type (int): Integer flag mapping to the account type (e.g., 1 for Checking, 2 for Savings).
         branch_code (str): The validated 4-digit branch code.
         account_num (str): The validated 8-digit account number.
+        holder_cpf (str): The validated 11-digit CPF string of the account holder.
+        holder_name (str | None): Full name of the account holder. Required for new holders,
+            None if attaching to an existing holder.
+        holder_birth_date (date | None): Birth date of the account holder. Required for new holders,
+            None if attaching to an existing holder.
     """
 
     account_type: int
     branch_code: str
     account_num: str
+    holder_cpf: str
+    holder_name: str | None = None
+    holder_birth_date: date | None = None
 
 
 @dataclass(frozen=True, slots=True)
