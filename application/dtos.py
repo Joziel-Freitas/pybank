@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from shared.credentials import AccessToken
+from shared.credentials import AccessToken, AuthToken
 
 
 class ApplicationDTO(ABC):
@@ -83,6 +83,22 @@ class NewAccountDTO(ApplicationDTO):
     holder_cpf: str
     holder_name: str | None = None
     holder_birth_date: date | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class VaultAccessDTO(ApplicationDTO):
+    """Data Transfer Object representing credentials required for vault access authentication.
+
+    Encapsulates the raw password and the primary authentication token required
+    to request elevated authorization (vault access) for sensitive operations.
+
+    Attributes:
+        password: The plain-text password provided by the user for vault authorization.
+        auth_token: The active primary authentication token confirming the user's logged-in session.
+    """
+
+    password: str
+    auth_token: AuthToken
 
 
 @dataclass(frozen=True, slots=True)
