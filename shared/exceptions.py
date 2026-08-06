@@ -1,46 +1,27 @@
-"""
-Central module for all custom exceptions in the banking system.
+"""Central module for all custom exceptions in the PyBank system.
 
-This module establishes a clear, hierarchical structure for all custom errors,
-distinguishing between different architectural layers:
+Establishes a clear, hierarchical structure for all custom errors across layers:
 
-1. **Infrastructure/Repository Errors**: Abstract database-level failures.
-2. **Security Errors**: Critical violations and session-integrity breaches.
-3. **Domain Errors (The Royalty)**: Business rule violations within Account,
-   Person, and Bank entities.
-4. **Application/Controller Errors**: Flow orchestration and session management
-   failures (isolated from the Domain).
-
-Includes a mapping utility to translate Domain failures into UI-friendly
-configuration keys for contextual messaging.
+1. Infrastructure/Repository Errors: Persistence and lower-level I/O failures.
+2. Security Errors: Cryptographic and token-integrity breaches.
+3. Domain Errors: Business rule invariant violations within Aggregate Roots
+   (e.g., Account, Person).
+4. Application Errors: Workflow orchestration, authentication, and service-level failures.
+5. Controller Errors: UI navigation and presentation flow issues.
 """
 
 
 class SystemBaseException(Exception):
-    """
-    Root exception for all custom errors in the PyBank system.
+    """Root exception for all custom errors in the PyBank system.
 
-    Extends the native Python Exception class by introducing an optional
-    `argument` attribute. This allows the system to attach the specific
-    object or data payload that caused the failure directly to the exception.
-    By doing so, higher-level layers (like the Domain) can inspect the
-    error's origin using object identity (`is`) or type checking (`isinstance`),
-    completely eliminating the need to parse raw error strings or use magic strings.
+    Extends Python's base Exception by attaching an optional `argument` attribute,
+    allowing upper layers to inspect the error origin using object identity or
+    type checks rather than string parsing.
     """
 
     def __init__(
         self, msg: object | None = None, argument: object | None = None
     ) -> None:
-        """
-        Initializes the base system exception.
-
-        Args:
-            msg (object | None): The descriptive error message for logging and debugging.
-                If omitted, the exception is raised silently without a message payload.
-            argument (object | None): The specific object, entity, or primitive
-                that triggered the exception. Preserves the exact memory identity
-                for structural error handling in upper architectural layers.
-        """
         if msg is not None:
             super().__init__(msg)
         else:
@@ -49,195 +30,206 @@ class SystemBaseException(Exception):
         self.argument = argument
 
 
-# --- Infrastructure Layer Exceptions ---
+# =====================================================================
+# Infrastructure Layer Exceptions
+# =====================================================================
 
 
 class RepositoryError(SystemBaseException):
-    """
-    Base exception for all errors originating from the Infrastructure/Repository layer.
-
-    Ensures that Domain and Application layers do not depend on third-party
-    library exceptions (e.g., PyMySQL).
-    """
+    """Base exception for all persistence layer errors."""
 
 
 class DataNotFoundError(RepositoryError):
-    """Raised when a requested record is not found in the database."""
+    """Raised when a requested record is not found in persistence."""
 
 
 class DuplicatedDataError(RepositoryError):
-    """Raised when an insertion violates a unique constraint (e.g., duplicate CPF)."""
+    """Raised when an insertion violates a unique constraint."""
 
 
 class SystemIOError(SystemBaseException):
-    """Base exceptions for all errors originating from infrastructure I/O layer."""
+    """Base exception for infrastructure I/O errors."""
 
 
 class UserAbortError(SystemIOError):
-    """Control flow exception raised when the user manually cancels an operation."""
+    """Raised when the user manually cancels an operation."""
 
 
 class InactiveUserError(SystemIOError):
-    """Raised when the user's inactivity reaches the Bank System timeout limit."""
+    """Raised when user inactivity reaches the system timeout limit."""
 
 
-# --- Security Layer Exceptions ---
+# =====================================================================
+# Security Layer Exceptions
+# =====================================================================
 
 
 class SecurityError(SystemBaseException):
-    """Base exception for all critical security violations in the system."""
+    """Base exception for critical security and session breaches."""
 
 
-class BankSecurityError(SecurityError):
-    """
-    Raised when a critical violation is detected (e.g., Token tampering).
-    Forces immediate session termination.
-    """
+class TokenSecurityError(SecurityError):
+    """Raised when token tampering or invalid cryptographic signatures are detected."""
 
 
 class ExpiredTokenError(SecurityError):
     """Raised when a token's Time-To-Live (TTL) has passed."""
 
 
-# --- Application Layer Exceptions ---
+# =====================================================================
+# Application Layer Exceptions
+# =====================================================================
 
 
-class ControllerError(SystemBaseException):
-    """
-    Base exception for orchestration and navigation failures within Controllers.
-    Independent from DomainError to separate business logic from UI flow.
-    """
+class ApplicationError(SystemBaseException):
+    """Base exception for orchestration and service workflow failures."""
 
 
-class ControllerCredentialsError(ControllerError):
-    """Raised when authentication fails or access is denied during operational flow."""
+class AccessDeniedError(ApplicationError):
+    """Raised when vault or feature access is denied (e.g., frozen account)."""
 
 
-class ControllerOperationError(ControllerError):
-    """Raised when a high-level banking workflow (e.g., Transaction) is interrupted."""
+class AuthenticationError(ApplicationError):
+    """Raised when primary or vault authentication fails."""
 
 
-class ControllerRegisterError(ControllerError):
-    """Raised when an onboarding or entity creation process fails."""
+class AccountHolderNotFoundError(ApplicationError):
+    """Raised when an account holder record cannot be resolved by the application service."""
 
 
-# --- Domain Layer Exceptions ---
+class AccountNotFoundError(ApplicationError):
+    """Raised when an account record cannot be resolved by the application service."""
 
 
-class DomainError(SystemBaseException):
-    """Base exception for all domain-specific business rule violations."""
+class DuplicatedAccountError(ApplicationError):
+    """Raised during onboarding if an account already exists."""
 
 
-# --- Bank Domain Exceptions ---
+class DuplicatedAccountHolderError(ApplicationError):
+    """Raised during onboarding if an account holder is already registered."""
 
 
-class BankError(DomainError):
-    """Base exception for errors related to the Bank service layer."""
-
-
-class AccountAlreadyActiveError(BankError):
-    """Raised when trying to unfreeze an operational account."""
-
-
-class AccountHolderNotFoundError(BankError):
-    """Raised when an account holder is not found in the Bank's registry."""
-
-
-class AccountNotFoundError(BankError):
-    """Raised when an account is not found in the Bank's registry."""
-
-
-class BankAccessError(BankError):
-    """Raised when the access process fails."""
-
-
-class BankAuthenticationError(BankError):
-    """Raised when the authentication process fails."""
-
-
-class BankNameError(BankError):
-    """Raised when the Bank's name is invalid."""
-
-
-class BankPasswordError(BankError):
-    """Raised when a Bank password validation fails."""
-
-
-class BankUnavailableError(BankError):
-    """Raised when an operation fails due to internal infrastructure issues."""
-
-
-class DuplicatedAccountError(BankError):
-    """Raised when an Account is already registered in the Bank."""
-
-
-class DuplicatedAccountHolderError(BankError):
-    """Raised when an AccountHolder is already registered in Bank."""
-
-
-class HomeBranchRestrictionError(BankError):
+class HomeBranchRestrictionError(ApplicationError):
     """Raised when an operation is restricted to the account's home branch."""
 
 
-class NotEmptyAccountError(BankError):
-    """Raised when closing an account with a non-zero balance."""
+class NotEmptyAccountError(ApplicationError):
+    """Raised when attempting to close an account with a non-zero balance."""
+
+
+class PasswordValidationError(ApplicationError):
+    """Raised when password format or policy validation fails at service level."""
+
+
+class ServiceUnavailableError(ApplicationError):
+    """Raised when an application workflow cannot commit state due to internal failure."""
+
+
+# =====================================================================
+# Domain Layer Exceptions (Entities & Aggregates)
+# =====================================================================
+
+
+class DomainError(SystemBaseException):
+    """Base exception for domain aggregate business rule violations."""
 
 
 # --- Person Domain Exceptions ---
 
 
 class PersonError(DomainError):
-    """Base exception for errors related to the Person/AccountHolder entity."""
+    """Base exception for Person and AccountHolder aggregate errors."""
 
 
 class AccountHolderCardNotFoundError(PersonError):
-    """Raised when accessing a card not found in the account holder's collection."""
+    """Raised when accessing a card not found in the holder's collection."""
 
 
 class AccountHolderDuplicatedCardError(PersonError):
-    """Raised when adding a card already associated with the account holder."""
+    """Raised when adding a duplicate card to the holder."""
 
 
 class InvalidBirthDateError(PersonError):
-    """Raised when a birth date is in the future or age is out of range."""
+    """Raised when a birth date fails domain validation rules."""
 
 
 class InvalidCpfError(PersonError):
-    """Raised when a CPF fails mathematical or length validation."""
+    """Raised when a CPF fails mathematical or structural validation."""
 
 
 class InvalidNameError(PersonError):
-    """Raised when a name violates formatting or length rules."""
+    """Raised when a name fails domain formatting rules."""
 
 
 # --- Account Domain Exceptions ---
 
 
 class AccountError(DomainError):
-    """Base exception for errors related to the Account entity."""
+    """Base exception for Account aggregate errors."""
+
+
+class AccountAlreadyActiveError(AccountError):
+    """Raised when trying to unfreeze an already active account."""
 
 
 class FrozenAccountError(AccountError):
-    """Raised when an operation is attempted on a frozen account."""
-
-
-class InvalidAccountError(AccountError):
-    """Raised for an invalid account number format."""
-
-
-class InvalidBalanceError(AccountError):
-    """Raised for invalid initial balances."""
-
-
-class InvalidBranchError(AccountError):
-    """Raised for an invalid branch code format."""
+    """Raised when an operation is attempted on a frozen account entity."""
 
 
 class InsufficientFundsError(AccountError):
-    """Raised when a given withdrawal amount exceeds the account total funds."""
+    """Raised when a withdrawal exceeds available funds."""
 
 
-# --- Error Metadata Mappers ---
+class InvalidAccountError(AccountError):
+    """Raised for invalid account number formatting."""
+
+
+class InvalidBalanceError(AccountError):
+    """Raised for invalid balance values."""
+
+
+class InvalidBranchError(AccountError):
+    """Raised for invalid branch code formatting."""
+
+
+# =====================================================================
+# Presentation / Controller Layer Exceptions
+# =====================================================================
+
+
+class ControllerError(SystemBaseException):
+    """Base exception for presentation flow and navigation errors."""
+
+
+class ControllerCredentialsError(ControllerError):
+    """Raised when credentials flow fails at presentation level."""
+
+
+class ControllerOperationError(ControllerError):
+    """Raised when a presentation workflow is interrupted."""
+
+
+class ControllerRegisterError(ControllerError):
+    """Raised when onboarding UI presentation flow fails."""
+
+
+# =====================================================================
+# Error Metadata Mappers
+# =====================================================================
+
+APPLICATION_ERROR_MAP = {
+    AccessDeniedError: "access_denied",
+    AccountHolderNotFoundError: "not_account_holder",
+    AccountNotFoundError: "acc_not_found",
+    AuthenticationError: "auth_failed",
+    DuplicatedAccountError: "acc_duplicated",
+    DuplicatedAccountHolderError: "already_account_holder",
+    HomeBranchRestrictionError: "other_branch",
+    NotEmptyAccountError: "non_zero_value",
+    PasswordValidationError: "password",
+    ServiceUnavailableError: "unavailable",
+}
+
 CONTROLLER_ERROR_MAP = {
     ControllerCredentialsError: "ctrl_credentials",
     ControllerOperationError: "ctrl_operation",
@@ -248,17 +240,7 @@ DOMAIN_ERROR_MAP = {
     AccountAlreadyActiveError: "acc_active",
     AccountHolderCardNotFoundError: "card_not_found",
     AccountHolderDuplicatedCardError: "duplicated_card",
-    AccountHolderNotFoundError: "not_account_holder",
-    AccountNotFoundError: "acc_not_found",
-    BankAccessError: "access_denied",
-    BankAuthenticationError: "auth_failed",
-    BankNameError: "name",
-    BankPasswordError: "password",
-    BankUnavailableError: "unavailable",
     FrozenAccountError: "acc_frozen",
-    DuplicatedAccountError: "acc_duplicated",
-    DuplicatedAccountHolderError: "already_account_holder",
-    HomeBranchRestrictionError: "other_branch",
     InsufficientFundsError: "value",
     InvalidAccountError: "account_num",
     InvalidBalanceError: "balance",
@@ -266,43 +248,29 @@ DOMAIN_ERROR_MAP = {
     InvalidBranchError: "branch_code",
     InvalidCpfError: "cpf",
     InvalidNameError: "name",
-    NotEmptyAccountError: "non_zero_value",
 }
 
 SECURITY_ERROR_MAP = {
     ExpiredTokenError: "exp_token",
-    BankSecurityError: "bank_security",
+    TokenSecurityError: "bank_security",
 }
 
 
-def map_exceptions(error: ControllerError | DomainError | SecurityError) -> str:
-    """
-    Maps system exceptions to standardized UI context codes.
-
-    Acts as an architectural router, evaluating the base type of the exception
-    (Domain, Controller, or Security) and delegating the lookup to the appropriate
-    metadata mapping dictionary. This provides a flat, O(1) lookup to identify
-    the specific reason for a failure without hardcoding error strings in the logic.
-
-    Args:
-        error (ControllerError | DomainError | SecurityError): The caught exception instance.
-
-    Returns:
-        str: A standardized string identifier representing the error's context,
-            ready to be consumed by the UI message mappers.
-
-    Raises:
-        TypeError: If the provided argument is not a subclass of the supported error layers.
-        NotImplementedError: If the exception type is valid but missing from
-            the corresponding metadata mapping dictionary.
-    """
-    if not isinstance(error, (ControllerError, DomainError, SecurityError)):
+def map_exceptions(
+    error: ApplicationError | ControllerError | DomainError | SecurityError,
+) -> str:
+    """Maps system exceptions to standardized UI context keys."""
+    if not isinstance(
+        error, (ApplicationError, ControllerError, DomainError, SecurityError)
+    ):
         raise TypeError(
-            f"Function expects DomainError, ControllerError, or SecurityError. "
+            f"Function expects ApplicationError, DomainError, ControllerError, or SecurityError. "
             f"Got {type(error).__name__}"
         )
 
     match error:
+        case ApplicationError():
+            context_map = APPLICATION_ERROR_MAP
         case ControllerError():
             context_map = CONTROLLER_ERROR_MAP
         case DomainError():
@@ -316,7 +284,7 @@ def map_exceptions(error: ControllerError | DomainError | SecurityError) -> str:
 
     if error_context is None:
         raise NotImplementedError(
-            f"Exception {type(error).__name__} is missing from exceptions metadata mappers"
+            f"Exception {type(error).__name__} is missing from metadata mappers"
         )
 
     return error_context

@@ -12,12 +12,12 @@ from domain.account_holder import AccountHolder
 from shared import verify
 from shared.exceptions import (
     AccountHolderNotFoundError,
-    BankUnavailableError,
     DataNotFoundError,
     DuplicatedAccountError,
     DuplicatedAccountHolderError,
     DuplicatedDataError,
     RepositoryError,
+    ServiceUnavailableError,
 )
 
 # =====================================================================
@@ -119,7 +119,7 @@ class OnboardingService:
             DuplicatedAccountError: If the branch and account number are already registered.
             DuplicatedAccountHolderError: If a new holder CPF is already registered.
             AccountHolderNotFoundError: If an existing holder CPF is not found in the system.
-            BankUnavailableError: If persistence fails due to an internal repository error.
+            ServiceUnavailableError: If persistence fails due to an internal repository error.
         """
         verify.verify_instance(dto, NewAccountDTO)
 
@@ -154,7 +154,7 @@ class OnboardingService:
                 "No account holder registered under this CPF"
             ) from e
         except RepositoryError as e:
-            raise BankUnavailableError(
+            raise ServiceUnavailableError(
                 "The intended operation could not be persisted due to an internal error"
             ) from e
 

@@ -19,12 +19,12 @@ from domain.account_holder import AccountHolder
 from shared import verify
 from shared.credentials import AccessToken, AccountCard, AuthToken
 from shared.exceptions import (
+    AccessDeniedError,
     AccountHolderNotFoundError,
-    BankAccessError,
-    BankAuthenticationError,
-    BankUnavailableError,
+    AuthenticationError,
     DataNotFoundError,
     RepositoryError,
+    ServiceUnavailableError,
 )
 
 
@@ -121,7 +121,7 @@ class AuthService:
         Raises:
             TypeError: If the provided DTO is of an invalid type.
             RuntimeError: If required attributes (CPF or Account state) are missing from the DTO.
-            BankAuthenticationError: If the account does not exist or does not belong to the holder.
+            AuthenticationError: If the account does not exist or does not belong to the holder.
         """
         verify.verify_instance(dto, CheckDataDTO)
 
@@ -136,14 +136,14 @@ class AuthService:
                 branch_code, account_num, holder_info=True
             )
         except DataNotFoundError:
-            raise BankAuthenticationError(
+            raise AuthenticationError(
                 "Authentication failed: Account not found in system register"
             )
 
         holder_info = account_info.unwrap_holder()
 
         if holder_info.cpf != dto.cpf:
-            raise BankAuthenticationError(
+            raise AuthenticationError(
                 "Authentication failed: Account not linked to this client"
             )
 
@@ -166,8 +166,8 @@ class AuthService:
         Raises:
             TypeError: If the provided token is not an AuthToken instance.
             ExpiredTokenError: If the primary token TTL has expired.
-            BankSecurityError: If token signature verification fails.
-            BankAuthenticationError: If the account no longer exists in persistence.
+            TokenSecurityError: If token signature verification fails.
+            AuthenticationError: If the account no longer exists in persistence.
         """
         verify.verify_instance(auth_token, AuthToken)
         self._token_service.validate_token_integrity(auth_token)
@@ -177,7 +177,7 @@ class AuthService:
                 auth_token.branch_code, auth_token.account_num, access_info=True
             )
         except DataNotFoundError as e:
-            raise BankAuthenticationError("Account no longer exists") from e
+            raise AuthenticationError("Account no longer exists") from e
 
         access_info = account_info.unwrap_access()
         return max(0, self.MAX_LOGIN_ATTEMPTS - access_info.failed_attempts)
@@ -201,10 +201,10 @@ class AuthService:
         Raises:
             TypeError: If the provided DTO is of an invalid type.
             ExpiredTokenError: If the provided AuthToken has expired.
-            BankSecurityError: If token integrity verification fails.
-            BankAccessError: If the account is already frozen or becomes frozen due to brute-force protection.
-            BankAuthenticationError: If password verification fails or account does not exist.
-            BankUnavailableError: If security state mutations cannot be transactionally persisted.
+            TokenSecurityError: If token integrity verification fails.
+            AccessDeniedError: If the account is already frozen or becomes frozen due to brute-force protection.
+            AuthenticationError: If password verification fails or account does not exist.
+            ServiceUnavailableError: If security state mutations cannot be transactionally persisted.
         """
         verify.verify_instance(dto, VaultAccessDTO)
 
@@ -222,13 +222,13 @@ class AuthService:
                 )
 
                 if account_info.is_frozen:
-                    raise BankAccessError(
+                    raise AccessDeniedError(
                         "This account is blocked and cannot be accessed"
                     )
 
                 access_info = account_info.unwrap_access()
 
-                if self._is_password_valid(password, access_info.password_hash):
+                if self._hasher.check_password(password, access_info.password_hash):
                     return self._login_success_route(
                         auth_token,
                         access_info.password_hash,
@@ -241,11 +241,11 @@ class AuthService:
 
             raise exception_to_raise
         except DataNotFoundError as e:
-            raise BankAuthenticationError(
+            raise AuthenticationError(
                 "Authentication failed: Account no longer exists"
             ) from e
         except RepositoryError as e:
-            raise BankUnavailableError(
+            raise ServiceUnavailableError(
                 "The intended operation could not be persisted due to an internal error"
             ) from e
 
@@ -271,25 +271,6 @@ class AuthService:
             raise AccountHolderNotFoundError(
                 "No account holder registered under this CPF"
             ) from e
-
-    def _is_password_valid(self, password: str, password_hash: str) -> bool:
-        """Verifies plain-text input against stored hash via HasherProtocol.
-
-        Swallows authentication domain exceptions to provide a clean boolean boundary
-        for service control flow.
-
-        Args:
-            password (str): Plain-text candidate password.
-            password_hash (str): Cryptographic target hash.
-
-        Returns:
-            bool: True if validation succeeds, False otherwise.
-        """
-        try:
-            self._hasher.check_password(password, password_hash)
-            return True
-        except BankAuthenticationError:
-            return False
 
     def _login_success_route(
         self, auth_token: AuthToken, password_hash: str, failed_attempts: int
@@ -317,7 +298,7 @@ class AuthService:
 
     def _login_failed_route(
         self, auth_token: AuthToken, failed_attempts: int, password: str
-    ) -> BankAccessError | BankAuthenticationError:
+    ) -> AccessDeniedError | AuthenticationError:
         """Applies security mitigations for failed vault login attempts within an active Unit of Work.
 
         Executes the 'Return Exception' pattern to ensure state updates (incrementing counters
@@ -329,7 +310,7 @@ class AuthService:
             password (str): The invalid password attempted.
 
         Returns:
-            BankAccessError | BankAuthenticationError: Exception object ready to be raised post-commit.
+            AccessDeniedError | AuthenticationError: Exception object ready to be raised post-commit.
         """
         self._repository.register_failed_login(
             auth_token.branch_code, auth_token.account_num
@@ -345,10 +326,10 @@ class AuthService:
             account.freeze()
             account_snap = account.to_snapshot()
             self._repository.update_account_status(account_snap)
-            return BankAccessError(
+            return AccessDeniedError(
                 "The account was frozen due to 3 consecutive failed login attempts"
             )
 
-        return BankAuthenticationError(
+        return AuthenticationError(
             "Login failed. Password doesn't match", argument=password
         )

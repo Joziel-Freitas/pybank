@@ -15,8 +15,8 @@ from settings import BANK_SECRET_KEY, LOBBY_TIME_SECONDS, VAULT_TIME_SECONDS
 from shared import clock
 from shared.credentials import AccessToken, AuthToken
 from shared.exceptions import (
-    BankSecurityError,
     ExpiredTokenError,
+    TokenSecurityError,
 )
 
 
@@ -148,7 +148,7 @@ class TokenService:
 
         Raises:
             TypeError: If token is not an instance of AuthToken or AccessToken.
-            BankSecurityError: If the signature comparison fails (tampering or payload mismatch).
+            TokenSecurityError: If the signature comparison fails (tampering or payload mismatch).
             ExpiredTokenError: If current time exceeds the token's expiration timestamp.
         """
         match token:
@@ -164,7 +164,7 @@ class TokenService:
         bank_signature = self._sign_token_payload(payload)
 
         if not hmac.compare_digest(bank_signature, token.signature):
-            raise BankSecurityError("Security breach: Tampered token.")
+            raise TokenSecurityError("Security breach: Tampered token.")
 
         if clock.get_now() > token.expires_at:
             raise ExpiredTokenError(
