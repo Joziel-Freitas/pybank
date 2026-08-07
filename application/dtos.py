@@ -156,3 +156,53 @@ class WithdrawalDTO(ApplicationDTO):
 
     access_token: AccessToken
     amount: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class StatementDTO(ApplicationDTO):
+    """Command Data Transfer Object encapsulating an account statement request.
+
+    Binds a cryptographically signed AccessToken proving user authorization in the Vault
+    context together with the cutoff date for filtering historical ledger events.
+
+    Attributes:
+        access_token (AccessToken): The active, verified cryptographic token of the session.
+        start_date (date): The cutoff date for filtering historical ledger events.
+    """
+
+    access_token: AccessToken
+    start_date: date
+
+
+@dataclass(frozen=True, slots=True)
+class UpdatePasswordDTO(ApplicationDTO):
+    """Command Data Transfer Object encapsulating a password change request.
+
+    Binds a cryptographically signed AccessToken proving user authorization in the Vault
+    context together with the proposed plain-text new password.
+
+    Attributes:
+        access_token (AccessToken): The active, verified cryptographic token of the session.
+        new_password (str): The new candidate plain-text password to be validated and set.
+    """
+
+    access_token: AccessToken
+    new_password: str
+
+
+@dataclass(frozen=True, slots=True)
+class UnfreezeAccountDTO(ApplicationDTO):
+    """Command Data Transfer Object encapsulating an account unfreeze/recovery request.
+
+    Transports secondary identity validation credentials (birth date) alongside the
+    primary AuthToken to restore a frozen account and register a new security password.
+
+    Attributes:
+        auth_token (AuthToken): The active primary session token identifying the account.
+        birth_date (date): The holder's birth date required for secondary identity verification.
+        new_password (str): The new candidate plain-text password to replace the compromised one.
+    """
+
+    auth_token: AuthToken
+    birth_date: date
+    new_password: str

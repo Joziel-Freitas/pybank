@@ -109,14 +109,6 @@ class DuplicatedAccountHolderError(ApplicationError):
     """Raised during onboarding if an account holder is already registered."""
 
 
-class HomeBranchRestrictionError(ApplicationError):
-    """Raised when an operation is restricted to the account's home branch."""
-
-
-class NotEmptyAccountError(ApplicationError):
-    """Raised when attempting to close an account with a non-zero balance."""
-
-
 class PasswordValidationError(ApplicationError):
     """Raised when password format or policy validation fails at service level."""
 
@@ -134,30 +126,30 @@ class DomainError(SystemBaseException):
     """Base exception for domain aggregate business rule violations."""
 
 
-# --- Person Domain Exceptions ---
+# --- AccountHolder Domain Exceptions ---
 
 
-class PersonError(DomainError):
+class AccountHolderError(DomainError):
     """Base exception for Person and AccountHolder aggregate errors."""
 
 
-class AccountHolderCardNotFoundError(PersonError):
+class AccountHolderCardNotFoundError(AccountHolderError):
     """Raised when accessing a card not found in the holder's collection."""
 
 
-class AccountHolderDuplicatedCardError(PersonError):
+class AccountHolderDuplicatedCardError(AccountHolderError):
     """Raised when adding a duplicate card to the holder."""
 
 
-class InvalidBirthDateError(PersonError):
+class InvalidBirthDateError(AccountHolderError):
     """Raised when a birth date fails domain validation rules."""
 
 
-class InvalidCpfError(PersonError):
+class InvalidCpfError(AccountHolderError):
     """Raised when a CPF fails mathematical or structural validation."""
 
 
-class InvalidNameError(PersonError):
+class InvalidNameError(AccountHolderError):
     """Raised when a name fails domain formatting rules."""
 
 
@@ -192,6 +184,10 @@ class InvalidBranchError(AccountError):
     """Raised for invalid branch code formatting."""
 
 
+class NotEmptyAccountError(AccountError):
+    """Raised when attempting to close an account with a non-zero balance."""
+
+
 # =====================================================================
 # Presentation / Controller Layer Exceptions
 # =====================================================================
@@ -224,7 +220,6 @@ APPLICATION_ERROR_MAP = {
     AuthenticationError: "auth_failed",
     DuplicatedAccountError: "acc_duplicated",
     DuplicatedAccountHolderError: "already_account_holder",
-    HomeBranchRestrictionError: "other_branch",
     NotEmptyAccountError: "non_zero_value",
     PasswordValidationError: "password",
     ServiceUnavailableError: "unavailable",

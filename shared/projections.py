@@ -8,7 +8,6 @@ security details, and statements without hydrating full Domain entities.
 from abc import ABC
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal
 from typing import Any
 
 from domain.value_objects import AccountFinancial
@@ -97,7 +96,7 @@ class AccountProjectionDTO(ProjectionDTO):
 
 
 @dataclass(frozen=True, slots=True)
-class AccountSummaryDTO(ProjectionDTO):
+class SummaryProjectionDTO(ProjectionDTO):
     """A comprehensive, multi-stage read-only snapshot of an account's state.
 
     Functions as a flexible, read-only projection for the Presentation layer.
@@ -131,7 +130,7 @@ class AccountSummaryDTO(ProjectionDTO):
 
 
 @dataclass(frozen=True, slots=True)
-class StatementDTO(ProjectionDTO):
+class StatementProjectionDTO(ProjectionDTO):
     """Data Transfer Object representing a mathematically consistent account statement.
 
     Acts as an immutable payload combining a read-only representation of the account's
@@ -142,23 +141,5 @@ class StatementDTO(ProjectionDTO):
         financial_events (tuple[dict[str, Any], ...]): Sequence of ledger events.
     """
 
-    account_info: AccountSummaryDTO
+    account_info: SummaryProjectionDTO
     financial_events: tuple[dict[str, Any], ...]
-
-
-@dataclass(frozen=True, slots=True)
-class WithdrawalSimulationDTO(ProjectionDTO):
-    """Projection Data Transfer Object containing the projected outcome of a withdrawal.
-
-    Delivers pre-execution financial diagnostics to the presentation layer,
-    allowing user confirmation before state mutation occurs.
-
-    Attributes:
-        authorized (bool): Indicates if the account has sufficient available funds.
-        use_credit (bool | None): True if overdraft/credit line will be utilized.
-        credit_required (Decimal | None): The exact monetary amount required from the credit line.
-    """
-
-    authorized: bool
-    use_credit: bool | None
-    credit_required: Decimal | None
