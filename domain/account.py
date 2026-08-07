@@ -26,6 +26,7 @@ from shared.exceptions import (
     InsufficientFundsError,
     InvalidAccountError,
     InvalidBranchError,
+    NotEmptyAccountError,
 )
 
 # =====================================================================
@@ -346,6 +347,23 @@ class Account(ABC):
             raise RuntimeError("This account is not frozen")
 
         self._is_frozen = False
+
+    def close(self) -> None:
+        """Enforces domain invariants for closing an account.
+
+        Raises:
+            FrozenAccountError: If the account is currently frozen/locked.
+            NotEmptyAccountError: If the financial balance is not zero.
+        """
+        if self._is_frozen:
+            raise FrozenAccountError(
+                "Impossible to close a frozen account. Unfreeze it first."
+            )
+
+        if self.balance != 0:
+            raise NotEmptyAccountError(
+                "The account cannot be closed because it has a non-zero balance"
+            )
 
     def deposit(self, amount: Decimal) -> tuple[LedgerEvent, ...]:
         """Performs a standard deposit operation.
