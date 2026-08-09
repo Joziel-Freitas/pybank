@@ -101,12 +101,20 @@ class AccountNotFoundError(ApplicationError):
     """Raised when an account record cannot be resolved by the application service."""
 
 
+class DeniedOperationError(ApplicationError):
+    """Raised when a business operation requested by the presentation layer is rejected by domain rules."""
+
+
 class DuplicatedAccountError(ApplicationError):
     """Raised during onboarding if an account already exists."""
 
 
 class DuplicatedAccountHolderError(ApplicationError):
     """Raised during onboarding if an account holder is already registered."""
+
+
+class InvalidDataError(ApplicationError):
+    """Raised when an application payload (DTO) or field input fails contract/domain validation."""
 
 
 class PasswordValidationError(ApplicationError):

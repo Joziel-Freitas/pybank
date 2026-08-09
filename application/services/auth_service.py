@@ -31,9 +31,15 @@ from shared.exceptions import (
 class AuthService:
     """Application Service responsible for managing user authentication workflows.
 
-    Orchestrates identity verification for both low-security Lobby access and high-security
-    Vault authorization. Manages session token generation, failed attempt tracking,
-    and automatic account freeze enforcement within ACID-compliant database boundaries.
+    Acts as the entry point in the Application layer for managing identity verification
+    for both low-security Lobby access and high-security Vault authorization. It manages
+    session token generation, failed attempt tracking, and automatic account freeze
+    enforcement within ACID-compliant database boundaries.
+
+    Attributes:
+        _repository (RepositoryProtocol): The persistence interface implementation.
+        _hasher (HasherProtocol): The cryptographic hashing interface implementation.
+        _token_service (TokenServiceProtocol): The stateless session token management interface.
     """
 
     # --------------------------------------------------------------------------
@@ -54,6 +60,13 @@ class AuthService:
         hasher: HasherProtocol,
         token_service: TokenServiceProtocol,
     ) -> None:
+        """Initializes the AuthService with required infrastructure protocols.
+
+        Args:
+            repository (RepositoryProtocol): Database interaction interface.
+            hasher (HasherProtocol): Cryptographic password hashing interface.
+            token_service (TokenServiceProtocol): Session token validation interface.
+        """
         self._repository = repository
         self._hasher = hasher
         self._token_service = token_service

@@ -7,15 +7,20 @@ and conducting lightweight existence checks prior to persistence.
 
 from application.dtos import CheckDataDTO, NewAccountDTO
 from application.protocols import HasherProtocol, RepositoryProtocol
+from application.types import NewAccountType
 from domain.account import Account, CheckingAccount, SavingsAccount
 from domain.account_holder import AccountHolder
+from domain.snapshots import AccountHolderSnapshot, AccountSnapshot
 from shared import verify
 from shared.exceptions import (
+    AccountError,
+    AccountHolderError,
     AccountHolderNotFoundError,
     DataNotFoundError,
     DuplicatedAccountError,
     DuplicatedAccountHolderError,
     DuplicatedDataError,
+    InvalidDataError,
     RepositoryError,
     ServiceUnavailableError,
 )
@@ -108,7 +113,7 @@ class OnboardingService:
         Orchestrates the onboarding process by converting DTO data into domain entities,
         generating persistence snapshots, hashing the raw password, and delegating the
         atomic transactional saving to the repository protocol. Maps infrastructure
-        persistence errors back to clear application-level exceptions.
+        persistence and domain validation errors back to clear application-level exceptions.
 
         Args:
             dto (NewAccountDTO): The immutable unified payload containing account setup
@@ -116,6 +121,7 @@ class OnboardingService:
 
         Raises:
             TypeError: If dto is not an instance of NewAccountDTO.
+            InvalidDataError: If provided onboarding parameters fail domain entity validation.
             DuplicatedAccountError: If the branch and account number are already registered.
             DuplicatedAccountHolderError: If a new holder CPF is already registered.
             AccountHolderNotFoundError: If an existing holder CPF is not found in the system.
@@ -123,14 +129,12 @@ class OnboardingService:
         """
         verify.verify_instance(dto, NewAccountDTO)
 
-        new_account = self._account_factory(dto)
-        account_snap = new_account.to_snapshot()
-
-        if dto.holder_name and dto.holder_birth_date:
-            new_holder = self._account_holder_factory(dto)
-            holder_snap_or_cpf = new_holder.to_snapshot()
-        else:
-            holder_snap_or_cpf = dto.holder_cpf
+        try:
+            account_snap, holder_snap_or_cpf = self._get_register_objects(dto)
+        except (AccountError, AccountHolderError) as e:
+            raise InvalidDataError(
+                f"Provided onboarding parameters are invalid: {e}"
+            ) from e
 
         pwd_hash = self._hasher.generate_password_hash(pwd_str=dto.password)
 
@@ -161,6 +165,43 @@ class OnboardingService:
     # --------------------------------------------------------------------------
     # Protected methods (Internal Helpers)
     # --------------------------------------------------------------------------
+
+    def _get_register_objects(
+        self, dto: NewAccountDTO
+    ) -> tuple[AccountSnapshot, AccountHolderSnapshot | str]:
+        """Assembles persistence snapshots or raw identifiers for onboarding payload processing.
+
+        Coordinates internal entity factories to instantiate the target `Account` and optional
+        `AccountHolder`. Converts live domain entities into immutable persistence snapshots.
+        If attaching an account to an existing holder, extracts and forwards the raw CPF string.
+
+        Args:
+            dto (NewAccountDTO): The onboarding payload containing account setup and holder details.
+
+        Returns:
+            tuple[AccountSnapshot, AccountHolderSnapshot | str]: A 2-tuple containing:
+                - AccountSnapshot: Immutable snapshot of the newly created Account.
+                - AccountHolderSnapshot | str: Full holder snapshot for new registrations, or the raw
+                  11-digit CPF string if linking to an existing holder.
+
+        Raises:
+            AccountError: If account attributes fail domain validation rules.
+            AccountHolderError: If holder attributes fail domain validation rules.
+            KeyError: If account_dto.account_type is not a supported NewAccountType enum.
+            RuntimeError: If DTO state is invalid for new holder creation.
+        """
+
+        new_account = self._account_factory(dto)
+        account_snap = new_account.to_snapshot()
+
+        if dto.holder_name and dto.holder_birth_date:
+            new_holder = self._account_holder_factory(dto)
+            holder_snap_or_cpf = new_holder.to_snapshot()
+        else:
+            holder_snap_or_cpf = dto.holder_cpf
+
+        return (account_snap, holder_snap_or_cpf)
+
     def _check_account_holder_exists(self, cpf: str) -> bool:
         """Verifies if an account holder is registered in the banking system.
 
@@ -206,9 +247,14 @@ class OnboardingService:
             Account: A fully initialized domain CheckingAccount or SavingsAccount instance.
 
         Raises:
-            KeyError: If account_dto.account_type is not a supported type integer (1 or 2).
+            KeyError: If account_dto.account_type is not a supported NewAccountType enum value.
+            InvalidBranchError: If branch_code fails domain validation.
+            InvalidAccountError: If account_num fails domain validation.
         """
-        type_mapper = {1: CheckingAccount, 2: SavingsAccount}
+        type_mapper = {
+            NewAccountType.CHECKING_ACCOUNT: CheckingAccount,
+            NewAccountType.SAVINGS_ACCOUNT: SavingsAccount,
+        }
 
         acc_type = type_mapper[account_dto.account_type]
         account_obj = acc_type(
@@ -229,6 +275,9 @@ class OnboardingService:
 
         Raises:
             RuntimeError: If holder_name or holder_birth_date are missing in the DTO.
+            InvalidNameError: If name breaks domain rules.
+            InvalidCpfError: If CPF fails validation.
+            InvalidBirthDateError: If birth date breaks domain rules.
         """
         if not new_acc_dto.holder_name or not new_acc_dto.holder_birth_date:
             raise RuntimeError("Invalid DTO state")

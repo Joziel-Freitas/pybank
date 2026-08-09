@@ -23,7 +23,9 @@ from shared.exceptions import (
     AccountNotFoundError,
     AuthenticationError,
     DataNotFoundError,
+    DeniedOperationError,
     FrozenAccountError,
+    InsufficientFundsError,
     RepositoryError,
     ServiceUnavailableError,
 )
@@ -249,7 +251,7 @@ class BankingOperationsService:
             TokenSecurityError: If the cryptographic signature of the token is invalid or tampered with.
             AuthenticationError: If the account was deleted during the active session.
             AccessDeniedError: If the target account is frozen during the operation.
-            InsufficientFundsError: If the requested amount exceeds total available funds.
+            DeniedOperationError: If the requested withdrawal is rejected due to insufficient available funds.
             ValueError: If the withdrawal amount violates business rules (e.g., minimum ATM limit).
             ServiceUnavailableError: If the transaction could not be persisted due to an internal error.
         """
@@ -283,10 +285,14 @@ class BankingOperationsService:
                 yield simulation
                 try:
                     events = account_obj.withdrawal(amount)
-                except FrozenAccountError:
+                except FrozenAccountError as e:
                     raise AccessDeniedError(
                         "This account is frozen and cannot be accessed"
-                    )
+                    ) from e
+                except InsufficientFundsError as e:
+                    raise DeniedOperationError(
+                        "Withdrawal denied: Insufficient available funds"
+                    ) from e
                 account_snap = account_obj.to_snapshot()
                 self._repository.save_transaction(account_snap, events)
         except DataNotFoundError as e:

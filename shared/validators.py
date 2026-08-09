@@ -1,34 +1,41 @@
+"""Shared Validators Module.
+
+Provides functional decorator adapters to convert raise-based validation logic
+from Domain and Application modules into boolean-based responses for Presentation IO loops.
+"""
+
 from collections.abc import Callable
 from typing import Any
 
 from shared import verify
-from shared.exceptions import DomainError
+from shared.exceptions import ApplicationError, DomainError
 
 type ValidatorCallback = Callable[[Any], bool]
 
 
 def boolean_validator_dec(validation_fn: Callable[[Any], Any]) -> ValidatorCallback:
-    """
-    Wraps a validation method to return bool instead of raising exceptions.
+    """Wraps a raise-based validation function to return a boolean instead of raising exceptions.
 
-    This decorator adapts 'Raise-Based' validation logic (used in Domain Entities)
-    to 'Boolean-Based' validation logic (used in I/O Loops).
+    Adapts 'Raise-Based' validation logic (from Domain Entity static validators or
+    Application field validators) to 'Boolean-Based' validation required by Presentation
+    CLI IO loops.
 
-    It catches both Domain Errors (Business Rules) and Standard Errors (Type/Value)
-    raised by the infra.verify module.
+    Catches expected DomainErrors (field structure rules) and ApplicationErrors
+    (format/policy rules), swallowing them to return False. Standard Python errors
+    (TypeError, ValueError) are intentionally allowed to propagate as developer faults.
 
     Args:
-        validation_fn (Callable): The function to be wrapped.
+        validation_fn (Callable): The raise-based validation function to wrap.
 
     Returns:
-        ValidatorCallback: A function that returns True if valid, False if invalid.
+        ValidatorCallback: A adapted callback returning True if valid, False if invalid.
     """
 
     def wrapper(*args, **kwargs) -> bool:
         try:
             result: bool | None = validation_fn(*args, **kwargs)
             return result is not False
-        except (DomainError, TypeError, ValueError):
+        except (DomainError, ApplicationError):
             return False
 
     return wrapper

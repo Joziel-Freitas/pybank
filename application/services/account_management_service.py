@@ -5,7 +5,6 @@ application-layer orchestrator for administrative operations, including security
 credential updates, frozen account recovery, and permanent account closure.
 """
 
-from application import validators
 from application.dtos import UnfreezeAccountDTO, UpdatePasswordDTO
 from application.protocols import (
     HasherProtocol,
@@ -20,7 +19,9 @@ from shared.exceptions import (
     AccountAlreadyActiveError,
     AuthenticationError,
     DataNotFoundError,
+    DeniedOperationError,
     FrozenAccountError,
+    NotEmptyAccountError,
     RepositoryError,
     ServiceUnavailableError,
 )
@@ -36,7 +37,7 @@ class AccountManagementService:
     Acts as the entry point in the Application layer for updating security credentials,
     recovering frozen accounts via secondary identity verification, and performing
     permanent account closures. Coordinates Domain entities (`Account`), delegates password
-    validation, enforces session security via `TokenServiceProtocol`, and ensures
+    hashing, enforces session security via `TokenServiceProtocol`, and ensures
     transactional consistency using `RepositoryProtocol.unit_of_work()`.
 
     Attributes:
@@ -112,7 +113,6 @@ class AccountManagementService:
 
         Raises:
             TypeError: If dto is not an instance of UpdatePasswordDTO.
-            PasswordValidationError: If the new password format fails validation.
             ExpiredTokenError: If the token's TTL has passed.
             TokenSecurityError: If the token's cryptographic signature is invalid or tampered with.
             AuthenticationError: If the account no longer exists during the active session.
@@ -120,7 +120,6 @@ class AccountManagementService:
             ServiceUnavailableError: If the update could not be persisted due to a repository error.
         """
         verify.verify_instance(dto, UpdatePasswordDTO)
-        validators.validate_password(dto.new_password)
 
         access_token = dto.access_token
 
@@ -173,7 +172,6 @@ class AccountManagementService:
 
         Raises:
             TypeError: If dto is not an instance of UnfreezeAccountDTO.
-            PasswordValidationError: If the new password format fails validation.
             ExpiredTokenError: If the token's TTL has passed.
             TokenSecurityError: If the token's cryptographic signature is invalid or tampered with.
             AuthenticationError: If the birth date is incorrect, or if the account/holder no longer exists.
@@ -181,7 +179,6 @@ class AccountManagementService:
             ServiceUnavailableError: If the unfreeze operation could not be persisted due to a repository error.
         """
         verify.verify_instance(dto, UnfreezeAccountDTO)
-        validators.validate_password(dto.new_password)
         self._token_service.validate_token_integrity(dto.auth_token)
 
         auth_token = dto.auth_token
@@ -252,7 +249,7 @@ class AccountManagementService:
             TokenSecurityError: If the token signature is invalid or tampered with.
             AuthenticationError: If the account no longer exists (TOCTOU mitigation).
             AccessDeniedError: If the account is frozen (translating FrozenAccountError).
-            NotEmptyAccountError: If the account has a non-zero financial balance.
+            DeniedOperationError: If the account has a non-zero financial balance.
             ServiceUnavailableError: If account deletion fails due to a repository error.
         """
         verify.verify_instance(access_token, AccessToken)
@@ -284,12 +281,15 @@ class AccountManagementService:
                 )
                 account_obj = Account.from_snapshot(account_db_snap)
 
-                # Tell, Don't Ask: Domain enforces invariants
                 try:
                     account_obj.close()
                 except FrozenAccountError as e:
                     raise AccessDeniedError(
                         "This account is frozen and cannot be closed"
+                    ) from e
+                except NotEmptyAccountError as e:
+                    raise DeniedOperationError(
+                        "Close account denied: Account has a non zero balance"
                     ) from e
 
                 self._repository.delete_account(

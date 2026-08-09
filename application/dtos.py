@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+from application.types import NewAccountType
 from shared.credentials import AccessToken, AuthToken
 
 
@@ -65,7 +66,8 @@ class NewAccountDTO(ApplicationDTO):
     existing account holder.
 
     Attributes:
-        account_type (int): Integer flag mapping to the account type (1 for Checking, 2 for Savings).
+        account_type (NewAccountType): Enum classifier mapping to the concrete account type
+            (CHECKING_ACCOUNT or SAVINGS_ACCOUNT).
         branch_code (str): The validated 4-digit branch code.
         account_num (str): The validated 8-digit account number.
         password (str): The plain text password set by the user for vault authentication.
@@ -76,7 +78,7 @@ class NewAccountDTO(ApplicationDTO):
             None if attaching to an existing holder.
     """
 
-    account_type: int
+    account_type: NewAccountType
     branch_code: str
     account_num: str
     password: str
