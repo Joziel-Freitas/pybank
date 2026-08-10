@@ -1,3 +1,10 @@
+"""Shared System Clock and Time Provider Module.
+
+Provides canonical, timezone-aware date and time evaluation functions used across
+all architectural layers. Guarantees deterministic temporal calculations for accruals,
+event timestamps, and token expiration TTLs regardless of the host OS configuration.
+"""
+
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 

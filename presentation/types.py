@@ -1,10 +1,9 @@
-"""
-Shared Types and Enumerations Module.
+"""Presentation Layer Types and Navigation Enumerations Module.
 
-This module defines common enumerations used across the banking system's
+This module defines common enumerations used across the PyBank Terminal CLI
 presentation and controller layers. It serves as a single source of truth
-for UI navigation states and operation routing, promoting type safety and
-eliminating the use of magic numbers in the user interface menus.
+for UI navigation states, user decision prompts, and operation routing,
+promoting type safety and eliminating magic numbers in user interface menus.
 """
 
 from enum import Enum

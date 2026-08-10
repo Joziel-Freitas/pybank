@@ -30,15 +30,24 @@ from decimal import Decimal
 from functools import partial
 from typing import Any, ClassVar, TypeVar
 
+from domain.bank import Bank
+from shared.dtos import AccountSummaryDTO, DepositTargetDTO, NewAccountDTO
+
 from domain.account import Account
 from domain.account_holder import AccountHolder
-from domain.bank import Bank
-from infra import config, io_utils, ui_messages, views
-from infra.io_utils import CallbackReturn, InputType
+from presentation.cli import config, io_utils, ui_messages, views
+from presentation.cli.io_utils import CallbackReturn, InputType
+from presentation.types import (
+    AdminCodeType,
+    MainMenuType,
+    OperationMenuType,
+    RestrictedMenuType,
+    TransactionMenuType,
+    UserConfirmType,
+)
 from settings import ADMIN_EXIT_CODE
 from shared import clock, exceptions, validators, verify
 from shared.credentials import AccessToken, AccountCard, AuthToken
-from shared.dtos import AccountSummaryDTO, DepositTargetDTO, NewAccountDTO
 from shared.exceptions import (
     AccountAlreadyActiveError,
     AccountHolderNotFoundError,
@@ -61,14 +70,6 @@ from shared.exceptions import (
     NotEmptyAccountError,
     SecurityError,
     UserAbortError,
-)
-from shared.types import (
-    AdminCodeType,
-    MainMenuType,
-    OperationMenuType,
-    RestrictedMenuType,
-    TransactionMenuType,
-    UserConfirmType,
 )
 from shared.validators import ValidatorCallback
 

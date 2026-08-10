@@ -12,7 +12,8 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import NotRequired, TypedDict
 
-from infra import terminal_input, views
+from infra import terminal_input
+from presentation.cli import views
 from settings import INACTIVITY_TIMEOUT, TOTAL_TIMEOUT
 from shared import verify
 from shared.exceptions import InactiveUserError, UserAbortError

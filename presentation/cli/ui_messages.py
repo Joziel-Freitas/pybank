@@ -1,3 +1,11 @@
+"""Presentation Layer System and User Interface Messages Registry.
+
+Centralizes all human-readable UI text templates, feedback notices, and user-facing
+error strings for the PyBank Terminal CLI. Serves as a single source of truth for UI
+i18n/localization, mapping domain and application status context keys to localized
+Portuguese messages.
+"""
+
 ONBOARDING_MESSAGES: dict[str, dict[str, str]] = {
     "info": {
         "already_account_holder": "Bem-vindo de volta ao PyBank!",

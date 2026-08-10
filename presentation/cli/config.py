@@ -2,7 +2,7 @@
 
 from decimal import Decimal
 
-from infra import io_utils
+from presentation.cli import io_utils
 
 menu_config: io_utils.ConfigMap = {
     "main_menu": {

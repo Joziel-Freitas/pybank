@@ -1,3 +1,11 @@
+"""Low-Level Terminal Hardware and OS Input Driver.
+
+Provides cross-platform (Windows / POSIX) non-blocking keyboard input processing
+directly at the system kernel level. Handles unbuffered character capture, multi-byte
+ANSI escape sequence purging, terminal mode switching (cbreak mode), real-time echo,
+and dual-timeout (inactivity and total duration) tracking for ATM terminal interfaces.
+"""
+
 import os
 import sys
 import time

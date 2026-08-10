@@ -1,3 +1,11 @@
+"""Application Layer Infrastructure Protocols Module.
+
+This module defines abstract structural protocols (interfaces using PEP 544)
+required by Application Services. It establishes strict inversion-of-control (IoC)
+boundaries, decoupling use cases from concrete infrastructure implementations such as
+relational databases, cryptographic security handlers, and token issuers.
+"""
+
 from contextlib import AbstractContextManager
 from datetime import date
 from typing import Any, Protocol
