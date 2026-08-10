@@ -57,12 +57,6 @@ class Account(ABC):
     # --------------------------------------------------------------------------
     MIN_ATM_TRANSACTION: ClassVar[Decimal] = Decimal("2.00")
 
-    _branch_code: str
-    _account_num: str
-    _is_frozen: bool
-    _balance: Decimal
-    _last_balance_update: date
-
     # --------------------------------------------------------------------------
     # Constructor
     # --------------------------------------------------------------------------

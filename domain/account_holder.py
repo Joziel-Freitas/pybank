@@ -74,11 +74,6 @@ class AccountHolder:
     MIN_AGE: ClassVar[int] = 18
     MAX_AGE: ClassVar[int] = 120
 
-    _name: str
-    _cpf: str
-    _birth_date: date
-    _account_cards: set[AccountCard]
-
     # --------------------------------------------------------------------------
     # Constructor
     # --------------------------------------------------------------------------
@@ -99,7 +94,7 @@ class AccountHolder:
         self.name = name
         self._cpf = AccountHolder.validate_cpf(cpf)
         self._birth_date = AccountHolder.validate_birth_date(birth_date)
-        self._account_cards = set()
+        self._account_cards: set[AccountCard] = set()
 
     # --------------------------------------------------------------------------
     # Dunder methods
