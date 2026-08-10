@@ -14,6 +14,7 @@ from application.protocols import (
     RepositoryProtocol,
     TokenServiceProtocol,
 )
+from application.services.base_service import BaseApplicationService
 from domain.account import Account
 from domain.account_holder import AccountHolder
 from shared import verify
@@ -27,8 +28,12 @@ from shared.exceptions import (
     ServiceUnavailableError,
 )
 
+# =====================================================================
+# AuthService
+# =====================================================================
 
-class AuthService:
+
+class AuthService(BaseApplicationService):
     """Application Service responsible for managing user authentication workflows.
 
     Acts as the entry point in the Application layer for managing identity verification
@@ -37,8 +42,8 @@ class AuthService:
     enforcement within ACID-compliant database boundaries.
 
     Attributes:
-        _repository (RepositoryProtocol): The persistence interface implementation.
-        _hasher (HasherProtocol): The cryptographic hashing interface implementation.
+        _hasher (HasherProtocol): The cryptographic hashing interface inherited from BaseApplicationService.
+        _repository (RepositoryProtocol): The persistence interface inherited from BaseApplicationService.
         _token_service (TokenServiceProtocol): The stateless session token management interface.
     """
 
@@ -47,28 +52,24 @@ class AuthService:
     # --------------------------------------------------------------------------
     MAX_LOGIN_ATTEMPTS: ClassVar[int] = 3
 
-    _repository: RepositoryProtocol
-    _hasher: HasherProtocol
-    _token_service: TokenServiceProtocol
-
     # --------------------------------------------------------------------------
     # Constructor
     # --------------------------------------------------------------------------
     def __init__(
         self,
-        repository: RepositoryProtocol,
         hasher: HasherProtocol,
+        repository: RepositoryProtocol,
         token_service: TokenServiceProtocol,
     ) -> None:
         """Initializes the AuthService with required infrastructure protocols.
 
         Args:
-            repository (RepositoryProtocol): Database interaction interface.
             hasher (HasherProtocol): Cryptographic password hashing interface.
+            repository (RepositoryProtocol): Database interaction interface.
             token_service (TokenServiceProtocol): Session token validation interface.
         """
-        self._repository = repository
-        self._hasher = hasher
+        super().__init__(hasher=hasher, repository=repository)
+
         self._token_service = token_service
 
     # --------------------------------------------------------------------------
@@ -82,13 +83,10 @@ class AuthService:
         Returns:
             str: Developer-targeted string representation of the service.
         """
-        class_name = type(self).__name__
-        return (
-            f"{class_name}("
-            f"repository={self._repository!r}, "
-            f"hasher={self._hasher!r}, "
-            f"token_service={self._token_service!r})"
-        )
+        base_repr = super().__repr__()
+        class_repr = base_repr[:-1] + f", token_service={self._token_service!r})"
+
+        return class_repr
 
     # --------------------------------------------------------------------------
     # Public API

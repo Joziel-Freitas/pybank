@@ -6,7 +6,7 @@ and conducting lightweight existence checks prior to persistence.
 """
 
 from application.dtos import CheckDataDTO, NewAccountDTO
-from application.protocols import HasherProtocol, RepositoryProtocol
+from application.services.base_service import BaseApplicationService
 from application.types import NewAccountType
 from domain.account import Account, CheckingAccount, SavingsAccount
 from domain.account_holder import AccountHolder
@@ -30,7 +30,7 @@ from shared.exceptions import (
 # =====================================================================
 
 
-class OnboardingService:
+class OnboardingService(BaseApplicationService):
     """Application Service responsible for orchestrating account onboarding workflows.
 
     Acts as the entry point in the Application layer for creating new accounts and account
@@ -38,44 +38,9 @@ class OnboardingService:
     hashing, and interacts with the repository protocol to atomically persist domain snapshots.
 
     Attributes:
-        _repository (RepositoryProtocol): The persistence interface implementation.
-        _hasher (HasherProtocol): The cryptographic hashing interface implementation.
+        _hasher (HasherProtocol): The cryptographic hashing interface inherited from BaseApplicationService.
+        _repository (RepositoryProtocol): The persistence interface inherited from BaseApplicationService.
     """
-
-    # --------------------------------------------------------------------------
-    # Class attributes
-    # --------------------------------------------------------------------------
-    _repository: RepositoryProtocol
-    _hasher: HasherProtocol
-
-    # --------------------------------------------------------------------------
-    # Constructor
-    # --------------------------------------------------------------------------
-    def __init__(self, repository: RepositoryProtocol, hasher: HasherProtocol) -> None:
-        """Initializes the OnboardingService with required infrastructure protocols.
-
-        Args:
-            repository (RepositoryProtocol): Database interaction interface.
-            hasher (HasherProtocol): Cryptographic password hashing interface.
-        """
-        self._repository = repository
-        self._hasher = hasher
-
-    # --------------------------------------------------------------------------
-    # Dunder methods
-    # --------------------------------------------------------------------------
-    def __repr__(self) -> str:
-        """Returns an unambiguous string representation of the OnboardingService instance.
-
-        Useful for debugging and logging, capturing the internal repository and hasher
-        protocol instances.
-
-        Returns:
-            str: Developer-targeted string representation of the service.
-        """
-        class_name = type(self).__name__
-
-        return f"{class_name}(repository={self._repository!r}, hasher={self._hasher!r})"
 
     # --------------------------------------------------------------------------
     # Public API

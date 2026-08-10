@@ -11,6 +11,7 @@ from application.protocols import (
     RepositoryProtocol,
     TokenServiceProtocol,
 )
+from application.services.base_service import BaseApplicationService
 from domain.account import Account
 from shared import verify
 from shared.credentials import AccessToken
@@ -31,7 +32,7 @@ from shared.exceptions import (
 # =====================================================================
 
 
-class AccountManagementService:
+class AccountManagementService(BaseApplicationService):
     """Application Service responsible for orchestrating account management workflows.
 
     Acts as the entry point in the Application layer for updating security credentials,
@@ -41,57 +42,47 @@ class AccountManagementService:
     transactional consistency using `RepositoryProtocol.unit_of_work()`.
 
     Attributes:
-        _repository (RepositoryProtocol): The persistence interface implementation.
-        _hasher (HasherProtocol): The cryptographic hashing interface implementation.
-        _token_service (TokenServiceProtocol): The stateless token management interface.
+        _hasher (HasherProtocol): The cryptographic hashing interface inherited from BaseApplicationService.
+        _repository (RepositoryProtocol): The persistence interface inherited from BaseApplicationService.
+        _token_service (TokenServiceProtocol): The stateless session token management interface.
     """
-
-    # --------------------------------------------------------------------------
-    # Class attributes
-    # --------------------------------------------------------------------------
-
-    _repository: RepositoryProtocol
-    _hasher: HasherProtocol
-    _token_service: TokenServiceProtocol
 
     # --------------------------------------------------------------------------
     # Constructor
     # --------------------------------------------------------------------------
     def __init__(
         self,
-        repository: RepositoryProtocol,
         hasher: HasherProtocol,
+        repository: RepositoryProtocol,
         token_service: TokenServiceProtocol,
     ) -> None:
         """Initializes the AccountManagementService with required infrastructure protocols.
 
         Args:
-            repository (RepositoryProtocol): Database interaction interface.
             hasher (HasherProtocol): Cryptographic password hashing interface.
+            repository (RepositoryProtocol): Database interaction interface.
             token_service (TokenServiceProtocol): Session token validation interface.
         """
-        self._repository = repository
-        self._hasher = hasher
+
+        super().__init__(hasher=hasher, repository=repository)
+
         self._token_service = token_service
 
     # --------------------------------------------------------------------------
     # Dunder methods
     # --------------------------------------------------------------------------
     def __repr__(self) -> str:
-        """Returns an unambiguous string representation of AccountManagementService.
+        """Returns an unambiguous string representation of the AccountManagementService instance.
 
         Useful for debugging and system logging, capturing internal protocol dependencies.
 
         Returns:
             str: Developer-targeted string representation of the service.
         """
-        class_name = type(self).__name__
-        return (
-            f"{class_name}("
-            f"repository={self._repository!r}, "
-            f"hasher={self._hasher!r}, "
-            f"token_service={self._token_service!r})"
-        )
+        base_repr = super().__repr__()
+        class_repr = base_repr[:-1] + f", token_service={self._token_service!r})"
+
+        return class_repr
 
     # --------------------------------------------------------------------------
     # Public API
