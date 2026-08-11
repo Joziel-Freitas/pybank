@@ -61,18 +61,14 @@ def _calculate_verifier_digit(cpf_sequence: str, factor: int) -> int:
     return 0 if remainder < 2 else 11 - remainder
 
 
-def validate_cpf(cpf: str) -> str:
-    """
-    Performs the full mathematical verification of the CPF (11 digits, sequence, DVs).
+def validate_cpf(cpf: str) -> None:
+    """Performs the full mathematical verification of the CPF (11 digits, sequence, DVs).
 
     This is a pure infrastructure validator. It focuses strictly on data integrity
     and checksum rules, leaving domain-specific error wrapping to the caller.
 
     Args:
         cpf (str): The 11-digit CPF string.
-
-    Returns:
-        str: The validated CPF string.
 
     Raises:
         TypeError: If the input is not a string.
@@ -101,4 +97,3 @@ def validate_cpf(cpf: str) -> str:
         raise ValueError(
             f"CPF is mathematically invalid. Calculated DVs: {calculated_dv}, Actual DVs: {actual_dv}."
         )
-    return cpf
