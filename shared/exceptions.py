@@ -2,12 +2,10 @@
 
 Establishes a clear, hierarchical structure for all custom errors across layers:
 
-1. Infrastructure/Repository Errors: Persistence and lower-level I/O failures.
-2. Security Errors: Cryptographic and token-integrity breaches.
-3. Domain Errors: Business rule invariant violations within Aggregate Roots
-   (e.g., Account, Person).
-4. Application Errors: Workflow orchestration, authentication, and service-level failures.
-5. Controller Errors: UI navigation and presentation flow issues.
+1. Domain Errors: Business rule invariant violations within Aggregate Roots and Value Objects.
+2. Application Errors: Workflow orchestration, authentication, and security boundary failures.
+3. Infrastructure Errors: Persistence, database, and technical token mechanics failures.
+4. Presentation Errors: UI navigation, controller workflows, and terminal I/O interrupts.
 """
 
 
@@ -31,141 +29,19 @@ class SystemBaseException(Exception):
 
 
 # =====================================================================
-# Infrastructure Layer Exceptions
-# =====================================================================
-
-
-class RepositoryError(SystemBaseException):
-    """Base exception for all persistence layer errors."""
-
-
-class DataNotFoundError(RepositoryError):
-    """Raised when a requested record is not found in persistence."""
-
-
-class DuplicatedDataError(RepositoryError):
-    """Raised when an insertion violates a unique constraint."""
-
-
-class SystemIOError(SystemBaseException):
-    """Base exception for infrastructure I/O errors."""
-
-
-class UserAbortError(SystemIOError):
-    """Raised when the user manually cancels an operation."""
-
-
-class InactiveUserError(SystemIOError):
-    """Raised when user inactivity reaches the system timeout limit."""
-
-
-# =====================================================================
-# Security Layer Exceptions
-# =====================================================================
-
-
-class SecurityError(SystemBaseException):
-    """Base exception for critical security and session breaches."""
-
-
-class TokenSecurityError(SecurityError):
-    """Raised when token tampering or invalid cryptographic signatures are detected."""
-
-
-class ExpiredTokenError(SecurityError):
-    """Raised when a token's Time-To-Live (TTL) has passed."""
-
-
-# =====================================================================
-# Application Layer Exceptions
-# =====================================================================
-
-
-class ApplicationError(SystemBaseException):
-    """Base exception for orchestration and service workflow failures."""
-
-
-class AccessDeniedError(ApplicationError):
-    """Raised when vault or feature access is denied (e.g., frozen account)."""
-
-
-class AuthenticationError(ApplicationError):
-    """Raised when primary or vault authentication fails."""
-
-
-class AccountHolderNotFoundError(ApplicationError):
-    """Raised when an account holder record cannot be resolved by the application service."""
-
-
-class AccountNotFoundError(ApplicationError):
-    """Raised when an account record cannot be resolved by the application service."""
-
-
-class DeniedOperationError(ApplicationError):
-    """Raised when a business operation requested by the presentation layer is rejected by domain rules."""
-
-
-class DuplicatedAccountError(ApplicationError):
-    """Raised during onboarding if an account already exists."""
-
-
-class DuplicatedAccountHolderError(ApplicationError):
-    """Raised during onboarding if an account holder is already registered."""
-
-
-class InvalidDataError(ApplicationError):
-    """Raised when an application payload (DTO) or field input fails contract/domain validation."""
-
-
-class PasswordValidationError(ApplicationError):
-    """Raised when password format or policy validation fails at service level."""
-
-
-class ServiceUnavailableError(ApplicationError):
-    """Raised when an application workflow cannot commit state due to internal failure."""
-
-
-# =====================================================================
-# Domain Layer Exceptions (Entities & Aggregates)
+# Domain Layer Exceptions (Value Objects & Invariants)
 # =====================================================================
 
 
 class DomainError(SystemBaseException):
-    """Base exception for domain aggregate business rule violations."""
+    """Base exception for domain aggregate and Value Object business rule violations."""
 
 
-# --- AccountHolder Domain Exceptions ---
-
-
-class AccountHolderError(DomainError):
-    """Base exception for Person and AccountHolder aggregate errors."""
-
-
-class AccountHolderCardNotFoundError(AccountHolderError):
-    """Raised when accessing a card not found in the holder's collection."""
-
-
-class AccountHolderDuplicatedCardError(AccountHolderError):
-    """Raised when adding a duplicate card to the holder."""
-
-
-class InvalidBirthDateError(AccountHolderError):
-    """Raised when a birth date fails domain validation rules."""
-
-
-class InvalidCpfError(AccountHolderError):
-    """Raised when a CPF fails mathematical or structural validation."""
-
-
-class InvalidNameError(AccountHolderError):
-    """Raised when a name fails domain formatting rules."""
-
-
-# --- Account Domain Exceptions ---
+# --- Account Aggregate Exceptions ---
 
 
 class AccountError(DomainError):
-    """Base exception for Account aggregate errors."""
+    """Base exception for Account aggregate operational state errors."""
 
 
 class AccountAlreadyActiveError(AccountError):
@@ -180,20 +56,160 @@ class InsufficientFundsError(AccountError):
     """Raised when a withdrawal exceeds available funds."""
 
 
-class InvalidAccountError(AccountError):
-    """Raised for invalid account number formatting."""
-
-
-class InvalidBalanceError(AccountError):
-    """Raised for invalid balance values."""
-
-
-class InvalidBranchError(AccountError):
-    """Raised for invalid branch code formatting."""
-
-
 class NotEmptyAccountError(AccountError):
     """Raised when attempting to close an account with a non-zero balance."""
+
+
+# --- AccountHolder Aggregate Exceptions ---
+
+
+class AccountHolderError(DomainError):
+    """Base exception for AccountHolder aggregate state errors."""
+
+
+class AccountHolderCardNotFoundError(AccountHolderError):
+    """Raised when accessing a card not found in the holder's collection."""
+
+
+class AccountHolderDuplicatedCardError(AccountHolderError):
+    """Raised when adding a duplicate card to the holder's collection."""
+
+
+# --- Value Objects & Primitives Exceptions ---
+
+
+class InvalidAccountError(DomainError):
+    """Raised when an account number fails format or length domain validation."""
+
+
+class InvalidAmountError(DomainError):
+    """Raised when a monetary transaction amount is below institutional minimum limits."""
+
+
+class InvalidBirthDateError(DomainError):
+    """Raised when a birth date fails domain boundary or age validation rules."""
+
+
+class InvalidBranchError(DomainError):
+    """Raised when a branch code fails format or length domain validation."""
+
+
+class InvalidCpfError(DomainError):
+    """Raised when a CPF fails mathematical checksum or structural validation."""
+
+
+class InvalidNameError(DomainError):
+    """Raised when an account holder name fails domain formatting rules."""
+
+
+class InvalidPasswordError(DomainError):
+    """Raised when a password fails domain formatting rules (e.g., 6 numeric digits)."""
+
+
+# =====================================================================
+# Application Layer Exceptions (Services & Security)
+# =====================================================================
+
+
+class ApplicationError(SystemBaseException):
+    """Base exception for all Application Layer failures."""
+
+
+# --- Application Service / Workflow Exceptions ---
+
+
+class ApplicationServiceError(ApplicationError):
+    """Base exception for recoverable application service and workflow failures."""
+
+
+class AccessDeniedError(ApplicationServiceError):
+    """Raised when vault or feature access is denied (e.g., frozen account)."""
+
+
+class AccountHolderNotFoundError(ApplicationServiceError):
+    """Raised when an account holder record cannot be resolved by the application service."""
+
+
+class AccountNotFoundError(ApplicationServiceError):
+    """Raised when an account record cannot be resolved by the application service."""
+
+
+class AuthenticationError(ApplicationServiceError):
+    """Raised when primary or vault authentication credentials fail."""
+
+
+class DeniedOperationError(ApplicationServiceError):
+    """Raised when a business operation requested by presentation is rejected by application policy."""
+
+
+class DuplicatedAccountError(ApplicationServiceError):
+    """Raised during onboarding if an account already exists."""
+
+
+class DuplicatedAccountHolderError(ApplicationServiceError):
+    """Raised during onboarding if an account holder is already registered."""
+
+
+class InvalidDataError(ApplicationServiceError):
+    """Raised when an application payload (DTO) or field input fails contract/domain validation."""
+
+
+class ServiceUnavailableError(ApplicationServiceError):
+    """Raised when an application workflow cannot commit state due to internal failure."""
+
+
+# --- Application Security Exceptions ---
+
+
+class ApplicationSecurityError(ApplicationError):
+    """Base exception for session security breaches (invalid/expired tokens). Drops user session."""
+
+
+class ExpiredSessionError(ApplicationSecurityError):
+    """Raised when an application session token has expired."""
+
+
+class SessionIntegrityError(ApplicationSecurityError):
+    """Raised when a session token fails cryptographic or integrity verification."""
+
+
+# =====================================================================
+# Infrastructure Layer Exceptions
+# =====================================================================
+
+
+class InfrastructureError(SystemBaseException):
+    """Base exception for all lower-level infrastructure and persistence failures."""
+
+
+# --- Repository / Persistence Exceptions ---
+
+
+class RepositoryError(InfrastructureError):
+    """Base exception for all persistence layer errors."""
+
+
+class DataNotFoundError(RepositoryError):
+    """Raised when a requested record is not found in persistence."""
+
+
+class DuplicatedDataError(RepositoryError):
+    """Raised when an insertion violates a unique constraint."""
+
+
+# --- Token Service Technical Exceptions ---
+
+
+class TokenServiceError(InfrastructureError):
+    """Base exception for low-level cryptographic token calculation failures."""
+
+
+class ExpiredTokenError(TokenServiceError):
+    """Raised when current timestamp exceeds a token's TTL."""
+
+
+class TokenSignatureError(TokenServiceError):
+    """Raised when HMAC signature comparison fails during token verification."""
 
 
 # =====================================================================
@@ -201,7 +217,14 @@ class NotEmptyAccountError(AccountError):
 # =====================================================================
 
 
-class ControllerError(SystemBaseException):
+class PresentationError(SystemBaseException):
+    """Base exception for presentation flow, navigation, and terminal I/O errors."""
+
+
+# --- Controller Navigation Exceptions ---
+
+
+class ControllerError(PresentationError):
     """Base exception for presentation flow and navigation errors."""
 
 
@@ -217,6 +240,25 @@ class ControllerRegisterError(ControllerError):
     """Raised when onboarding UI presentation flow fails."""
 
 
+# --- Terminal I/O & Interrupt Exceptions ---
+
+
+class SystemIOError(PresentationError):
+    """Base exception for terminal input/output and session lifecycle interrupts."""
+
+
+class AdminExitError(SystemIOError):
+    """Raised when an administrator exit code is issued in terminal prompts."""
+
+
+class InactiveUserError(SystemIOError):
+    """Raised when user inactivity reaches the system timeout limit."""
+
+
+class UserAbortError(SystemIOError):
+    """Raised when the user manually cancels an operation in terminal prompts."""
+
+
 # =====================================================================
 # Error Metadata Mappers
 # =====================================================================
@@ -229,8 +271,12 @@ APPLICATION_ERROR_MAP = {
     DuplicatedAccountError: "acc_duplicated",
     DuplicatedAccountHolderError: "already_account_holder",
     NotEmptyAccountError: "non_zero_value",
-    PasswordValidationError: "password",
     ServiceUnavailableError: "unavailable",
+}
+
+APPLICATION_SECURITY_ERROR_MAP = {
+    ExpiredSessionError: "exp_session",
+    SessionIntegrityError: "integrity_fail",
 }
 
 CONTROLLER_ERROR_MAP = {
@@ -239,47 +285,23 @@ CONTROLLER_ERROR_MAP = {
     ControllerRegisterError: "ctrl_register",
 }
 
-DOMAIN_ERROR_MAP = {
-    AccountAlreadyActiveError: "acc_active",
-    AccountHolderCardNotFoundError: "card_not_found",
-    AccountHolderDuplicatedCardError: "duplicated_card",
-    FrozenAccountError: "acc_frozen",
-    InsufficientFundsError: "value",
-    InvalidAccountError: "account_num",
-    InvalidBalanceError: "balance",
-    InvalidBirthDateError: "birth_date",
-    InvalidBranchError: "branch_code",
-    InvalidCpfError: "cpf",
-    InvalidNameError: "name",
-}
-
-SECURITY_ERROR_MAP = {
-    ExpiredTokenError: "exp_token",
-    TokenSecurityError: "bank_security",
-}
-
 
 def map_exceptions(
-    error: ApplicationError | ControllerError | DomainError | SecurityError,
+    error: ApplicationError | ControllerError,
 ) -> str:
     """Maps system exceptions to standardized UI context keys."""
-    if not isinstance(
-        error, (ApplicationError, ControllerError, DomainError, SecurityError)
-    ):
+    if not isinstance(error, (ApplicationError, ControllerError)):
         raise TypeError(
-            f"Function expects ApplicationError, DomainError, ControllerError, or SecurityError. "
-            f"Got {type(error).__name__}"
+            f"Function expects ApplicationError or ControllerError. Got {type(error).__name__}"
         )
 
     match error:
-        case ApplicationError():
+        case ApplicationServiceError():
             context_map = APPLICATION_ERROR_MAP
+        case ApplicationSecurityError():
+            context_map = APPLICATION_SECURITY_ERROR_MAP
         case ControllerError():
             context_map = CONTROLLER_ERROR_MAP
-        case DomainError():
-            context_map = DOMAIN_ERROR_MAP
-        case SecurityError():
-            context_map = SECURITY_ERROR_MAP
         case _:
             context_map = {}
 
