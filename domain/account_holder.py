@@ -1,58 +1,21 @@
-"""
-Account Holder Domain Entity Module.
+"""Account Holder Domain Entity Module.
 
-Defines the concrete entity AccountHolder and its associated value objects.
-This module is responsible for validating core personal attributes (Name, CPF,
-Birth Date), managing the account holder's identity, and storing access
-credentials (cards) for quick login.
+Defines the concrete entity AccountHolder. This module is responsible for managing
+the account holder's identity and storing access credentials (cards) for quick login.
 
-Following Domain-Driven Design (DDD), this entity encapsulates all rules
-pertinent to the bank's client, operating independently of database schemas
-or presentation layers.
+Following Domain-Driven Design (DDD), this entity delegates primitive value validations
+(Name, CPF, Birth Date) to specialized Value Objects, operating independently of database
+schemas or presentation layers.
 """
 
 from __future__ import annotations
 
-import re
 from dataclasses import asdict
-from datetime import date
-from typing import ClassVar
 
 from domain.snapshots import AccountHolderSnapshot
-from shared import clock, validators, verify
+from domain.value_objects import CPF, AccountHolderName, BirthDate
+from shared import verify
 from shared.credentials import AccountCard
-from shared.exceptions import (
-    InvalidBirthDateError,
-    InvalidCpfError,
-    InvalidNameError,
-)
-
-# =====================================================================
-# Global Helpers (Procedural Level)
-# =====================================================================
-
-
-def _calculate_age(birth_date: date) -> int:
-    """
-    Module-level helper that calculates the current age represented by a birth date.
-
-    Uses the application's canonical business date clock to evaluate true calendar
-    years elapsed, taking into account whether the anniversary day has passed.
-
-    Args:
-        birth_date (date): The native date object representing the target birth date.
-
-    Returns:
-        int: The computed current chronological age of the account holder.
-    """
-    today = clock.get_today()
-    age = today.year - birth_date.year
-
-    if (today.month, today.day) < (birth_date.month, birth_date.day):
-        age -= 1
-
-    return age
-
 
 # =====================================================================
 # Account Holder Entity
@@ -60,79 +23,72 @@ def _calculate_age(birth_date: date) -> int:
 
 
 class AccountHolder:
-    """
-    Represents a bank customer identity.
+    """Represents a bank customer identity.
 
-    Encapsulates the business rules that validate a customer's identity
-    (Name, CPF and Birth Date) while holding the collection of stored
+    Encapsulates a customer's core identity bound to immutable Value Objects
+    (AccountHolderName, CPF, BirthDate) while holding the collection of stored
     quick-access cards associated with that customer.
     """
 
     # --------------------------------------------------------------------------
-    # Class attributes
-    # --------------------------------------------------------------------------
-    MIN_AGE: ClassVar[int] = 18
-    MAX_AGE: ClassVar[int] = 120
-
-    # --------------------------------------------------------------------------
     # Constructor
     # --------------------------------------------------------------------------
-    def __init__(self, name: str, cpf: str, birth_date: date):
-        """
-        Initializes an AccountHolder instance with validated attributes.
+    def __init__(
+        self, name: AccountHolderName, cpf: CPF, birth_date: BirthDate
+    ) -> None:
+        """Initializes an AccountHolder instance with validated Value Objects.
 
         Args:
-            name (str): The account holder's full name.
-            cpf (str): The account holder's CPF string (11 digits).
-            birth_date (date): The native Python date object representing the date of birth.
+            name (AccountHolderName): The validated account holder's full name VO.
+            cpf (CPF): The mathematically verified CPF Value Object.
+            birth_date (BirthDate): The validated birth date Value Object.
 
         Raises:
-            InvalidNameError: If the name breaks structural domain rules.
-            InvalidBirthDateError: If the date is in the future or age boundaries overflow.
-            InvalidCpfError: If the CPF is mathematically invalid or poorly formatted.
+            TypeError: If any parameter fails type verification against its respective Value Object.
         """
-        self.name = name
-        self._cpf = AccountHolder.validate_cpf(cpf)
-        self._birth_date = AccountHolder.validate_birth_date(birth_date)
+        verify.verify_instance(name, AccountHolderName)
+        verify.verify_instance(cpf, CPF)
+        verify.verify_instance(birth_date, BirthDate)
+
+        self._name = name
+        self._cpf = cpf
+        self._birth_date = birth_date
         self._account_cards: set[AccountCard] = set()
 
     # --------------------------------------------------------------------------
     # Dunder methods
     # --------------------------------------------------------------------------
     def __repr__(self) -> str:
-        """
-        Returns the canonical string representation of the AccountHolder.
+        """Returns the canonical string representation of the AccountHolder.
 
         Returns:
             str: Diagnostic state representation containing core customer identity variables.
         """
         class_name = type(self).__name__
-        birth_date_str = self._birth_date.strftime("%d/%m/%Y")
+        birth_date_str = str(self._birth_date)
 
-        return f"{class_name}(name={self._name!r}, birth_date={birth_date_str!r}, cpf={self._cpf!r})"
+        return f"{class_name}(name={self._name.value!r}, birth_date={birth_date_str!r}, cpf={self._cpf.value!r})"
 
     def __eq__(self, other: object) -> bool:
-        """
-        Determines equality between AccountHolder instances based on their unique CPF.
+        """Determines equality between AccountHolder instances based on their unique CPF Value Object.
 
         Args:
             other (object): The target object to compare against.
 
         Returns:
-            bool: True if identity coordinates match, False otherwise.
+            bool: True if identity CPF objects match, False otherwise.
         """
         if isinstance(other, AccountHolder):
             return self._cpf == other._cpf
         return False
 
     def __hash__(self) -> int:
-        """
-        Returns a hash value based on the unique CPF entity key.
+        """Returns a hash value based on the unique CPF entity key.
 
         Enables the entity object to be stored and managed inside hash-based collections.
 
         Returns:
-            int: The generated hash footprint of the core CPF routing string.
+            int: The generated hash footprint of the core CPF Value Object.
         """
         return hash(self._cpf)
 
@@ -140,52 +96,48 @@ class AccountHolder:
     # Properties
     # --------------------------------------------------------------------------
     @property
-    def name(self) -> str:
-        """
-        Returns the account holder's name.
+    def name(self) -> AccountHolderName:
+        """Returns the account holder's name Value Object.
 
         Returns:
-            str: The structural string holding the full name metrics.
+            AccountHolderName: The validated name Value Object.
         """
         return self._name
 
     @name.setter
-    def name(self, name: str) -> None:
-        """
-        Sets the account holder's name after passing validation rules.
+    def name(self, name: AccountHolderName) -> None:
+        """Sets the account holder's name Value Object after type verification.
 
         Args:
-            name (str): The new unverified string payload proposed for mutation.
+            name (AccountHolderName): The new validated name Value Object.
 
         Raises:
-            InvalidNameError: If the string fails format and length thresholds.
+            TypeError: If the incoming parameter is not an instance of AccountHolderName.
         """
-        self._name = AccountHolder.validate_name(name)
+        verify.verify_instance(name, AccountHolderName)
+        self._name = name
 
     @property
-    def birth_date(self) -> date:
-        """
-        Returns the account holder's birth date.
+    def birth_date(self) -> BirthDate:
+        """Returns the account holder's birth date Value Object.
 
         Returns:
-            date: The immutable native calendar birth date marker.
+            BirthDate: The immutable birth date Value Object.
         """
         return self._birth_date
 
     @property
-    def cpf(self) -> str:
-        """
-        Returns the account holder's unique identifier (the CPF).
+    def cpf(self) -> CPF:
+        """Returns the account holder's unique identifier (the CPF Value Object).
 
         Returns:
-            str: The clean 11-digit mathematical identity key.
+            CPF: The clean, mathematically verified CPF Value Object.
         """
         return self._cpf
 
     @property
     def cards(self) -> list[AccountCard]:
-        """
-        Returns a shallow copy of the stored account cards.
+        """Returns a shallow copy of the stored account cards.
 
         Converts the internal set into a new list to prevent external callers
         from mutating the entity's internal collection directly.
@@ -202,19 +154,19 @@ class AccountHolder:
         """Creates a persistence snapshot representing the current entity state.
 
         Acts as a secure Write Model for the Anti-Corruption Layer (ACL).
-        Packages the core Personally Identifiable Information (PII) into an
-        immutable, strictly typed domain snapshot, ensuring the infrastructure
-        layer receives exactly what it needs for database insertion without
-        exposing the entity's internal mechanisms.
+        Extracts primitive values from Value Objects to package into an immutable
+        domain snapshot for persistence layers.
 
         Returns:
-            AccountHolderSnapshot: An immutable payload containing the primitive
-                values required to persist this account holder.
+            AccountHolderSnapshot: An immutable payload containing primitive values.
         """
         cards = [asdict(c) for c in self._account_cards]
 
         return AccountHolderSnapshot(
-            name=self._name, cpf=self._cpf, birth_date=self.birth_date, cards=cards
+            name=self._name.value,
+            cpf=self._cpf.value,
+            birth_date=self._birth_date.value,
+            cards=cards,
         )
 
     # --------------------------------------------------------------------------
@@ -224,117 +176,22 @@ class AccountHolder:
     def from_snapshot(cls, data: AccountHolderSnapshot) -> AccountHolder:
         """Rehydrates an AccountHolder aggregate from a persistence snapshot.
 
-        Restores the core entity state by passing the primitive values through
-        the standard domain validations (via __init__), and subsequently
-        rebuilds the collection of associated AccountCard value objects.
+        Restores the core entity state by encapsulating primitive snapshot values
+        into Value Objects, and rebuilds the collection of associated cards.
 
         Args:
-            data (AccountHolderSnapshot): The strictly typed, immutable snapshot
-                containing the account holder's identity data and saved cards.
+            data (AccountHolderSnapshot): The strictly typed, immutable snapshot.
 
         Returns:
             AccountHolder: The fully restored domain aggregate ready for operations.
         """
-        instance = cls(name=data.name, cpf=data.cpf, birth_date=data.birth_date)
+        name = AccountHolderName(data.name)
+        cpf = CPF(data.cpf)
+        birth_date = BirthDate(data.birth_date)
+        instance = cls(name=name, cpf=cpf, birth_date=birth_date)
 
         # Restore the stored account cards
         cards_list = data.cards
         instance._account_cards = {AccountCard(**card) for card in cards_list}
 
         return instance
-
-    # --------------------------------------------------------------------------
-    # Static methods (Validations)
-    # --------------------------------------------------------------------------
-    @staticmethod
-    def validate_name(name: str) -> str:
-        """
-        Validates an account holder name against the domain business rules.
-
-        Enforces strict baseline thresholds: minimum length, alphabetical composition
-        (including native accented maps), and single space block separation rules.
-
-        Args:
-            name (str): The raw string representing the name proposed for validation.
-
-        Returns:
-            str: The validated pristine name string matching domain parameters.
-
-        Raises:
-            TypeError: If incoming parameter inputs violate explicit string type hints.
-            InvalidNameError: If string length drops below 3 or format constraints collapse.
-        """
-        verify.verify_instance(name, str)
-
-        if len(name) < 3:
-            raise InvalidNameError(f"Value '{name}' must have at least three letters")
-
-        # Pattern: Accented letters, separated by a maximum of one space.
-        pattern = r"^[A-Za-zÀ-ÿ]+(?: [A-Za-zÀ-ÿ]+)*$"
-
-        if not re.match(pattern, name):
-            raise InvalidNameError(
-                f"Value '{name}' is invalid. Use only letters and single spaces."
-            )
-
-        return name
-
-    @staticmethod
-    def validate_cpf(cpf: str) -> str:
-        """
-        Delegates the mathematical CPF validation to the shared validator engine.
-
-        Translates standard runtime value failures into specialized domain-level exceptions
-        to insulate corporate architecture tracking loops.
-
-        Args:
-            cpf (str): The raw character string representing the individual's key registry.
-
-        Returns:
-            str: The unmasked validated digit identity footprint string.
-
-        Raises:
-            InvalidCpfError: If structural or mathematical digit checksum evaluations fail.
-        """
-        try:
-            return validators.validate_cpf(cpf)
-        except ValueError as e:
-            raise InvalidCpfError(f"Account Holder CPF is invalid: {e}")
-
-    @staticmethod
-    def validate_birth_date(birth_date: date) -> date:
-        """
-        Validates a birth date against the account holder age business rules.
-
-        The validation enforces that the birth date is not in the future and
-        that the resulting age falls within the institutional corporate boundaries.
-
-        Args:
-            birth_date (date): The raw temporal execution date object proposed for insertion.
-
-        Returns:
-            date: The verified immutable date footprint object.
-
-        Raises:
-            TypeError: If parameter inputs conflict with runtime date instance definitions.
-            InvalidBirthDateError: If chronological boundaries overflow or date inputs point to future markers.
-        """
-        verify.verify_instance(birth_date, date)
-
-        try:
-            today = clock.get_today()
-            if birth_date > today:
-                raise ValueError("Date of birth cannot be in the future")
-
-            age = _calculate_age(birth_date)
-
-            if not AccountHolder.MIN_AGE <= age <= AccountHolder.MAX_AGE:
-                raise ValueError(
-                    f"Invalid age. Age must be between {AccountHolder.MIN_AGE} and {AccountHolder.MAX_AGE} (inclusive)"
-                )
-
-            return birth_date
-        except ValueError as e:
-            raise InvalidBirthDateError(
-                f"Value {birth_date} is invalid for date of birth. Cause: {e}"
-            ) from e
