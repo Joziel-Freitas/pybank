@@ -5,27 +5,32 @@ SavingsAccount and CheckingAccount. This module orchestrates the core domain log
 of the banking system, including account initialization, strict structural validation,
 state-safe withdrawal simulations, and time-based financial adjustments (accruals).
 
-It employs Domain-Driven Design (DDD) principles to return immutable domain events
-(LedgerEvent) instead of simple primitives, ensuring a robust, append-only audit
-trail for persistence.
+It employs Domain-Driven Design (DDD) principles to encapsulate primitive value
+validations within Value Objects (BranchCode, AccountNumber, Money) and return immutable
+domain events (LedgerEvent) and financial projections (AccountFinancial), ensuring
+a robust, append-only audit trail for persistence and clean layer isolation.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import date
 from decimal import Decimal
 from typing import ClassVar, cast
 
 from domain.snapshots import AccountSnapshot
 from domain.types import AccrualType, TransactionType
-from domain.value_objects import AccountFinancial, LedgerEvent, WithdrawalSimulation
+from domain.value_objects import (
+    AccountFinancial,
+    AccountNumber,
+    BranchCode,
+    LedgerEvent,
+    Money,
+    WithdrawalSimulation,
+)
 from shared import clock, verify
 from shared.exceptions import (
     FrozenAccountError,
     InsufficientFundsError,
-    InvalidAccountError,
-    InvalidBranchError,
     NotEmptyAccountError,
 )
 
@@ -35,8 +40,7 @@ from shared.exceptions import (
 
 
 class Account(ABC):
-    """
-    Abstract Base Class (ABC) for all bank accounts.
+    """Abstract Base Class (ABC) for all bank accounts.
 
     Enforces mandatory attributes, temporal state tracking, and polymorphic
     mathematical behaviors (deposit, withdrawal, accruals) across all concrete
@@ -44,50 +48,46 @@ class Account(ABC):
     any financial change simultaneously updates the domain clock.
 
     Attributes:
-        _branch_code (str): The validated bank branch code.
-        _account_num (str): The validated unique account number.
+        _branch_code (BranchCode): The validated bank branch code Value Object.
+        _account_num (AccountNumber): The validated unique account number Value Object.
         _is_frozen (bool): The operational status of the account (True if blocked).
-        _balance (Decimal): The current authoritative account balance.
+        _ledger_balance (Decimal): The historical, unadjusted balance retrieved directly
+            from the accounting records.
         _last_balance_update (date): The exact temporal anchor of the last
             balance mutation, used for calculating precise daily accruals.
     """
 
     # --------------------------------------------------------------------------
-    # Class attributes
-    # --------------------------------------------------------------------------
-    MIN_ATM_TRANSACTION: ClassVar[Decimal] = Decimal("2.00")
-
-    # --------------------------------------------------------------------------
     # Constructor
     # --------------------------------------------------------------------------
-    def __init__(self, branch_code: str, account_num: str):
-        """
-        Initializes a new Account instance with validated identifiers.
+    def __init__(self, branch_code: BranchCode, account_num: AccountNumber) -> None:
+        """Initializes a new Account instance with validated Value Objects.
 
         Sets the initial financial state to zero and initializes the domain
         clock to the current system date. The account is created in an active
         (unfrozen) state by default.
 
         Args:
-            branch_code (str): The code of the bank branch (validated for format).
-            account_num (str): The unique account number (validated for format).
+            branch_code (BranchCode): The branch code Value Object.
+            account_num (AccountNumber): The unique account number Value Object.
 
         Raises:
-            InvalidBranchError: If `branch_code` fails validation.
-            InvalidAccountError: If `account_num` fails validation.
+            TypeError: If incoming parameters fail type verification.
         """
-        self._branch_code = Account.validate_branch_code(branch_code)
-        self._account_num = Account.validate_account_number(account_num)
+        verify.verify_instance(branch_code, BranchCode)
+        verify.verify_instance(account_num, AccountNumber)
+
+        self._branch_code = branch_code
+        self._account_num = account_num
         self._is_frozen = False
-        self._balance = Decimal("0.00")
+        self._ledger_balance = Decimal("0.00")
         self._last_balance_update = clock.get_today()
 
     # --------------------------------------------------------------------------
     # Dunder methods
     # --------------------------------------------------------------------------
     def __repr__(self) -> str:
-        """
-        Returns the canonical string representation of the Account instance.
+        """Returns the canonical string representation of the Account instance.
 
         Returns:
             str: Diagnostic state representation containing internal ledger properties.
@@ -96,24 +96,23 @@ class Account(ABC):
 
         return (
             f"{class_name}("
-            f"branch_code={self._branch_code!r}, "
-            f"account_num={self._account_num!r}, "
-            f"balance={self._balance!r}, "
+            f"branch_code={self._branch_code.value!r}, "
+            f"account_num={self._account_num.value!r}, "
+            f"balance={self._ledger_balance!r}, "
             f"last_balance_update={self._last_balance_update!r})"
         )
 
     def __eq__(self, other: object) -> bool:
-        """
-        Determines equality between Account instances based on identity coordinates.
+        """Determines equality between Account instances based on identity coordinates.
 
         Two Account objects are considered equal if they share the same branch code
-        and account number, regardless of other state metrics.
+        and account number Value Objects, regardless of other state metrics.
 
         Args:
             other (object): The target object to compare against.
 
         Returns:
-            bool: True if identity components match perfectly, False otherwise.
+            bool: True if identity Value Objects match perfectly, False otherwise.
         """
         if isinstance(other, Account):
             return (self._branch_code, self._account_num) == (
@@ -123,8 +122,7 @@ class Account(ABC):
         return False
 
     def __hash__(self) -> int:
-        """
-        Returns a hash value for the Account instance based on its business identity.
+        """Returns a hash value for the Account instance based on its business identity.
 
         Guarantees safe collection hashing behavior when stored inside sets or
         dictionary key lookups, mirroring the logic found in __eq__.
@@ -135,60 +133,25 @@ class Account(ABC):
         return hash((self._branch_code, self._account_num))
 
     # --------------------------------------------------------------------------
-    # Properties
+    # Properties (Public Read Model Interface)
     # --------------------------------------------------------------------------
     @property
-    def branch_code(self) -> str:
-        """
-        Returns the branch code of the account.
+    def branch_code(self) -> BranchCode:
+        """Returns the branch code Value Object of the account.
 
         Returns:
-            str: The structural branch location identifier.
+            BranchCode: The structural branch location identifier.
         """
         return self._branch_code
 
     @property
-    def account_num(self) -> str:
-        """
-        Returns the account number.
+    def account_num(self) -> AccountNumber:
+        """Returns the account number Value Object.
 
         Returns:
-            str: The unique account numeric index.
+            AccountNumber: The unique account numeric index.
         """
         return self._account_num
-
-    @property
-    def is_frozen(self) -> bool:
-        """
-        Returns the current operational block status of the account.
-
-        Returns:
-            bool: True if the account is frozen, False otherwise.
-        """
-        return self._is_frozen
-
-    @property
-    def balance(self) -> Decimal:
-        """
-        Returns the true, temporally accurate balance of the account.
-
-        Combines the raw ledger balance with any pending time-based accruals
-        (yields or interest) up to the current moment.
-
-        Returns:
-            Decimal: The high-precision true balance amount.
-        """
-        return self._balance + self._pending_accrual
-
-    @property
-    def last_balance_update(self) -> date:
-        """
-        Returns the calendar date of the last balance update.
-
-        Returns:
-            date: The temporal execution date anchor point.
-        """
-        return self._last_balance_update
 
     @property
     def financial_info(self) -> AccountFinancial:
@@ -196,10 +159,10 @@ class Account(ABC):
 
         Acts as a strict Read-Only facade (Lazy Materialization). By orchestrating
         subclass-specific implementations of credit limits, accruals, and available
-        funds, this method enforces the Information Expert principle. It centralizes
-        the construction of the AccountFinancial value object, applying the DRY
-        principle and ensuring that outer layers receive a uniform, predictable, and
-        temporally accurate snapshot of the account's true state.
+        funds through internal properties, this method enforces the Information Expert
+        principle. It centralizes the construction of the AccountFinancial value object,
+        ensuring outer layers receive a uniform, predictable, and temporally accurate
+        snapshot of the account's true state.
 
         Returns:
             AccountFinancial: An immutable, composed value object detailing the ledger
@@ -213,21 +176,35 @@ class Account(ABC):
             accrual_type = AccrualType.YIELD if accrual > 0 else AccrualType.INTEREST
 
         return AccountFinancial(
-            ledger_balance=self._balance,
+            ledger_balance=self._ledger_balance,
             accrual=accrual,
-            balance=self.balance,
+            balance=self._balance,
             accrual_type=accrual_type,
-            credit_limit=self.credit_limit,
-            available_credit=self.available_credit,
-            available_balance=self.available_funds,
+            credit_limit=self._credit_limit,
+            available_credit=self._available_credit,
+            available_balance=self._available_funds,
             issue_at=clock.get_today(),
         )
 
+    # --------------------------------------------------------------------------
+    # Internal Properties (Protected Hook Interface for Subclasses)
+    # --------------------------------------------------------------------------
+    @property
+    def _balance(self) -> Decimal:
+        """Returns the true, temporally accurate balance of the account.
+
+        Combines the raw ledger balance with any pending time-based accruals
+        (yields or interest) up to the current moment.
+
+        Returns:
+            Decimal: The high-precision true balance amount.
+        """
+        return self._ledger_balance + self._pending_accrual
+
     @property
     @abstractmethod
-    def credit_limit(self) -> Decimal | None:
-        """
-        Defines the maximum credit threshold granted to the account.
+    def _credit_limit(self) -> Decimal | None:
+        """Defines the maximum credit threshold granted to the account.
 
         Acts as an explicit contract for subclasses to declare their support
         for credit products. Enforces the Open/Closed Principle by allowing
@@ -241,9 +218,8 @@ class Account(ABC):
 
     @property
     @abstractmethod
-    def available_credit(self) -> Decimal | None:
-        """
-        Calculates the real-time remaining credit available for transactions.
+    def _available_credit(self) -> Decimal | None:
+        """Calculates the real-time remaining credit available for transactions.
 
         Acts as a dynamic projection that accounts for current ledger balances
         and any pending time-based charges (e.g., compound interest) that
@@ -257,8 +233,7 @@ class Account(ABC):
     @property
     @abstractmethod
     def _pending_accrual(self) -> Decimal:
-        """
-        Represents the raw monetary value of time-based financial adjustments.
+        """Represents the raw monetary value of time-based financial adjustments.
 
         This abstract property enforces the Template Method Pattern, requiring
         concrete account subclasses to define the specific state of their
@@ -273,9 +248,8 @@ class Account(ABC):
 
     @property
     @abstractmethod
-    def available_funds(self) -> Decimal:
-        """
-        Calculates the true, mathematically precise transaction capacity of the account.
+    def _available_funds(self) -> Decimal:
+        """Calculates the true, mathematically precise transaction capacity of the account.
 
         Acts as a dynamic projection of the account's purchasing power at the exact
         moment of invocation. It enforces the Information Expert principle by combining
@@ -287,7 +261,7 @@ class Account(ABC):
         """
 
     # --------------------------------------------------------------------------
-    # Public API (Orchestrators)
+    # Public API (Orchestrators & Domain Mutators)
     # --------------------------------------------------------------------------
     def to_snapshot(self) -> AccountSnapshot:
         """Generates a persistence snapshot of the current account state.
@@ -303,17 +277,16 @@ class Account(ABC):
                 identifiers, financial ledger balance, temporal anchor, and class type.
         """
         return AccountSnapshot(
-            branch_code=self._branch_code,
-            account_num=self._account_num,
+            branch_code=self._branch_code.value,
+            account_num=self._account_num.value,
             account_type=type(self).__name__,
             is_frozen=self._is_frozen,
-            balance=self._balance,
+            balance=self._ledger_balance,
             last_balance_update=self._last_balance_update,
         )
 
     def freeze(self) -> None:
-        """
-        Transitions the account into a frozen (inactive) state.
+        """Transitions the account into a frozen (inactive) state.
 
         A frozen account operates in a strict Read-Only mode. It preserves
         its current balance and history but outright rejects any state-mutating
@@ -328,8 +301,7 @@ class Account(ABC):
         self._is_frozen = True
 
     def unfreeze(self) -> None:
-        """
-        Restores the account to an active, operational state.
+        """Restores the account to an active, operational state.
 
         Lifts the Read-Only restriction, allowing standard balance-mutating
         financial operations to resume.
@@ -354,21 +326,21 @@ class Account(ABC):
                 "Impossible to close a frozen account. Unfreeze it first."
             )
 
-        if self.balance != 0:
+        if self._balance != 0:
             raise NotEmptyAccountError(
                 "The account cannot be closed because it has a non-zero balance"
             )
 
-    def deposit(self, amount: Decimal) -> tuple[LedgerEvent, ...]:
+    def deposit(self, amount: Money) -> tuple[LedgerEvent, ...]:
         """Performs a standard deposit operation.
 
         Enforces the strict domain rule that an account must be active to receive funds.
-        Validates the input value, processes any pending time-based accruals, and
-        increments the account balance. This implementation serves as the default
+        Validates the input Money Value Object, processes any pending time-based accruals,
+        and increments the account balance. This implementation serves as the default
         behavior for all concrete account types.
 
         Args:
-            amount (Decimal): The amount to deposit.
+            amount (Money): The monetary Value Object representing the deposit amount.
 
         Returns:
             tuple[LedgerEvent, ...]: A tuple containing the domain events that represent
@@ -378,22 +350,23 @@ class Account(ABC):
 
         Raises:
             FrozenAccountError: If the account is currently frozen.
-            TypeError: If the value is not a Decimal instance.
-            ValueError: If the deposit amount is less than the MIN_ATM_TRANSACTION limit.
+            TypeError: If the amount is not an instance of Money Value Object.
         """
         if self._is_frozen:
             raise FrozenAccountError(
                 "Impossible to perform deposit operation on a frozen account"
             )
 
-        Account.validate_amount_entry(amount)
-        accruals_event = self._apply_accrual()
+        verify.verify_instance(amount, Money)
 
-        start_balance = self._balance
-        self._update_balance(amount)
+        inner_amount = amount.value
+        accruals_event = self._apply_accrual()
+        start_balance = self._ledger_balance
+        self._update_balance(inner_amount)
+
         deposit_event = LedgerEvent(
             previous_balance=start_balance,
-            amount=amount,
+            amount=inner_amount,
             event_type=TransactionType.DEPOSIT,
         )
 
@@ -402,17 +375,17 @@ class Account(ABC):
 
         return (deposit_event,)
 
-    def simulate_withdrawal(self, amount: Decimal) -> WithdrawalSimulation:
+    def simulate_withdrawal(self, amount: Money) -> WithdrawalSimulation:
         """Simulates the financial projection of a withdrawal without mutating state.
 
         Acts as a universal financial oracle for all account types. It evaluates
-        transaction viability strictly based on the polymorphic 'available_funds'
-        and explicitly checks the subclass contracts for credit support ('credit_limit').
-        It assumes the orchestrating layer has already validated external conditions
-        (e.g., frozen status) and applies core input validation.
+        transaction viability strictly based on the polymorphic '_available_funds'
+        and explicitly checks the subclass contracts for credit support ('_credit_limit').
+        If the transaction exceeds total available capacity (unauthorized), credit projection
+        fields strictly evaluate to None to preserve domain semantic integrity.
 
         Args:
-            amount (Decimal): The intended monetary amount to be withdrawn.
+            amount (Money): The intended monetary Value Object to be evaluated.
 
         Returns:
             WithdrawalSimulation: A detailed projection detailing authorization status,
@@ -420,20 +393,22 @@ class Account(ABC):
                 required from the credit line.
 
         Raises:
-            TypeError: If the provided amount is not a Decimal instance.
-            ValueError: If the withdrawal amount is less than the MIN_ATM_TRANSACTION limit.
+            TypeError: If the provided amount is not an instance of Money Value Object.
         """
-        Account.validate_amount_entry(amount)
-        authorized = amount <= self.available_funds
-        balance = self.balance
+        verify.verify_instance(amount, Money)
+        inner_amount = amount.value
+        authorized = inner_amount <= self._available_funds
+        balance = self._balance
         use_credit = None
         credit_required = None
 
-        if self.credit_limit is not None:
-            use_credit = amount > balance
+        if authorized and self._credit_limit is not None:
+            use_credit = inner_amount > balance
 
             if use_credit:
-                credit_required = amount - balance if balance > 0 else amount
+                credit_required = (
+                    inner_amount - balance if balance > 0 else inner_amount
+                )
             else:
                 credit_required = Decimal("0.00")
 
@@ -443,7 +418,7 @@ class Account(ABC):
             credit_required=credit_required,
         )
 
-    def withdrawal(self, amount: Decimal) -> tuple[LedgerEvent, ...]:
+    def withdrawal(self, amount: Money) -> tuple[LedgerEvent, ...]:
         """Orchestrates the secure withdrawal workflow.
 
         This template method enforces mandatory business invariants—specifically checking
@@ -453,7 +428,7 @@ class Account(ABC):
         via the `_compose_withdrawal_event` hook.
 
         Args:
-            amount (Decimal): The strictly positive amount to withdraw.
+            amount (Money): The monetary Value Object to withdraw.
 
         Returns:
             tuple[LedgerEvent, ...]: A chronological sequence of ledger events representing
@@ -461,31 +436,35 @@ class Account(ABC):
 
         Raises:
             FrozenAccountError: If the account is locked and cannot dispense funds.
-            InsufficientFundsError: If the requested amount exceeds 'available_funds'.
-            TypeError: If the provided amount is not a Decimal instance.
-            ValueError: If the withdrawal amount is less than the MIN_ATM_TRANSACTION limit.
+            InsufficientFundsError: If the requested amount exceeds '_available_funds'.
+            TypeError: If the provided amount is not an instance of Money Value Object.
         """
         if self._is_frozen:
             raise FrozenAccountError(
                 "Impossible to perform withdraw operation on a frozen account"
             )
 
-        if amount > self.available_funds:
+        verify.verify_instance(amount, Money)
+
+        inner_amount = amount.value
+
+        if inner_amount > self._available_funds:
             raise InsufficientFundsError(
                 "The given amount exceeds the account's available funds"
             )
 
-        Account.validate_amount_entry(amount)
         accrual_event = self._apply_accrual()
-        start_balance = self._balance
-        self._update_balance(-amount)
+        start_balance = self._ledger_balance
+        self._update_balance(-inner_amount)
 
-        events = self._compose_withdrawal_event(amount, accrual_event, start_balance)
+        events = self._compose_withdrawal_event(
+            inner_amount, accrual_event, start_balance
+        )
 
         return events
 
     # --------------------------------------------------------------------------
-    # Abstract methods (Hooks for internal orchestration)
+    # Abstract Hook Methods (Internal Orchestration)
     # --------------------------------------------------------------------------
     @abstractmethod
     def _compose_withdrawal_event(
@@ -502,7 +481,7 @@ class Account(ABC):
         to the account's state before mutation.
 
         Args:
-            amount (Decimal): The amount withdrawn.
+            amount (Decimal): The primitive numeric amount withdrawn.
             accrual_event (LedgerEvent | None): The materialized interest/yield event, if any.
             start_balance (Decimal): The authoritative balance prior to the withdrawal.
 
@@ -511,11 +490,10 @@ class Account(ABC):
         """
 
     # --------------------------------------------------------------------------
-    # Protected methods (Internal Helpers)
+    # Protected Methods (Internal Helpers)
     # --------------------------------------------------------------------------
     def _update_balance(self, amount: Decimal) -> None:
-        """
-        Mutates the account balance and synchronizes the domain clock.
+        """Mutates the account balance and synchronizes the domain clock.
 
         This protected method acts as the sole access point for state mutation
         regarding the financial balance. It guarantees that any change to the funds
@@ -527,7 +505,7 @@ class Account(ABC):
             amount (Decimal): The exact monetary value to be added to the balance.
                 Negative values are inherently supported for debits/withdrawals.
         """
-        self._balance += amount
+        self._ledger_balance += amount
         self._last_balance_update = clock.get_today()
 
     def _apply_accrual(self) -> LedgerEvent | None:
@@ -548,7 +526,7 @@ class Account(ABC):
         if not accrual:
             return None
 
-        start_balance = self._balance
+        start_balance = self._ledger_balance
         self._update_balance(accrual)
 
         return LedgerEvent(
@@ -558,7 +536,7 @@ class Account(ABC):
         )
 
     # --------------------------------------------------------------------------
-    # Class methods
+    # Class Factory Methods
     # --------------------------------------------------------------------------
     @classmethod
     def from_snapshot(cls, data: AccountSnapshot) -> Account:
@@ -596,86 +574,18 @@ class Account(ABC):
 
             raise ValueError(f"Unknown account type: {obj_type}")
 
+        branch_code = BranchCode(data.branch_code)
+        account_num = AccountNumber(data.account_num)
+
         instance = cls(
-            branch_code=data.branch_code,
-            account_num=data.account_num,
+            branch_code=branch_code,
+            account_num=account_num,
         )
         instance._is_frozen = data.is_frozen
-        instance._balance = data.balance
+        instance._ledger_balance = data.balance
         instance._last_balance_update = data.last_balance_update
 
         return instance
-
-    # --------------------------------------------------------------------------
-    # Static methods
-    # --------------------------------------------------------------------------
-    @staticmethod
-    def validate_branch_code(code: str) -> str:
-        """
-        Validates the format and length of the branch code.
-
-        The branch code must be a string of exactly 4 numeric characters.
-
-        Args:
-            code (str): The branch code string to validate.
-
-        Returns:
-            str: The validated branch code.
-
-        Raises:
-            TypeError: If the branch code is not a string (indicates a system type bug).
-            InvalidBranchError: If the branch code contains non-numeric characters or is not of length 4.
-        """
-        verify.verify_instance(code, str)
-        try:
-            verify.verify_digits(code, 4)
-            return code
-        except ValueError as e:
-            raise InvalidBranchError(f"Invalid branch code. Cause: {e}") from e
-
-    @staticmethod
-    def validate_account_number(acc_num: str) -> str:
-        """
-        Validates the format and length of the account number.
-
-        The account number must be a string of exactly 8 numeric characters.
-
-        Args:
-            acc_num (str): The account number string to validate.
-
-        Returns:
-            str: The validated account number.
-
-        Raises:
-            TypeError: If the account number is not a string (indicates a system type bug).
-            InvalidAccountError: If the account number contains non-numeric characters or is not of length 8.
-        """
-        verify.verify_instance(acc_num, str)
-        try:
-            verify.verify_digits(acc_num, 8)
-            return acc_num
-        except ValueError as e:
-            raise InvalidAccountError(f"Invalid account number. Cause: {e}") from e
-
-    @staticmethod
-    def validate_amount_entry(amount: Decimal) -> None:
-        """
-        Validates the basic structural and monetary rules for a financial entry.
-
-        Acts as a strict fail-fast mechanism for incoming transactions (such as
-        deposits or withdrawals). It ensures the input is strictly of the correct
-        type and meets the institution's minimum operational threshold, preventing
-        invalid or zero/negative values from reaching the domain logic.
-
-        Args:
-            amount (Decimal): The monetary amount to be evaluated.
-
-        Raises:
-            TypeError: If the provided amount is not an instance of Decimal.
-            ValueError: If the amount is less than the MIN_ATM_TRANSACTION limit.
-        """
-        verify.verify_instance(amount, Decimal)
-        verify.verify_interval(target_value=amount, min_val=Account.MIN_ATM_TRANSACTION)
 
 
 # =====================================================================
@@ -684,8 +594,7 @@ class Account(ABC):
 
 
 class SavingsAccount(Account):
-    """
-    Represents a standard Savings Account.
+    """Represents a standard Savings Account.
 
     A Savings Account only allows withdrawals up to the current positive balance.
     It does not support overdraft or credit limits. It implements the domain rule
@@ -699,12 +608,11 @@ class SavingsAccount(Account):
     DAILY_EARNINGS_RATE: ClassVar[Decimal] = Decimal("0.00016")
 
     # --------------------------------------------------------------------------
-    # Properties
+    # Internal Properties (Subclass Implementation)
     # --------------------------------------------------------------------------
     @property
-    def credit_limit(self) -> None:
-        """
-        Explicitly declares that Savings Accounts do not support credit limits.
+    def _credit_limit(self) -> None:
+        """Explicitly declares that Savings Accounts do not support credit limits.
 
         Returns:
             None: Strictly evaluates to None, ensuring the domain orchestration
@@ -713,9 +621,8 @@ class SavingsAccount(Account):
         return None
 
     @property
-    def available_credit(self) -> None:
-        """
-        Explicitly declares that Savings Accounts do not possess available credit.
+    def _available_credit(self) -> None:
+        """Explicitly declares that Savings Accounts do not possess available credit.
 
         Returns:
             None: Strictly evaluates to None.
@@ -723,9 +630,8 @@ class SavingsAccount(Account):
         return None
 
     @property
-    def available_funds(self) -> Decimal:
-        """
-        Calculates the true available funds, strictly limited to positive balances.
+    def _available_funds(self) -> Decimal:
+        """Calculates the true available funds, strictly limited to positive balances.
 
         Evaluates the current ledger balance combined with any pending yields
         that have accrued up to the current calendar day.
@@ -733,12 +639,11 @@ class SavingsAccount(Account):
         Returns:
             Decimal: The total positive funds available for withdrawal.
         """
-        return self._balance + self._pending_accrual
+        return self._ledger_balance + self._pending_accrual
 
     @property
     def _pending_accrual(self) -> Decimal:
-        """
-        Represents the positive yield generated by the savings balance.
+        """Represents the positive yield generated by the savings balance.
 
         Derived dynamically by applying daily compound interest over the
         positive balance for the number of full calendar days elapsed
@@ -750,13 +655,13 @@ class SavingsAccount(Account):
         """
         time_delta = clock.get_today() - self._last_balance_update
         delta_days = time_delta.days
-        new_amount = self._balance * (1 + self.DAILY_EARNINGS_RATE) ** delta_days
-        earnings = new_amount - self._balance
+        new_amount = self._ledger_balance * (1 + self.DAILY_EARNINGS_RATE) ** delta_days
+        earnings = new_amount - self._ledger_balance
 
         return earnings.quantize(Decimal("0.00"))
 
     # --------------------------------------------------------------------------
-    # Protected methods (Hook Implementations)
+    # Protected Hook Implementations
     # --------------------------------------------------------------------------
     def _compose_withdrawal_event(
         self,
@@ -770,7 +675,7 @@ class SavingsAccount(Account):
         optional accrual event (if materialized) with a standard withdrawal entry.
 
         Args:
-            amount (Decimal): The amount withdrawn.
+            amount (Decimal): The primitive numeric amount withdrawn.
             accrual_event (LedgerEvent | None): The materialized yield event, if any.
             start_balance (Decimal): The balance prior to mutation.
 
@@ -788,7 +693,7 @@ class SavingsAccount(Account):
         return (withdrawal_event,)
 
     # --------------------------------------------------------------------------
-    # Class methods
+    # Class Factory Methods
     # --------------------------------------------------------------------------
     @classmethod
     def from_snapshot(cls, data: AccountSnapshot) -> SavingsAccount:
@@ -822,8 +727,7 @@ class SavingsAccount(Account):
 
 
 class CheckingAccount(Account):
-    """
-    Represents a Checking Account with an integrated overdraft limit.
+    """Represents a Checking Account with an integrated overdraft limit.
 
     Allows withdrawal operations that exceed the standard positive balance,
     up to a statically defined OVERDRAFT_LIMIT. This class derives its
@@ -843,12 +747,11 @@ class CheckingAccount(Account):
     DAILY_INTEREST_RATE: ClassVar[Decimal] = Decimal("0.0025")
 
     # --------------------------------------------------------------------------
-    # Properties
+    # Internal Properties (Subclass Implementation)
     # --------------------------------------------------------------------------
     @property
-    def credit_limit(self) -> Decimal:
-        """
-        Exposes the static overdraft limit authorized for the checking account.
+    def _credit_limit(self) -> Decimal:
+        """Exposes the static overdraft limit authorized for the checking account.
 
         Returns:
             Decimal: The absolute maximum overdraft limit defined by the
@@ -857,9 +760,8 @@ class CheckingAccount(Account):
         return self._OVERDRAFT_LIMIT
 
     @property
-    def available_credit(self) -> Decimal:
-        """
-        Calculates the remaining available overdraft limit dynamically.
+    def _available_credit(self) -> Decimal:
+        """Calculates the remaining available overdraft limit dynamically.
 
         If the account operates with a positive or zero balance, the full
         credit limit is preserved. If operating in the negative, the current
@@ -876,21 +778,20 @@ class CheckingAccount(Account):
         """
         min_available = Decimal("0.00")
         accrual = self._pending_accrual
-        total_credit = self.credit_limit
-        calculated_available = self._OVERDRAFT_LIMIT + self._balance + accrual
+        total_credit = self._credit_limit
+        calculated_available = self._OVERDRAFT_LIMIT + self._ledger_balance + accrual
         available_credit = max(min_available, calculated_available)
 
-        return total_credit if self._balance >= 0 else available_credit
+        return total_credit if self._ledger_balance >= 0 else available_credit
 
     @property
-    def available_funds(self) -> Decimal:
-        """
-        Calculates the true transaction capacity, including the overdraft limit.
+    def _available_funds(self) -> Decimal:
+        """Calculates the true transaction capacity, including the overdraft limit.
 
         Evaluates the total purchasing power by seamlessly combining the account's
         real-time adjusted balance with its maximum authorized credit limit.
         Delegates the resolution of time-based adjustments (such as interest)
-        directly to the 'balance' property to maintain single-responsibility.
+        directly to the '_balance' property to maintain single-responsibility.
 
         Guarantees that the purchasing power never drops below zero, even if
         unpaid accumulated interest charges exceed the maximum authorized overdraft
@@ -900,13 +801,12 @@ class CheckingAccount(Account):
             Decimal: The total absolute monetary value available for disbursement.
         """
         min_available = Decimal("0.00")
-        calculated_available = self.credit_limit + self.balance
+        calculated_available = self._credit_limit + self._balance
         return max(min_available, calculated_available)
 
     @property
     def _pending_accrual(self) -> Decimal:
-        """
-        Represents the debt charges applied to utilized overdraft limits.
+        """Represents the debt charges applied to utilized overdraft limits.
 
         If the account balance is positive or exactly zero, this property
         evaluates to zero. If operating in the negative, it reflects the
@@ -917,20 +817,20 @@ class CheckingAccount(Account):
             Decimal: The exact interest charge as a negative value, rounded
                 to two decimal places, or Decimal("0.00") if no debt exists.
         """
-        if self._balance >= 0:
+        if self._ledger_balance >= 0:
             return Decimal("0.00")
 
         time_delta = clock.get_today() - self._last_balance_update
         delta_days = time_delta.days
 
-        interest = abs(self._balance) * (
+        interest = abs(self._ledger_balance) * (
             (1 + self.DAILY_INTEREST_RATE) ** delta_days - 1
         )
 
         return -interest.quantize(Decimal("0.00"))
 
     # --------------------------------------------------------------------------
-    # Protected methods (Hook Implementations)
+    # Protected Hook Implementations
     # --------------------------------------------------------------------------
     def _compose_withdrawal_event(
         self,
@@ -945,7 +845,7 @@ class CheckingAccount(Account):
         amount crosses the zero-balance threshold.
 
         Args:
-            amount (Decimal): The amount withdrawn.
+            amount (Decimal): The primitive numeric amount withdrawn.
             accrual_event (LedgerEvent | None): The materialized interest event, if any.
             start_balance (Decimal): The balance prior to mutation.
 
