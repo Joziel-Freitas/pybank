@@ -6,6 +6,7 @@ AccountNumber, Name, BirthDate, Password, Money) within the core PyBank domain.
 """
 
 import re
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -26,10 +27,32 @@ from shared.exceptions import (
 # =====================================================================
 # Domain Primitive Value Objects (Auto-validating)
 # =====================================================================
+type ValueTypes = str | Decimal | date
+
+
+class DomainVO[ValueT: ValueTypes](ABC):
+    """Abstract Base Class for all Domain Value Objects.
+
+    Establishes the mandatory 'value' attribute contract and forces
+    concrete subclasses to implement internal invariant verification.
+    """
+
+    value: ValueT
+
+    def __init__(self, value: ValueT) -> None:
+        self.value = value
+
+    @abstractmethod
+    def __post_init__(self) -> None:
+        """Abstract hook called immediately after instantiation.
+
+        Subclasses MUST override this method to enforce type verification
+        and domain invariants.
+        """
 
 
 @dataclass(frozen=True, slots=True)
-class BranchCode:
+class BranchCode(DomainVO[str]):
     """Value Object representing a validated 4-digit bank branch code.
 
     Attributes:
@@ -53,7 +76,7 @@ class BranchCode:
 
 
 @dataclass(frozen=True, slots=True)
-class AccountNumber:
+class AccountNumber(DomainVO[str]):
     """Value Object representing a validated 8-digit bank account number.
 
     Attributes:
@@ -79,7 +102,7 @@ class AccountNumber:
 
 
 @dataclass(frozen=True, slots=True)
-class CPF:
+class CPF(DomainVO[str]):
     """Value Object representing a mathematically verified 11-digit CPF.
 
     Attributes:
@@ -103,7 +126,7 @@ class CPF:
 
 
 @dataclass(frozen=True, slots=True)
-class AccountHolderName:
+class AccountHolderName(DomainVO[str]):
     """Value Object representing a validated account holder full name.
 
     Attributes:
@@ -134,7 +157,7 @@ class AccountHolderName:
 
 
 @dataclass(frozen=True, slots=True)
-class BirthDate:
+class BirthDate(DomainVO[date]):
     """Value Object representing a validated birth date enforcing institutional age limits.
 
     Attributes:
@@ -174,7 +197,7 @@ class BirthDate:
 
 
 @dataclass(frozen=True, slots=True)
-class Password:
+class Password(DomainVO[str]):
     """Value Object representing a validated 6-digit numeric account password.
 
     Attributes:
@@ -199,7 +222,7 @@ class Password:
 
 
 @dataclass(frozen=True, slots=True)
-class Money:
+class Money(DomainVO[Decimal]):
     """Value Object representing an atomic validated monetary entry amount.
 
     Attributes:
