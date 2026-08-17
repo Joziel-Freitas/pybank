@@ -14,6 +14,7 @@ from typing import NotRequired, TypedDict
 
 from infra import terminal_input
 from presentation.cli import views
+from presentation.types import ConfigMap, InnerConfig, InputType
 from settings import INACTIVITY_TIMEOUT, TOTAL_TIMEOUT
 from shared import verify
 from shared.exceptions import InactiveUserError, UserAbortError
@@ -21,28 +22,6 @@ from shared.validators import ValidatorCallback
 
 IO_KEYS = {"info", "prompt", "input_type", "error_msg"}
 EXIT_CMD = "S"
-
-type InputType = str | int | float | Decimal | date
-type ConfigMap = dict[str, InnerConfig]
-
-
-class InnerConfig(TypedDict):
-    """
-    Typed dictionary that defines the structure of a configuration entry.
-
-    Attributes:
-        info (str): Short description or label for the configuration option.
-        prompt (str): Text shown to the user when input is required.
-        input_type (Callable[[str], InputType]): A callable (like a built-in type
-            or a custom parser) that casts the raw string input into the expected Python type.
-        error_msg (str): Error message displayed when the input does not match
-            the expected type or format.
-    """
-
-    info: str
-    prompt: str
-    input_type: Callable[[str], InputType]
-    error_msg: str
 
 
 class CallbackReturn(TypedDict):

@@ -6,9 +6,36 @@ for UI navigation states, user decision prompts, and operation routing,
 promoting type safety and eliminating magic numbers in user interface menus.
 """
 
+from collections.abc import Callable
+from datetime import date
+from decimal import Decimal
 from enum import Enum
+from typing import NotRequired, TypedDict
 
 from settings import ADMIN_EXIT_CODE
+
+type InputType = str | int | float | Decimal | date
+type ConfigMap = dict[str, InnerConfig]
+
+
+class InnerConfig[ParsedType: InputType](TypedDict):
+    """Typed dictionary defining the structural schema of a configuration entry.
+
+    Attributes:
+        info (str): Short description or label for the configuration option.
+        prompt (str): Text shown to the user when input is required.
+        input_type (Callable[[str], ParsedType]): A parser that casts raw string input
+            to the expected primitive type.
+        validation_fn (NotRequired[Callable[[ParsedType], InputType]]): Optional
+            validator function.
+        error_msg (str): Error message displayed when input parsing or validation fails.
+    """
+
+    info: str
+    prompt: str
+    input_type: Callable[[str], ParsedType]
+    validation_fn: NotRequired[Callable[[ParsedType], ParsedType]]
+    error_msg: str
 
 
 class AdminCodeType(Enum):

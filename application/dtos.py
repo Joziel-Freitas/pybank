@@ -48,12 +48,12 @@ class CheckDataDTO(ApplicationDTO):
     authentication workflows.
 
     Attributes:
-        cpf (str | None): The holder's CPF to be verified. Optional.
+        holder_cpf (str | None): The holder's CPF to be verified. Optional.
         account (AccountDataDTO | None): The bank account details to be verified.
           Optional.
     """
 
-    cpf: str | None = None
+    holder_cpf: str | None = None
     account: AccountDataDTO | None = None
 
 
