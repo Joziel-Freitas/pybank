@@ -1,6 +1,8 @@
 from abc import ABC
 
 from application.protocols import HasherProtocol, RepositoryProtocol
+from domain.value_objects import DomainVO, ValueTypes
+from shared.exceptions import DomainVOError
 
 # =====================================================================
 # BaseApplicationService
@@ -51,3 +53,26 @@ class BaseApplicationService(ABC):
         class_name = type(self).__name__
 
         return f"{class_name}(hasher={self._hasher!r}, repository={self._repository!r})"
+
+    def _instantiate_vo[VO_T: DomainVO](
+        self, vo_type: type[VO_T], vo_value: ValueTypes
+    ) -> VO_T:
+        """Centralizes Fail-Fast Domain Value Object instantiation in the Application layer.
+
+        Converts internal DomainVOError exceptions into boundary RuntimeError exceptions,
+        protecting upper application boundaries from unhandled domain validation errors.
+
+        Args:
+            vo_type (type[VO_T]): The concrete DomainVO class to instantiate.
+            vo_value (ValueTypes): The primitive value to be validated and encapsulated.
+
+        Returns:
+            VO_T: A fully validated Domain Value Object instance.
+
+        Raises:
+            RuntimeError: If vo_value violates domain invariants or is missing/invalid.
+        """
+        try:
+            return vo_type(vo_value)
+        except DomainVOError as e:
+            raise RuntimeError(f"Corrupted boundary payload: {e}") from e

@@ -17,11 +17,13 @@ from application.protocols import (
 from application.services.base_service import BaseApplicationService
 from domain.account import Account
 from domain.account_holder import AccountHolder
+from domain.value_objects import CPF, AccountNumber, BranchCode, Password
 from shared import verify
 from shared.credentials import AccessToken, AccountCard, AuthToken
 from shared.exceptions import (
     AccessDeniedError,
     AccountHolderNotFoundError,
+    AccountStateTransitionError,
     AuthenticationError,
     DataNotFoundError,
     RepositoryError,
@@ -106,15 +108,18 @@ class AuthService(BaseApplicationService):
 
         Raises:
             TypeError: If the provided DTO is of an invalid type.
-            RuntimeError: If the DTO is missing required parameters (CPF).
+            RuntimeError: If the DTO is missing required parameters (CPF) or contains
+                a CPF string that violates Domain VO invariants.
             AccountHolderNotFoundError: If the provided CPF is not registered in the system.
         """
         verify.verify_instance(dto, CheckDataDTO)
 
-        if not dto.cpf:
+        if not dto.holder_cpf:
             raise RuntimeError("Method called without mandatory CPF attribute")
 
-        holder = self._get_account_holder(dto.cpf)
+        cpf = self._instantiate_vo(CPF, dto.holder_cpf)
+
+        holder = self._get_account_holder(cpf)
         return holder.cards
 
     def authenticate(self, dto: CheckDataDTO) -> AuthToken:
@@ -131,16 +136,18 @@ class AuthService(BaseApplicationService):
 
         Raises:
             TypeError: If the provided DTO is of an invalid type.
-            RuntimeError: If required attributes (CPF or Account state) are missing from the DTO.
+            RuntimeError: If required attributes (CPF or Account state) are missing from the DTO
+                or fail Domain VO invariants.
             AuthenticationError: If the account does not exist or does not belong to the holder.
         """
         verify.verify_instance(dto, CheckDataDTO)
 
-        if not dto.cpf or not dto.account:
+        if not dto.holder_cpf or not dto.account:
             raise RuntimeError("Cannot authenticate with missing CPF or Account data")
 
-        branch_code = dto.account.branch_code
-        account_num = dto.account.account_num
+        branch_code = self._instantiate_vo(BranchCode, dto.account.branch_code)
+        account_num = self._instantiate_vo(AccountNumber, dto.account.account_num)
+        cpf = self._instantiate_vo(CPF, dto.holder_cpf)
 
         try:
             account_info = self._repository.get_account_projection(
@@ -153,13 +160,13 @@ class AuthService(BaseApplicationService):
 
         holder_info = account_info.unwrap_holder()
 
-        if holder_info.cpf != dto.cpf:
+        if holder_info.cpf != cpf.value:
             raise AuthenticationError(
                 "Authentication failed: Account not linked to this client"
             )
 
         return self._token_service.generate_auth_token(
-            cpf=dto.cpf, branch_code=branch_code, account_num=account_num
+            cpf=cpf.value, branch_code=branch_code.value, account_num=account_num.value
         )
 
     def get_remaining_login_attempts(self, auth_token: AuthToken) -> int:
@@ -179,13 +186,17 @@ class AuthService(BaseApplicationService):
             ExpiredTokenError: If the primary token TTL has expired.
             TokenSecurityError: If token signature verification fails.
             AuthenticationError: If the account no longer exists in persistence.
+            RuntimeError: If token claims fail Domain VO invariants.
         """
         verify.verify_instance(auth_token, AuthToken)
         self._token_service.validate_token_integrity(auth_token)
 
+        branch_code = self._instantiate_vo(BranchCode, auth_token.branch_code)
+        account_num = self._instantiate_vo(AccountNumber, auth_token.account_num)
+
         try:
             account_info = self._repository.get_account_projection(
-                auth_token.branch_code, auth_token.account_num, access_info=True
+                branch_code, account_num, access_info=True
             )
         except DataNotFoundError as e:
             raise AuthenticationError("Account no longer exists") from e
@@ -211,6 +222,7 @@ class AuthService(BaseApplicationService):
 
         Raises:
             TypeError: If the provided DTO is of an invalid type.
+            RuntimeError: If DTO or token payload attributes violate Domain VO invariants.
             ExpiredTokenError: If the provided AuthToken has expired.
             TokenSecurityError: If token integrity verification fails.
             AccessDeniedError: If the account is already frozen or becomes frozen due to brute-force protection.
@@ -220,14 +232,17 @@ class AuthService(BaseApplicationService):
         verify.verify_instance(dto, VaultAccessDTO)
 
         self._token_service.validate_token_integrity(dto.auth_token)
-        password = dto.password
         auth_token = dto.auth_token
+
+        branch_code = self._instantiate_vo(BranchCode, auth_token.branch_code)
+        account_num = self._instantiate_vo(AccountNumber, auth_token.account_num)
+        password = self._instantiate_vo(Password, dto.password)
 
         try:
             with self._repository.unit_of_work():
                 account_info = self._repository.get_account_projection(
-                    auth_token.branch_code,
-                    auth_token.account_num,
+                    branch_code,
+                    account_num,
                     access_info=True,
                     for_update=True,
                 )
@@ -239,15 +254,20 @@ class AuthService(BaseApplicationService):
 
                 access_info = account_info.unwrap_access()
 
-                if self._hasher.check_password(password, access_info.password_hash):
+                if self._hasher.check_password(
+                    password.value, access_info.password_hash
+                ):
                     return self._login_success_route(
                         auth_token,
+                        (branch_code, account_num),
                         access_info.password_hash,
                         access_info.failed_attempts,
                     )
 
                 exception_to_raise = self._login_failed_route(
-                    auth_token, access_info.failed_attempts, password
+                    (branch_code, account_num),
+                    access_info.failed_attempts,
+                    password.value,
                 )
 
             raise exception_to_raise
@@ -261,13 +281,13 @@ class AuthService(BaseApplicationService):
             ) from e
 
     # --------------------------------------------------------------------------
-    # Protected methods (Internal Helpers)
+    # Protected methods (Internal Helpers - Trust Zone)
     # --------------------------------------------------------------------------
-    def _get_account_holder(self, cpf: str) -> AccountHolder:
+    def _get_account_holder(self, cpf: CPF) -> AccountHolder:
         """Hydrates an AccountHolder domain entity from persistence via snapshot.
 
         Args:
-            cpf (str): The target account holder's CPF.
+            cpf (CPF): The value object representing the target account holder's CPF.
 
         Returns:
             AccountHolder: Hydrated domain aggregate root.
@@ -284,7 +304,11 @@ class AuthService(BaseApplicationService):
             ) from e
 
     def _login_success_route(
-        self, auth_token: AuthToken, password_hash: str, failed_attempts: int
+        self,
+        auth_token: AuthToken,
+        branch_and_acc_num: tuple[BranchCode, AccountNumber],
+        password_hash: str,
+        failed_attempts: int,
     ) -> AccessToken:
         """Handles successful vault authorization state transitions within an active Unit of Work.
 
@@ -292,23 +316,27 @@ class AuthService(BaseApplicationService):
 
         Args:
             auth_token (AuthToken): Active primary authentication token.
+            branch_and_acc_num (tuple[BranchCode, AccountNumber]): Target account coordinate tuple.
             password_hash (str): Stored password hash for token payload generation.
             failed_attempts (int): Current counter of recorded failed attempts.
 
         Returns:
             AccessToken: Elevated access token.
         """
+        branch_code, account_num = branch_and_acc_num
+
         if failed_attempts:
-            self._repository.reset_login_attempts(
-                auth_token.branch_code, auth_token.account_num
-            )
+            self._repository.reset_login_attempts(branch_code, account_num)
 
         return self._token_service.generate_access_token(
             auth_token=auth_token, pwd_hash=password_hash
         )
 
     def _login_failed_route(
-        self, auth_token: AuthToken, failed_attempts: int, password: str
+        self,
+        branch_and_acc_num: tuple[BranchCode, AccountNumber],
+        failed_attempts: int,
+        password: str,
     ) -> AccessDeniedError | AuthenticationError:
         """Applies security mitigations for failed vault login attempts within an active Unit of Work.
 
@@ -316,25 +344,33 @@ class AuthService(BaseApplicationService):
         or freezing account) are committed before raising the domain error to the caller.
 
         Args:
-            auth_token (AuthToken): Active primary authentication token.
+            branch_and_acc_num (tuple[BranchCode, AccountNumber]): Target account coordinate tuple.
             failed_attempts (int): Prior count of recorded failures.
             password (str): The invalid password attempted.
 
         Returns:
             AccessDeniedError | AuthenticationError: Exception object ready to be raised post-commit.
+
+        Raises:
+            RuntimeError: If the account aggregate fails its state transition during freezing.
         """
-        self._repository.register_failed_login(
-            auth_token.branch_code, auth_token.account_num
-        )
+        branch_code, account_num = branch_and_acc_num
+
+        self._repository.register_failed_login(branch_code, account_num)
 
         if (failed_attempts + 1) >= self.MAX_LOGIN_ATTEMPTS:
             account_db_snap = self._repository.get_account_snapshot(
-                auth_token.branch_code,
-                auth_token.account_num,
+                branch_code,
+                account_num,
                 for_update=True,
             )
             account = Account.from_snapshot(account_db_snap)
-            account.freeze()
+
+            try:
+                account.freeze()
+            except AccountStateTransitionError as e:
+                raise RuntimeError("Inconsistent Account state") from e
+
             account_snap = account.to_snapshot()
             self._repository.update_account_status(account_snap)
             return AccessDeniedError(

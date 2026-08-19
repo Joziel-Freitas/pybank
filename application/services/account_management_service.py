@@ -13,11 +13,13 @@ from application.protocols import (
 )
 from application.services.base_service import BaseApplicationService
 from domain.account import Account
+from domain.value_objects import CPF, AccountNumber, BranchCode, Password
 from shared import verify
-from shared.credentials import AccessToken
+from shared.credentials import AccessToken, AuthToken
 from shared.exceptions import (
     AccessDeniedError,
     AccountAlreadyActiveError,
+    AccountStateTransitionError,
     AuthenticationError,
     DataNotFoundError,
     DeniedOperationError,
@@ -63,7 +65,6 @@ class AccountManagementService(BaseApplicationService):
             repository (RepositoryProtocol): Database interaction interface.
             token_service (TokenServiceProtocol): Session token validation interface.
         """
-
         super().__init__(hasher=hasher, repository=repository)
 
         self._token_service = token_service
@@ -104,6 +105,7 @@ class AccountManagementService(BaseApplicationService):
 
         Raises:
             TypeError: If dto is not an instance of UpdatePasswordDTO.
+            RuntimeError: If token payload or proposed password violates Domain VO invariants.
             ExpiredTokenError: If the token's TTL has passed.
             TokenSecurityError: If the token's cryptographic signature is invalid or tampered with.
             AuthenticationError: If the account no longer exists during the active session.
@@ -113,12 +115,15 @@ class AccountManagementService(BaseApplicationService):
         verify.verify_instance(dto, UpdatePasswordDTO)
 
         access_token = dto.access_token
+        branch_code, account_num, password = self._get_common_vos(
+            access_token, dto.new_password
+        )
 
         try:
             with self._repository.unit_of_work():
                 account_info = self._repository.get_account_projection(
-                    access_token.branch_code,
-                    access_token.account_num,
+                    branch_code,
+                    account_num,
                     access_info=True,
                     for_update=True,
                 )
@@ -133,11 +138,9 @@ class AccountManagementService(BaseApplicationService):
                     raise AccessDeniedError(
                         "This account is frozen and cannot be accessed"
                     )
-                hashed_pwd = self._hasher.generate_password_hash(dto.new_password)
+                hashed_pwd = self._hasher.generate_password_hash(password.value)
 
-                self._repository.update_password(
-                    access_token.branch_code, access_token.account_num, hashed_pwd
-                )
+                self._repository.update_password(branch_code, account_num, hashed_pwd)
         except DataNotFoundError as e:
             raise AuthenticationError(
                 "Authentication failed: Account no longer exists"
@@ -163,6 +166,7 @@ class AccountManagementService(BaseApplicationService):
 
         Raises:
             TypeError: If dto is not an instance of UnfreezeAccountDTO.
+            RuntimeError: If token payload or new password violates Domain VO invariants.
             ExpiredTokenError: If the token's TTL has passed.
             TokenSecurityError: If the token's cryptographic signature is invalid or tampered with.
             AuthenticationError: If the birth date is incorrect, or if the account/holder no longer exists.
@@ -172,21 +176,18 @@ class AccountManagementService(BaseApplicationService):
         verify.verify_instance(dto, UnfreezeAccountDTO)
         self._token_service.validate_token_integrity(dto.auth_token)
 
-        auth_token = dto.auth_token
+        branch_code, account_num, password = self._get_common_vos(
+            dto.auth_token, dto.new_password
+        )
 
         try:
             with self._repository.unit_of_work():
                 account_info = self._repository.get_account_projection(
-                    auth_token.branch_code,
-                    auth_token.account_num,
+                    branch_code,
+                    account_num,
                     holder_info=True,
                     for_update=True,
                 )
-
-                if not account_info.is_frozen:
-                    raise AccountAlreadyActiveError(
-                        "Operational accounts cannot be unfrozen"
-                    )
 
                 holder_info = account_info.unwrap_holder()
 
@@ -195,19 +196,22 @@ class AccountManagementService(BaseApplicationService):
                         "The given birth date doesn't match with registered birth date"
                     )
 
-                new_hash = self._hasher.generate_password_hash(dto.new_password)
+                new_hash = self._hasher.generate_password_hash(password.value)
 
-                self._repository.update_password(
-                    auth_token.branch_code, auth_token.account_num, new_hash
-                )
-                self._repository.reset_login_attempts(
-                    auth_token.branch_code, auth_token.account_num
-                )
+                self._repository.update_password(branch_code, account_num, new_hash)
+                self._repository.reset_login_attempts(branch_code, account_num)
                 account_db_snap = self._repository.get_account_snapshot(
-                    auth_token.branch_code, auth_token.account_num, for_update=True
+                    branch_code, account_num, for_update=True
                 )
                 account = Account.from_snapshot(account_db_snap)
-                account.unfreeze()
+
+                try:
+                    account.unfreeze()
+                except AccountStateTransitionError:
+                    raise AccountAlreadyActiveError(
+                        "Operational accounts cannot be unfrozen"
+                    )
+
                 account_snap = account.to_snapshot()
                 self._repository.update_account_status(account_snap)
         except DataNotFoundError as e:
@@ -236,6 +240,7 @@ class AccountManagementService(BaseApplicationService):
 
         Raises:
             TypeError: If access_token is not an instance of AccessToken.
+            RuntimeError: If token claims violate Domain VO invariants.
             ExpiredTokenError: If the token's TTL has passed.
             TokenSecurityError: If the token signature is invalid or tampered with.
             AuthenticationError: If the account no longer exists (TOCTOU mitigation).
@@ -245,11 +250,14 @@ class AccountManagementService(BaseApplicationService):
         """
         verify.verify_instance(access_token, AccessToken)
 
+        branch_code = self._instantiate_vo(BranchCode, access_token.branch_code)
+        account_num = self._instantiate_vo(AccountNumber, access_token.account_num)
+
         try:
             with self._repository.unit_of_work():
                 account_info = self._repository.get_account_projection(
-                    access_token.branch_code,
-                    access_token.account_num,
+                    branch_code,
+                    account_num,
                     access_info=True,
                     holder_info=True,
                     for_update=True,
@@ -262,13 +270,8 @@ class AccountManagementService(BaseApplicationService):
                     access_token, access_info.password_hash
                 )
 
-                if account_info.is_frozen:
-                    raise AccessDeniedError(
-                        "This account is frozen and cannot be closed"
-                    )
-
                 account_db_snap = self._repository.get_account_snapshot(
-                    access_token.branch_code, access_token.account_num
+                    branch_code, account_num
                 )
                 account_obj = Account.from_snapshot(account_db_snap)
 
@@ -283,10 +286,9 @@ class AccountManagementService(BaseApplicationService):
                         "Close account denied: Account has a non zero balance"
                     ) from e
 
-                self._repository.delete_account(
-                    access_token.branch_code, access_token.account_num
-                )
-                self._cleanup_unlinked_holder(holder_info.cpf)
+                self._repository.delete_account(branch_code, account_num)
+                cpf_obj = self._instantiate_vo(CPF, holder_info.cpf)
+                self._cleanup_unlinked_holder(cpf_obj)
         except DataNotFoundError as e:
             raise AuthenticationError(
                 "Authentication failed: Account no longer exists"
@@ -297,9 +299,31 @@ class AccountManagementService(BaseApplicationService):
             ) from e
 
     # --------------------------------------------------------------------------
-    # Protected methods
+    # Protected methods (Internal Helpers - Trust Zone)
     # --------------------------------------------------------------------------
-    def _cleanup_unlinked_holder(self, cpf: str) -> None:
+
+    def _get_common_vos(
+        self, token: AccessToken | AuthToken, pwd_str: str
+    ) -> tuple[BranchCode, AccountNumber, Password]:
+        """Extracts and validates common Value Objects from a session token and raw password string.
+
+        Args:
+            token (AccessToken | AuthToken): Validated session token containing account coordinates.
+            pwd_str (str): Raw password string to be converted into a Password VO.
+
+        Returns:
+            tuple[BranchCode, AccountNumber, Password]: A 3-tuple containing initialized Domain VOs.
+
+        Raises:
+            RuntimeError: If any of the primitive attributes violate Domain VO invariants.
+        """
+        branch_code = self._instantiate_vo(BranchCode, token.branch_code)
+        account_num = self._instantiate_vo(AccountNumber, token.account_num)
+        password = self._instantiate_vo(Password, pwd_str)
+
+        return (branch_code, account_num, password)
+
+    def _cleanup_unlinked_holder(self, cpf: CPF) -> None:
         """Enforces the data retention policy by evaluating an account holder's linkage status.
 
         Delegates to the repository abstraction to determine if the specified holder maintains
@@ -309,7 +333,7 @@ class AccountManagementService(BaseApplicationService):
         Assumes execution within an active transactional boundary established by the caller.
 
         Args:
-            cpf (str): The 11-digit string representing the account holder's CPF.
+            cpf (CPF): The value object representing the account holder's 11-digit CPF.
 
         Raises:
             DataNotFoundError: If the provided CPF does not exist in the persistence layer.

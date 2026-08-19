@@ -7,6 +7,7 @@ account summary retrieval, deposits, gatekept withdrawals, and statement generat
 
 from collections.abc import Generator
 from contextlib import contextmanager
+from decimal import Decimal
 
 from application.dtos import DepositDTO, StatementDTO, WithdrawalDTO
 from application.protocols import (
@@ -16,7 +17,7 @@ from application.protocols import (
 )
 from application.services.base_service import BaseApplicationService
 from domain.account import Account
-from domain.value_objects import WithdrawalSimulation
+from domain.value_objects import AccountNumber, BranchCode, Money, WithdrawalSimulation
 from shared import verify
 from shared.credentials import AccessToken, AuthToken
 from shared.exceptions import (
@@ -117,11 +118,12 @@ class BankingOperationsService(BaseApplicationService):
 
         Raises:
             TypeError: If arguments are not of expected types.
+            RuntimeError: If token claims violate Domain VO invariants, or if financial
+                data is requested using only a primary AuthToken instead of an AccessToken.
             ExpiredTokenError: If the token's TTL has passed.
             TokenSecurityError: If the token is invalid, tampered with, or if cryptographic
                 validation against the live database hash fails (Zero Trust enforcement).
             AuthenticationError: If the account or holder no longer exists (TOCTOU mitigation).
-            RuntimeError: If financial data is requested but only an AuthToken is provided.
         """
         verify.verify_instance(token, (AuthToken, AccessToken))
         verify.verify_instance(request_financial, bool)
@@ -133,16 +135,19 @@ class BankingOperationsService(BaseApplicationService):
         financial_dto = None
         pwd_hash = ""
 
+        branch_code = self._instantiate_vo(BranchCode, token.branch_code)
+        account_num = self._instantiate_vo(AccountNumber, token.account_num)
+
         try:
             account_info = self._repository.get_account_projection(
-                token.branch_code,
-                token.account_num,
+                branch_code,
+                account_num,
                 holder_info=True,
                 access_info=request_financial,
             )
             if request_financial:
                 account_db_snap = self._repository.get_account_snapshot(
-                    token.branch_code, token.account_num
+                    branch_code, account_num
                 )
                 account_obj = Account.from_snapshot(account_db_snap)
         except DataNotFoundError:
@@ -180,7 +185,8 @@ class BankingOperationsService(BaseApplicationService):
 
         Raises:
             TypeError: If dto is not an instance of DepositDTO.
-            ValueError: If the deposit amount violates business rules (e.g., minimum ATM limit).
+            RuntimeError: If branch code, account number, or deposit amount violate
+                Domain VO invariants (e.g., minimum ATM limit).
             AccessDeniedError: If the target account is currently frozen (translating
                 domain-level FrozenAccountError).
             AccountNotFoundError: If the provided branch or account number does not exist.
@@ -188,14 +194,18 @@ class BankingOperationsService(BaseApplicationService):
         """
         verify.verify_instance(dto, DepositDTO)
 
+        branch_code, account_num, money = self._get_operation_vos(
+            dto.branch_code, dto.account_num, dto.amount
+        )
+
         try:
             with self._repository.unit_of_work():
                 account_db_snap = self._repository.get_account_snapshot(
-                    dto.branch_code, dto.account_num, for_update=True
+                    branch_code, account_num, for_update=True
                 )
                 account_obj = Account.from_snapshot(account_db_snap)
                 try:
-                    events = account_obj.deposit(dto.amount)
+                    events = account_obj.deposit(money)
                 except FrozenAccountError as e:
                     raise AccessDeniedError(
                         "This account is frozen and cannot be accessed"
@@ -236,22 +246,23 @@ class BankingOperationsService(BaseApplicationService):
 
         Raises:
             TypeError: If dto is not an instance of WithdrawalDTO.
+            RuntimeError: If token claims or withdrawal amount violate Domain VO invariants.
             ExpiredTokenError: If the token's TTL has passed.
             TokenSecurityError: If the cryptographic signature of the token is invalid or tampered with.
             AuthenticationError: If the account was deleted during the active session.
             AccessDeniedError: If the target account is frozen during the operation.
             DeniedOperationError: If the requested withdrawal is rejected due to insufficient available funds.
-            ValueError: If the withdrawal amount violates business rules (e.g., minimum ATM limit).
             ServiceUnavailableError: If the transaction could not be persisted due to an internal error.
         """
         verify.verify_instance(dto, WithdrawalDTO)
 
-        amount = dto.amount
-        access_token = dto.access_token
+        branch_code, account_num, money = self._get_operation_vos(
+            dto.access_token.branch_code, dto.access_token.account_num, dto.amount
+        )
 
         try:
             account_info = self._repository.get_account_projection(
-                access_token.branch_code, access_token.account_num, access_info=True
+                branch_code, account_num, access_info=True
             )
         except DataNotFoundError as e:
             raise AuthenticationError(
@@ -261,19 +272,19 @@ class BankingOperationsService(BaseApplicationService):
         access_info = account_info.unwrap_access()
 
         self._token_service.validate_token_integrity(
-            access_token, access_info.password_hash
+            dto.access_token, access_info.password_hash
         )
 
         try:
             with self._repository.unit_of_work():
                 account_db_snap = self._repository.get_account_snapshot(
-                    access_token.branch_code, access_token.account_num, for_update=True
+                    branch_code, account_num, for_update=True
                 )
                 account_obj = Account.from_snapshot(account_db_snap)
-                simulation = account_obj.simulate_withdrawal(amount)
+                simulation = account_obj.simulate_withdrawal(money)
                 yield simulation
                 try:
-                    events = account_obj.withdrawal(amount)
+                    events = account_obj.withdrawal(money)
                 except FrozenAccountError as e:
                     raise AccessDeniedError(
                         "This account is frozen and cannot be accessed"
@@ -310,6 +321,7 @@ class BankingOperationsService(BaseApplicationService):
 
         Raises:
             TypeError: If dto is not an instance of StatementDTO.
+            RuntimeError: If token claims violate Domain VO invariants.
             ExpiredTokenError: If the token's TTL has passed.
             TokenSecurityError: If the token's cryptographic signature is invalid or tampered with.
             AuthenticationError: If the account was deleted during the active session (TOCTOU mitigation).
@@ -319,10 +331,13 @@ class BankingOperationsService(BaseApplicationService):
 
         access_token = dto.access_token
 
+        branch_code = self._instantiate_vo(BranchCode, access_token.branch_code)
+        account_num = self._instantiate_vo(AccountNumber, access_token.account_num)
+
         try:
             with self._repository.unit_of_work():
                 events = self._repository.get_ledger_entries(
-                    access_token.branch_code, access_token.account_num, dto.start_date
+                    branch_code, account_num, dto.start_date
                 )
                 account_summary = self.get_account_summary(
                     access_token, request_financial=True
@@ -335,3 +350,31 @@ class BankingOperationsService(BaseApplicationService):
         return StatementProjectionDTO(
             account_info=account_summary, financial_events=events
         )
+
+    # --------------------------------------------------------------------------
+    # Protected methods (Internal Helpers - Trust Zone)
+    # --------------------------------------------------------------------------
+
+    def _get_operation_vos(
+        self, branch_code_str: str, account_num_str: str, amount: Decimal
+    ) -> tuple[BranchCode, AccountNumber, Money]:
+        """Converts raw primitives into validated Domain Value Objects for banking operations.
+
+        Encapsulates Fail-Fast boundary conversion using `BaseApplicationService._instantiate_vo`.
+
+        Args:
+            branch_code_str (str): Raw 4-digit branch code primitive.
+            account_num_str (str): Raw 8-digit account number primitive.
+            amount (Decimal): Raw monetary transaction amount primitive.
+
+        Returns:
+            tuple[BranchCode, AccountNumber, Money]: A 3-tuple containing initialized Domain VOs.
+
+        Raises:
+            RuntimeError: If any primitive value violates Domain Value Object invariant rules.
+        """
+        branch_code = self._instantiate_vo(BranchCode, branch_code_str)
+        account_num = self._instantiate_vo(AccountNumber, account_num_str)
+        money = self._instantiate_vo(Money, amount)
+
+        return (branch_code, account_num, money)
