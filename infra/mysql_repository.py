@@ -1,5 +1,4 @@
-"""
-MySQL Repository Persistence Module.
+"""MySQL Repository Persistence Module.
 
 This module provides the `MySQLRepository` class, acting as the Anti-Corruption
 Layer (ACL) between the PyBank domain entities and the relational database.
@@ -20,7 +19,7 @@ from pymysql.connections import Connection
 from pymysql.constants import CLIENT
 
 from domain.snapshots import AccountHolderSnapshot, AccountSnapshot
-from domain.value_objects import LedgerEvent
+from domain.value_objects import CPF, AccountNumber, BranchCode, LedgerEvent
 from shared import verify
 from shared.exceptions import (
     DataNotFoundError,
@@ -38,8 +37,7 @@ load_dotenv()
 
 
 class MySQLRepository:
-    """
-    Repository class responsible for MySQL database persistence operations.
+    """Repository class responsible for MySQL database persistence operations.
 
     Acts as the Anti-Corruption Layer (ACL) between the PyBank domain and the
     relational database. Manages ACID transactions, data serialization, and
@@ -48,6 +46,7 @@ class MySQLRepository:
     Attributes:
         _connection (Connection): The active PyMySQL database connection instance
             configured with a DictCursor.
+        _in_transaction (bool): Internal state flag to verify active Unit of Work context.
     """
 
     # --------------------------------------------------------------------------
@@ -62,8 +61,7 @@ class MySQLRepository:
     # --------------------------------------------------------------------------
 
     def __init__(self) -> None:
-        """
-        Initializes the repository and establishes the database connection.
+        """Initializes the repository and establishes the database connection.
 
         Connection parameters are securely fetched from environment variables.
         Utilizes `cursors.DictCursor` to return row data as Python dictionaries.
@@ -85,8 +83,7 @@ class MySQLRepository:
 
     @contextmanager
     def unit_of_work(self) -> Generator[None]:
-        """
-        Macro Context Manager for orchestrating Units of Work (Unit of Work Pattern).
+        """Macro Context Manager for orchestrating Units of Work (Unit of Work Pattern).
 
         Allows the Domain layer (e.g., Bank) to group multiple repository operations
         into a single, atomic ACID transaction. It explicitly manages the commit/rollback
@@ -126,33 +123,33 @@ class MySQLRepository:
     def register_account_bundle(
         self,
         account_snap: AccountSnapshot,
-        holder_snap_or_cpf: AccountHolderSnapshot | str,
+        holder_snap_or_cpf: AccountHolderSnapshot | CPF,
         password_hash: str,
     ) -> None:
         """Executes an ACID-compliant transaction to register an account and its holder.
 
         Acts as a transactional Facade that coordinates the atomicity of the onboarding
         process. If provided with a new AccountHolderSnapshot, it persists the holder
-        record and extracts its auto-generated primary key. If provided with a CPF string,
-        it resolves the existing holder's internal ID. Finally, it links and inserts the
-        new account record within the same isolated boundary.
+        record and extracts its auto-generated primary key. If provided with a CPF value
+        object, it resolves the existing holder's internal ID. Finally, it links and inserts
+        the new account record within the same isolated boundary.
 
         Args:
             account_snap (AccountSnapshot): The static persistence snapshot capturing
                 the new account's configuration.
-            holder_snap_or_cpf (AccountHolderSnapshot | str): The static snapshot of
-                a new account holder, or the 11-digit CPF string of an existing one.
+            holder_snap_or_cpf (AccountHolderSnapshot | CPF): The static snapshot of
+                a new account holder, or the CPF value object of an existing one.
             password_hash (str): The pre-computed secure cryptographic password hash.
 
         Raises:
             TypeError: If any of the arguments do not match the expected types.
-            DataNotFoundError: If a CPF string is provided but the holder does not exist.
+            DataNotFoundError: If a CPF is provided but the holder does not exist.
             DuplicatedDataError: If a unique database constraint (CPF or Account Num)
                 is violated, carrying the respective snapshot reference.
             RepositoryError: If a generic database or connection error occurs.
         """
         verify.verify_instance(account_snap, AccountSnapshot)
-        verify.verify_instance(holder_snap_or_cpf, (AccountHolderSnapshot, str))
+        verify.verify_instance(holder_snap_or_cpf, (AccountHolderSnapshot, CPF))
         verify.verify_instance(password_hash, str)
 
         with self.unit_of_work(), self._connection.cursor() as cursor:
@@ -226,62 +223,62 @@ class MySQLRepository:
 
             self._insert_ledger_entries(cursor, account_id, events)
 
-    def account_holder_exists(self, cpf: str) -> bool:
-        """
-        Performs a highly optimized existence check for an account holder by CPF.
+    def account_holder_exists(self, cpf: CPF) -> bool:
+        """Performs a highly optimized existence check for an account holder by CPF.
 
         Executes a lightweight database query (SELECT 1) to determine if an
         account holder record exists without hydrating the full domain entity or
         fetching related account cards.
 
         Args:
-            cpf (str): The 11-digit string representing the account holder's CPF.
+            cpf (CPF): The value object representing the account holder's 11-digit CPF.
 
         Returns:
             bool: True if the account holder is registered, False otherwise.
         """
-        verify.verify_instance(cpf, str)
+        verify.verify_instance(cpf, CPF)
 
         sql = "SELECT 1 FROM account_holders WHERE cpf = %s LIMIT 1"
-
         with self._connection.cursor() as cursor:
-            cursor.execute(sql, (cpf,))
+            cursor.execute(sql, (cpf.value,))
             result = cursor.fetchone()
 
         return bool(result)
 
-    def account_exists(self, branch_code: str, account_num: str) -> bool:
-        """
-        Performs a highly optimized existence check for an account.
+    def account_exists(
+        self, branch_code: BranchCode, account_num: AccountNumber
+    ) -> bool:
+        """Performs a highly optimized existence check for an account.
 
         Executes a lightweight query (SELECT 1) to verify if an account is
         registered under the specified branch and account number, completely
         avoiding object hydration and join operations.
 
         Args:
-            branch_code (str): The 4-digit string representing the branch.
-            account_num (str): The unique 8-digit string representing the account.
+            branch_code (BranchCode): Value object representing the 4-digit branch code.
+            account_num (AccountNumber): Value object representing the unique 8-digit account number.
 
         Returns:
             bool: True if the account exists, False otherwise.
         """
-        verify.verify_instance(branch_code, str)
-        verify.verify_instance(account_num, str)
+        verify.verify_instance(branch_code, BranchCode)
+        verify.verify_instance(account_num, AccountNumber)
+
         sql = (
             "SELECT 1 FROM accounts "
             "WHERE branch_code = %s AND account_num = %s "
             "LIMIT 1"
         )
+        args_str = (branch_code.value, account_num.value)
 
         with self._connection.cursor() as cursor:
-            cursor.execute(sql, (branch_code, account_num))
+            cursor.execute(sql, args_str)
             result = cursor.fetchone()
 
         return bool(result)
 
-    def holder_has_account(self, cpf: str) -> bool:
-        """
-        Checks if an account holder currently has any registered accounts in the system.
+    def holder_has_account(self, cpf: CPF) -> bool:
+        """Checks if an account holder currently has any registered accounts in the system.
 
         This method acts as a fail-fast guard condition for de-provisioning workflows.
         It utilizes a highly optimized SQL query with a LIMIT 1 clause, ensuring the
@@ -289,17 +286,17 @@ class MySQLRepository:
         is discovered.
 
         Args:
-            cpf (str): The 11-digit string representing the account holder's CPF.
+            cpf (CPF): The value object representing the account holder's 11-digit CPF.
 
         Returns:
             bool: True if the holder has at least one account linked to their record;
                 False otherwise (indicating the holder is completely unlinked).
 
         Raises:
-            TypeError: If the provided CPF argument is not a string.
+            TypeError: If the provided CPF argument is not an instance of CPF.
             DataNotFoundError: If the provided CPF does not exist in the database.
         """
-        verify.verify_instance(cpf, str)
+        verify.verify_instance(cpf, CPF)
 
         sql = "SELECT 1 FROM accounts WHERE account_holder_id = %s LIMIT 1"
 
@@ -310,7 +307,7 @@ class MySQLRepository:
 
         return bool(result)
 
-    def get_holder_snapshot(self, cpf: str) -> AccountHolderSnapshot:
+    def get_holder_snapshot(self, cpf: CPF) -> AccountHolderSnapshot:
         """Retrieves a static snapshot of an account holder and their associated cards.
 
         Executes two sequential, lightweight queries to fetch the core holder
@@ -320,17 +317,17 @@ class MySQLRepository:
         before returning, preserving domain boundaries.
 
         Args:
-            cpf (str): The 11-digit string representing the account holder's CPF.
+            cpf (CPF): The value object representing the account holder's 11-digit CPF.
 
         Returns:
             AccountHolderSnapshot: An immutable snapshot containing the holder's
                 identity details and their wallet of active account credentials.
 
         Raises:
-            TypeError: If the provided CPF is not a string.
+            TypeError: If the provided CPF argument is not an instance of CPF.
             DataNotFoundError: If no account holder matches the provided CPF.
         """
-        verify.verify_instance(cpf, str)
+        verify.verify_instance(cpf, CPF)
 
         holder_sql = "SELECT * FROM account_holders WHERE cpf = %s"
         account_sql = (
@@ -338,7 +335,7 @@ class MySQLRepository:
         )
 
         with self._connection.cursor() as cursor:
-            cursor.execute(holder_sql, (cpf,))
+            cursor.execute(holder_sql, (cpf.value,))
             db_dict = cursor.fetchone()
 
             if not db_dict:
@@ -350,35 +347,33 @@ class MySQLRepository:
 
         cards_list = []
         for row in rows:
-            row["cpf"] = cpf
+            row["cpf"] = cpf.value
             cards_list.append(row)
 
-        snapshot = AccountHolderSnapshot(
+        return AccountHolderSnapshot(
             name=db_dict["holder_name"],
             cpf=db_dict["cpf"],
             birth_date=db_dict["birth_date"],
             cards=cards_list,
         )
-        return snapshot
 
     def get_account_projection(
         self,
-        branch_code: str,
-        account_num: str,
+        branch_code: BranchCode,
+        account_num: AccountNumber,
         access_info: bool = False,
         holder_info: bool = False,
         for_update: bool = False,
     ) -> AccountProjectionDTO:
-        """
-        Dynamic Query Builder for retrieving identity and routing slices of account data.
+        """Dynamic Query Builder for retrieving identity and routing slices of account data.
 
         Acts as an optimized 'micro-ORM'. Explicitly omits financial balances from the
         query, forcing the Domain layer to hydrate the full Account entity for any
         monetary operations or displays, thereby guaranteeing business rule enforcement.
 
         Args:
-            branch_code (str): The 4-digit string representing the branch.
-            account_num (str): The unique 8-digit string representing the account.
+            branch_code (BranchCode): Value object representing the 4-digit branch code.
+            account_num (AccountNumber): Value object representing the unique 8-digit account number.
             access_info (bool, optional): Appends 'password_hash' and 'failed_login_attempts'.
             holder_info (bool, optional): Executes a JOIN to append holder data.
             for_update (bool, optional): Applies a pessimistic lock (FOR UPDATE).
@@ -392,8 +387,8 @@ class MySQLRepository:
             RuntimeError: If `for_update` is True but called outside a `unit_of_work()`.
             DataNotFoundError: If the requested account does not exist.
         """
-        verify.verify_instance(branch_code, str)
-        verify.verify_instance(account_num, str)
+        verify.verify_instance(branch_code, BranchCode)
+        verify.verify_instance(account_num, AccountNumber)
         verify.verify_instance(access_info, bool)
         verify.verify_instance(holder_info, bool)
         verify.verify_instance(for_update, bool)
@@ -432,9 +427,10 @@ class MySQLRepository:
             "WHERE a.branch_code = %s AND a.account_num = %s "
             f"{lock_clause}"
         )
+        args_str = (branch_code.value, account_num.value)
 
         with self._connection.cursor() as cursor:
-            cursor.execute(sql, (branch_code, account_num))
+            cursor.execute(sql, args_str)
             result = cursor.fetchone()
 
         if not result:
@@ -465,7 +461,10 @@ class MySQLRepository:
         )
 
     def get_account_snapshot(
-        self, branch_code: str, account_num: str, for_update: bool = False
+        self,
+        branch_code: BranchCode,
+        account_num: AccountNumber,
+        for_update: bool = False,
     ) -> AccountSnapshot:
         """Retrieves a static persistence snapshot of an account from the database.
 
@@ -475,8 +474,8 @@ class MySQLRepository:
         financial state of the account, omitting transaction history for performance.
 
         Args:
-            branch_code (str): The 4-digit string representing the branch.
-            account_num (str): The unique 8-digit string representing the account.
+            branch_code (BranchCode): Value object representing the 4-digit branch code.
+            account_num (AccountNumber): Value object representing the unique 8-digit account number.
             for_update (bool): If True, applies a pessimistic lock (FOR UPDATE) to the row.
                 Defaults to False.
 
@@ -490,8 +489,8 @@ class MySQLRepository:
                 an active `unit_of_work()` block, preventing dangling database locks.
             DataNotFoundError: If the account does not exist in the database.
         """
-        verify.verify_instance(branch_code, str)
-        verify.verify_instance(account_num, str)
+        verify.verify_instance(branch_code, BranchCode)
+        verify.verify_instance(account_num, AccountNumber)
         verify.verify_instance(for_update, bool)
 
         if for_update and not self._in_transaction:
@@ -513,9 +512,10 @@ class MySQLRepository:
             "AND account_num = %s "
             f"{lock_clause}"
         )
+        args_str = (branch_code.value, account_num.value)
 
         with self._connection.cursor() as cursor:
-            cursor.execute(sql, (branch_code, account_num))
+            cursor.execute(sql, args_str)
             db_acc_dict = cursor.fetchone()
 
             if not db_acc_dict:
@@ -533,7 +533,7 @@ class MySQLRepository:
         )
 
     def get_ledger_entries(
-        self, branch_code: str, account_num: str, start_date: date
+        self, branch_code: BranchCode, account_num: AccountNumber, start_date: date
     ) -> tuple[dict[str, Any], ...]:
         """Retrieves a chronological record of financial events (ledger entries) for a specific account.
 
@@ -548,8 +548,8 @@ class MySQLRepository:
         using an optimized JOIN operation.
 
         Args:
-            branch_code (str): The 4-digit string representing the branch.
-            account_num (str): The unique 8-digit string representing the account.
+            branch_code (BranchCode): Value object representing the 4-digit branch code.
+            account_num (AccountNumber): Value object representing the unique 8-digit account number.
             start_date (date): The cutoff date; fetches all events occurring
                 on or after this exact timestamp.
 
@@ -563,8 +563,8 @@ class MySQLRepository:
             TypeError: If the provided arguments are not of the expected types.
             DataNotFoundError: If the requested account does not exist in the database.
         """
-        verify.verify_instance(branch_code, str)
-        verify.verify_instance(account_num, str)
+        verify.verify_instance(branch_code, BranchCode)
+        verify.verify_instance(account_num, AccountNumber)
         verify.verify_instance(start_date, date)
 
         if not self.account_exists(branch_code, account_num):
@@ -582,27 +582,29 @@ class MySQLRepository:
             "AND le.created_at >= %s "
             "ORDER BY le.created_at ASC"
         )
+        args_str_date = (branch_code.value, account_num.value, start_date)
 
         with self._connection.cursor() as cursor:
-            cursor.execute(sql, (branch_code, account_num, start_date))
+            cursor.execute(sql, args_str_date)
             result = cursor.fetchall()
 
         return result
 
-    def register_failed_login(self, branch_code: str, account_num: str) -> None:
-        """
-        Increments the failed login attempts counter for a specific account.
+    def register_failed_login(
+        self, branch_code: BranchCode, account_num: AccountNumber
+    ) -> None:
+        """Increments the failed login attempts counter for a specific account.
 
         This method is a subordinate operation and strictly requires an active
         Unit of Work. It MUST be executed within a `with self.unit_of_work():` block.
 
         Args:
-            branch_code (str): The 4-digit string representing the branch.
-            account_num (str): The target 8-digit account number.
+            branch_code (BranchCode): Value object representing the 4-digit branch code.
+            account_num (AccountNumber): Value object representing the target 8-digit account number.
 
         Raises:
             RuntimeError: If called outside an active `unit_of_work()` block.
-            TypeError: If the provided arguments are not strings.
+            TypeError: If the provided arguments are not instances of BranchCode and AccountNumber.
             DataNotFoundError: If the account does not exist in the database.
             RepositoryError: If a database error occurs, triggering a transaction rollback.
         """
@@ -611,38 +613,40 @@ class MySQLRepository:
                 "Invalid method call. Use the context manager MySQLRepository.unit_of_work()"
             )
 
-        verify.verify_instance(branch_code, str)
-        verify.verify_instance(account_num, str)
+        verify.verify_instance(branch_code, BranchCode)
+        verify.verify_instance(account_num, AccountNumber)
 
         sql = (
             "UPDATE accounts "
             "SET failed_login_attempts = failed_login_attempts + 1 "
             "WHERE branch_code = %s AND account_num = %s"
         )
+        args_str = (branch_code.value, account_num.value)
 
         with self._connection.cursor() as cursor:
-            cursor.execute(sql, (branch_code, account_num))
+            cursor.execute(sql, args_str)
 
             if cursor.rowcount == 0:
                 raise DataNotFoundError(
                     f"Data not found in the database for {branch_code=}, {account_num=}"
                 )
 
-    def reset_login_attempts(self, branch_code: str, account_num: str) -> None:
-        """
-        Resets the failed login attempts counter to zero for a specific account.
-        Called upon successful authentication or account unfreezing.
+    def reset_login_attempts(
+        self, branch_code: BranchCode, account_num: AccountNumber
+    ) -> None:
+        """Resets the failed login attempts counter to zero for a specific account.
 
+        Called upon successful authentication or account unfreezing.
         This method is a subordinate operation and strictly requires an active
         Unit of Work. It MUST be executed within a `with self.unit_of_work():` block.
 
         Args:
-            branch_code (str): The 4-digit string representing the branch.
-            account_num (str): The target 8-digit account number.
+            branch_code (BranchCode): Value object representing the 4-digit branch code.
+            account_num (AccountNumber): Value object representing the target 8-digit account number.
 
         Raises:
             RuntimeError: If called outside an active `unit_of_work()` block.
-            TypeError: If the provided arguments are not strings.
+            TypeError: If the provided arguments are not instances of BranchCode and AccountNumber.
             DataNotFoundError: If the account does not exist in the database.
             RepositoryError: If a database error occurs, triggering a transaction rollback.
         """
@@ -651,17 +655,18 @@ class MySQLRepository:
                 "Invalid method call. Use the context manager MySQLRepository.unit_of_work()"
             )
 
-        verify.verify_instance(branch_code, str)
-        verify.verify_instance(account_num, str)
+        verify.verify_instance(branch_code, BranchCode)
+        verify.verify_instance(account_num, AccountNumber)
 
         sql = (
             "UPDATE accounts "
             "SET failed_login_attempts = 0 "
             "WHERE branch_code = %s AND account_num = %s"
         )
+        args_str = (branch_code.value, account_num.value)
 
         with self._connection.cursor() as cursor:
-            cursor.execute(sql, (branch_code, account_num))
+            cursor.execute(sql, args_str)
 
             if cursor.rowcount == 0:
                 raise DataNotFoundError(
@@ -695,38 +700,38 @@ class MySQLRepository:
             "UPDATE accounts SET is_frozen = %s "
             "WHERE branch_code = %s AND account_num = %s"
         )
+        args = (
+            account_snap.is_frozen,
+            account_snap.branch_code,
+            account_snap.account_num,
+        )
 
         with self._connection.cursor() as cursor:
-            cursor.execute(
-                sql,
-                (
-                    account_snap.is_frozen,
-                    account_snap.branch_code,
-                    account_snap.account_num,
-                ),
-            )
+            cursor.execute(sql, args)
             if cursor.rowcount == 0:
                 raise DataNotFoundError(
                     f"Data not found in the database for {account_snap.branch_code=}, {account_snap.account_num=}"
                 )
 
     def update_password(
-        self, branch_code: str, account_num: str, new_password_hash: str
+        self,
+        branch_code: BranchCode,
+        account_num: AccountNumber,
+        new_password_hash: str,
     ) -> None:
-        """
-        Updates the authentication password hash for a specific account.
+        """Updates the authentication password hash for a specific account.
 
         This method is a subordinate operation and strictly requires an active
         Unit of Work. It MUST be executed within a `with self.unit_of_work():` block.
 
         Args:
-            branch_code (str): The 4-digit string representing the branch.
-            account_num (str): The target 8-digit account number.
+            branch_code (BranchCode): Value object representing the 4-digit branch code.
+            account_num (AccountNumber): Value object representing the target 8-digit account number.
             new_password_hash (str): The new securely hashed password.
 
         Raises:
             RuntimeError: If called outside an active `unit_of_work()` block.
-            TypeError: If the arguments are not strings.
+            TypeError: If the arguments do not match expected types.
             DataNotFoundError: If the account does not exist in the database.
             RepositoryError: If a database error occurs, triggering a transaction rollback.
         """
@@ -735,8 +740,8 @@ class MySQLRepository:
                 "Invalid method call. Use the context manager MySQLRepository.unit_of_work()"
             )
 
-        verify.verify_instance(branch_code, str)
-        verify.verify_instance(account_num, str)
+        verify.verify_instance(branch_code, BranchCode)
+        verify.verify_instance(account_num, AccountNumber)
         verify.verify_instance(new_password_hash, str)
 
         sql = (
@@ -744,18 +749,20 @@ class MySQLRepository:
             "SET password_hash = %s "
             "WHERE branch_code = %s AND account_num = %s"
         )
+        args_str = (new_password_hash, branch_code.value, account_num.value)
 
         with self._connection.cursor() as cursor:
-            cursor.execute(sql, (new_password_hash, branch_code, account_num))
+            cursor.execute(sql, args_str)
 
             if cursor.rowcount == 0:
                 raise DataNotFoundError(
                     f"Data not found in the database for {branch_code=}, {account_num=}"
                 )
 
-    def delete_account(self, branch_code: str, account_num: str) -> None:
-        """
-        Permanently removes an account and its ledger history from the database.
+    def delete_account(
+        self, branch_code: BranchCode, account_num: AccountNumber
+    ) -> None:
+        """Permanently removes an account and its ledger history from the database.
 
         This method is a subordinate operation and strictly requires an active
         Unit of Work. It MUST be executed within a `with self.unit_of_work():` block.
@@ -764,16 +771,16 @@ class MySQLRepository:
         deleting the parent record in the 'accounts' table.
 
         Args:
-            branch_code (str): The string representing the branch of the target account.
-            account_num (str): The unique string representing the target account number.
+            branch_code (BranchCode): Value object representing the branch of the target account.
+            account_num (AccountNumber): Value object representing the target account number.
 
         Raises:
-            TypeError: If the provided arguments are not of the expected types.
+            TypeError: If the provided arguments are not instances of BranchCode and AccountNumber.
             RuntimeError: If called outside an active `unit_of_work()` block.
             DataNotFoundError: If the account to be deleted does not exist.
         """
-        verify.verify_instance(branch_code, str)
-        verify.verify_instance(account_num, str)
+        verify.verify_instance(branch_code, BranchCode)
+        verify.verify_instance(account_num, AccountNumber)
 
         if not self._in_transaction:
             raise RuntimeError(
@@ -786,21 +793,21 @@ class MySQLRepository:
             "ON le.account_id = a.id "
             "WHERE a.branch_code = %s AND a.account_num = %s "
         )
-
         del_acc_sql = "DELETE FROM accounts WHERE branch_code = %s AND account_num = %s"
 
+        args_str = (branch_code.value, account_num.value)
+
         with self._connection.cursor() as cursor:
-            cursor.execute(del_trans_sql, (branch_code, account_num))
-            cursor.execute(del_acc_sql, (branch_code, account_num))
+            cursor.execute(del_trans_sql, args_str)
+            cursor.execute(del_acc_sql, args_str)
 
             if cursor.rowcount == 0:
                 raise DataNotFoundError(
                     f"Data not found in the database for {branch_code=}, {account_num=}"
                 )
 
-    def delete_account_holder(self, cpf: str) -> None:
-        """
-        Permanently deletes an account holder's record from the persistence layer.
+    def delete_account_holder(self, cpf: CPF) -> None:
+        """Permanently deletes an account holder's record from the persistence layer.
 
         This method enforces transactional safety and must be executed strictly within
         an active Unit of Work context. It relies entirely on upstream business
@@ -810,12 +817,12 @@ class MySQLRepository:
         via the Unit of Work.
 
         Args:
-            cpf (str): The 11-digit string representing the account holder's CPF.
+            cpf (CPF): The value object representing the account holder's 11-digit CPF.
 
         Raises:
             RuntimeError: If the method is invoked outside of the `unit_of_work()`
                 context manager.
-            TypeError: If the provided CPF argument is not a string.
+            TypeError: If the provided CPF argument is not an instance of CPF.
             DataNotFoundError: If no account holder record matches the specified CPF.
         """
         if not self._in_transaction:
@@ -823,27 +830,26 @@ class MySQLRepository:
                 "Invalid method call. Use the context manager MySQLRepository.unit_of_work()"
             )
 
-        verify.verify_instance(cpf, str)
+        verify.verify_instance(cpf, CPF)
 
         sql = "DELETE FROM account_holders WHERE cpf = %s"
 
         with self._connection.cursor() as cursor:
-            cursor.execute(sql, (cpf,))
+            cursor.execute(sql, (cpf.value,))
 
             if cursor.rowcount == 0:
                 raise DataNotFoundError(f"Data not found in the database for {cpf=}")
 
     # --------------------------------------------------------------------------
-    # Protected methods
+    # Protected methods (Internal Helpers - Trust Zone)
     # --------------------------------------------------------------------------
 
-    def _get_account_holder_id(self, cursor: cursors.DictCursor, cpf: str) -> int:
-        """
-        Internal helper to retrieve an account holder's primary key ID by their CPF.
+    def _get_account_holder_id(self, cursor: cursors.DictCursor, cpf: CPF) -> int:
+        """Internal helper to retrieve an account holder's primary key ID by their CPF.
 
         Args:
             cursor (cursors.DictCursor): The active database cursor.
-            cpf (str): The 11-digit string representing the account holder's CPF.
+            cpf (CPF): The value object representing the account holder's 11-digit CPF.
 
         Returns:
             int: The primary key ID of the account holder.
@@ -852,8 +858,7 @@ class MySQLRepository:
             DataNotFoundError: If the CPF is not found in the database.
         """
         sql = "SELECT id FROM account_holders WHERE cpf = %s"
-
-        cursor.execute(sql, (cpf,))
+        cursor.execute(sql, (cpf.value,))
         result = cursor.fetchone()
 
         if result is None:
