@@ -44,8 +44,8 @@ class AccountError(DomainError):
     """Base exception for Account aggregate operational state errors."""
 
 
-class AccountAlreadyActiveError(AccountError):
-    """Raised when trying to unfreeze an already active account."""
+class AccountStateTransitionError(AccountError):
+    """Raised when an invalid state transition is attempted on an account entity."""
 
 
 class FrozenAccountError(AccountError):
@@ -78,31 +78,35 @@ class AccountHolderDuplicatedCardError(AccountHolderError):
 # --- Value Objects & Primitives Exceptions ---
 
 
-class InvalidAccountError(DomainError):
+class DomainVOError(DomainError):
+    """Base exception for all Value Object and Primitive invariant violations."""
+
+
+class InvalidAccountError(DomainVOError):
     """Raised when an account number fails format or length domain validation."""
 
 
-class InvalidAmountError(DomainError):
+class InvalidAmountError(DomainVOError):
     """Raised when a monetary transaction amount is below institutional minimum limits."""
 
 
-class InvalidBirthDateError(DomainError):
+class InvalidBirthDateError(DomainVOError):
     """Raised when a birth date fails domain boundary or age validation rules."""
 
 
-class InvalidBranchError(DomainError):
+class InvalidBranchError(DomainVOError):
     """Raised when a branch code fails format or length domain validation."""
 
 
-class InvalidCpfError(DomainError):
+class InvalidCpfError(DomainVOError):
     """Raised when a CPF fails mathematical checksum or structural validation."""
 
 
-class InvalidNameError(DomainError):
+class InvalidNameError(DomainVOError):
     """Raised when an account holder name fails domain formatting rules."""
 
 
-class InvalidPasswordError(DomainError):
+class InvalidPasswordError(DomainVOError):
     """Raised when a password fails domain formatting rules (e.g., 6 numeric digits)."""
 
 
@@ -124,6 +128,10 @@ class ApplicationServiceError(ApplicationError):
 
 class AccessDeniedError(ApplicationServiceError):
     """Raised when vault or feature access is denied (e.g., frozen account)."""
+
+
+class AccountAlreadyActiveError(ApplicationError):
+    """Raised when trying to unfreeze an already active account."""
 
 
 class AccountHolderNotFoundError(ApplicationServiceError):
@@ -265,6 +273,7 @@ class UserAbortError(SystemIOError):
 
 APPLICATION_ERROR_MAP = {
     AccessDeniedError: "access_denied",
+    AccountAlreadyActiveError: "acc_not_frozen",
     AccountHolderNotFoundError: "not_account_holder",
     AccountNotFoundError: "acc_not_found",
     AuthenticationError: "auth_failed",

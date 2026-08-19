@@ -29,6 +29,7 @@ from domain.value_objects import (
 )
 from shared import clock, verify
 from shared.exceptions import (
+    AccountStateTransitionError,
     FrozenAccountError,
     InsufficientFundsError,
     NotEmptyAccountError,
@@ -293,10 +294,10 @@ class Account(ABC):
         financial operations (like deposits or withdrawals) until explicitly unfrozen.
 
         Raises:
-            RuntimeError: If the account is already frozen.
+            AccountStateTransitionError: If the account is already frozen.
         """
         if self._is_frozen:
-            raise RuntimeError("This account is already frozen")
+            raise AccountStateTransitionError("This account is already frozen")
 
         self._is_frozen = True
 
@@ -307,10 +308,10 @@ class Account(ABC):
         financial operations to resume.
 
         Raises:
-            RuntimeError: If the account is not frozen.
+            AccountStateTransitionError: If the account is not frozen (already active).
         """
         if not self._is_frozen:
-            raise RuntimeError("This account is not frozen")
+            raise AccountStateTransitionError("This account is not frozen")
 
         self._is_frozen = False
 

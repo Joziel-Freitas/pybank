@@ -27,7 +27,7 @@ from domain.value_objects import (
     Password,
     ValueTypes,
 )
-from shared.exceptions import DomainError, InvalidDataError
+from shared.exceptions import DomainVOError, InvalidDataError
 
 
 def _validate_primitives[PrimitiveT: ValueTypes](
@@ -50,7 +50,7 @@ def _validate_primitives[PrimitiveT: ValueTypes](
     """
     try:
         return obj_type(primitive).value
-    except DomainError as e:
+    except DomainVOError as e:
         raise InvalidDataError(
             "Primitive not validated by domain invariant rules"
         ) from e
