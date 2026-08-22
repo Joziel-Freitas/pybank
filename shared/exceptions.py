@@ -130,7 +130,7 @@ class AccessDeniedError(ApplicationServiceError):
     """Raised when vault or feature access is denied (e.g., frozen account)."""
 
 
-class AccountAlreadyActiveError(ApplicationError):
+class AccountAlreadyActiveError(ApplicationServiceError):
     """Raised when trying to unfreeze an already active account."""
 
 
@@ -271,15 +271,16 @@ class UserAbortError(SystemIOError):
 # Error Metadata Mappers
 # =====================================================================
 
-APPLICATION_ERROR_MAP = {
+APPLICATION_SERVICE_ERROR_MAP = {
     AccessDeniedError: "access_denied",
     AccountAlreadyActiveError: "acc_not_frozen",
     AccountHolderNotFoundError: "not_account_holder",
     AccountNotFoundError: "acc_not_found",
     AuthenticationError: "auth_failed",
+    DeniedOperationError: "denied_operation",
     DuplicatedAccountError: "acc_duplicated",
     DuplicatedAccountHolderError: "already_account_holder",
-    NotEmptyAccountError: "non_zero_value",
+    InvalidDataError: "invalid_data",
     ServiceUnavailableError: "unavailable",
 }
 
@@ -298,7 +299,19 @@ CONTROLLER_ERROR_MAP = {
 def map_exceptions(
     error: ApplicationError | ControllerError,
 ) -> str:
-    """Maps system exceptions to standardized UI context keys."""
+    """Maps system exceptions to standardized UI context keys.
+
+    Args:
+        error (ApplicationError | ControllerError): The exception instance raised by
+            application services or controller workflows.
+
+    Returns:
+        str: The corresponding UI context lookup key.
+
+    Raises:
+        TypeError: If error is not an instance of ApplicationError or ControllerError.
+        NotImplementedError: If an exception class is not mapped in the metadata dictionaries.
+    """
     if not isinstance(error, (ApplicationError, ControllerError)):
         raise TypeError(
             f"Function expects ApplicationError or ControllerError. Got {type(error).__name__}"
@@ -306,7 +319,7 @@ def map_exceptions(
 
     match error:
         case ApplicationServiceError():
-            context_map = APPLICATION_ERROR_MAP
+            context_map = APPLICATION_SERVICE_ERROR_MAP
         case ApplicationSecurityError():
             context_map = APPLICATION_SECURITY_ERROR_MAP
         case ControllerError():
