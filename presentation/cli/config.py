@@ -2,40 +2,55 @@
 
 from decimal import Decimal
 
+from application import validators
 from presentation.cli import io_utils
+from presentation.types import (
+    AccountTypeMenu,
+    ConfigMap,
+    MainMenuType,
+    OperationMenuType,
+    RestrictedMenuType,
+    StatementPeriodType,
+    UserConfirmType,
+)
 
-menu_config: io_utils.ConfigMap = {
+menu_config: ConfigMap = {
     "main_menu": {
         "info": "Menu principal",
         "prompt": "1 - Depósito\n2 - Abertura de conta\n3 - Outras operações\nSua opção: ",
         "input_type": int,
+        "validation_fn": MainMenuType,
         "error_msg": "Opção inválida. Escolha entre as opções 1, 2 ou 3",
     },
     "operations_menu": {
         "info": "Operações",
         "prompt": "1 - Depósito\n2 - Saque\n3 - Saldo/Extrato\n4 - Mudança de senha\n5 - Encerrar conta\nSua opção: ",
         "input_type": int,
+        "validation_fn": OperationMenuType,
         "error_msg": "Opção inválida. Escolha entre as opções de 1 a 5",
     },
     "restricted_menu": {
         "info": "Acesso restrito",
         "prompt": "1 - Desbloquear conta\nSua opção: ",
         "input_type": int,
+        "validation_fn": RestrictedMenuType,
         "error_msg": "Opção inválida. Escolha 1 para desbloquear a conta ou 'S' para sair",
     },
     "use_card_menu": {
         "info": "Formas de acesso",
         "prompt": "1 - Operações com cartão\n2 - Operações sem cartão\nSua opção: ",
         "input_type": int,
+        "validation_fn": UserConfirmType,
         "error_msg": "Opção inválida. Escolha entre as opções 1 ou 2",
     },
 }
 
-identification_config: io_utils.ConfigMap = {
+identification_config: ConfigMap = {
     "name": {
         "info": "Identificação - Nome",
         "prompt": "Informe o nome (apenas letras): ",
         "input_type": str,
+        "validation_fn": validators.validate_holder_name,
         "error_msg": "O nome deve conter apenas letras (no mínimo três), "
         "não pode conter caracteres especiais e nem começar e/ou terminar com espaços.",
     },
@@ -43,87 +58,100 @@ identification_config: io_utils.ConfigMap = {
         "info": "Identificação - CPF",
         "prompt": "Informe o CPF (somente números): ",
         "input_type": str,
+        "validation_fn": validators.validate_cpf,
         "error_msg": "CPF inválido. O CPF deve conter somente números e ter exatamente 11 dígitos",
     },
     "birth_date": {
         "info": "Identificação - Data de nascimento",
         "prompt": "Informe sua data de nascimento (dd/mm/aaaa): ",
         "input_type": io_utils.parse_input_date,
+        "validation_fn": validators.validate_birth_date,
         "error_msg": "Data de nascimento ou idade inválida(s). A data deve ser no formato dd/mm/aaaa e a idade estar entre 18 e 120 anos.",
     },
 }
 
-new_account_config: io_utils.ConfigMap = {
+new_account_config: ConfigMap = {
     "account_type": {
         "info": "Conta - Escolha o tipo da conta",
         "prompt": "1 - Conta Corrente\n2 - Conta Poupança\nSua opção: ",
         "input_type": int,
+        "validation_fn": AccountTypeMenu,
         "error_msg": "Opção inválida para tipo de conta. Escolha entre 1 ou 2",
     },
     "account_num": {
         "info": "Conta - Número da conta",
         "prompt": "Informe o número da conta: ",
         "input_type": str,
+        "validation_fn": validators.validate_account_num,
         "error_msg": "Formato de conta inválido. O número da conta deve ser um inteiro positivo de 8 dígitos",
     },
 }
 
-auth_config: io_utils.ConfigMap = {
+auth_config: ConfigMap = {
     "branch_code": {
         "info": "Autenticação - Agência ",
         "prompt": "Insira o número da agência: ",
         "input_type": str,
+        "validation_fn": validators.validate_branch_code,
         "error_msg": "Formato de agência inválido. Agência é um número inteiro positivo de 4 dígitos",
     },
     "account_num": {
         "info": "Autenticação - Conta",
         "prompt": "Insira o número da conta: ",
         "input_type": str,
+        "validation_fn": validators.validate_account_num,
         "error_msg": "Formato de conta inválido. A conta é um número inteiro positivo de 8 dígitos",
     },
     "password": {
         "info": "Autenticação - Senha",
         "prompt": "Insira a senha: ",
         "input_type": str,
+        "validation_fn": validators.validate_password,
         "error_msg": "Formato de senha inválido. A senha é um número inteiro positivo de 6 dígitos",
     },
     "card": {
         "info": "Autenticação - Cartões",
         "prompt": "Escolha seu cartão: ",
         "input_type": int,
+        "validation_fn": lambda x: x,
         "error_msg": "Opção inválida. Escolha entre as opções oferecidas no menu acima",
     },
 }
 
-transaction_config: io_utils.ConfigMap = {
+transaction_config: ConfigMap = {
     "deposit": {
         "info": "Transação - Depósito",
         "prompt": "Valor a depositar: ",
         "input_type": Decimal,
+        "validation_fn": validators.validate_money,
         "error_msg": "Valor inválido para depósito. Tente novamente",
     },
     "withdrawal": {
         "info": "Transação - Saque",
         "prompt": "Valor a sacar: ",
         "input_type": Decimal,
+        "validation_fn": validators.validate_money,
         "error_msg": "Valor inválido para saque. Tente novamente",
     },
     "limit": {
         "info": "Transação - Cheque Especial",
         "prompt": "Deseja usar o cheque especial?\n1 - Sim\n2 - Não\nSua opção: ",
         "input_type": int,
+        "validation_fn": UserConfirmType,
         "error_msg": "Opção inválida. Escolha entre as opções 1 ou 2",
     },
     "statement": {
         "info": "Transação - Extrato",
         "prompt": "1 - 30 dias\n2 - 90 dias\n3 - 180 dias\nSua opção: ",
         "input_type": int,
+        "validation_fn": StatementPeriodType,
         "error_msg": "Opção inválida. Escolha entre as opções disponíveis no menu",
     },
     "confirmation": {
         "info": "Transação - Confirmação",
         "prompt": "1 - Confirmar\n2 - Cancelar\nSua opção: ",
         "input_type": int,
+        "validation_fn": UserConfirmType,
         "error_msg": "Opção inválida. Escolha entre as opções 1 ou 2",
     },
 }
