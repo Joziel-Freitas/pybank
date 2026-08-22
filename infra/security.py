@@ -16,7 +16,7 @@ from shared import clock
 from shared.credentials import AccessToken, AuthToken
 from shared.exceptions import (
     ExpiredTokenError,
-    TokenSecurityError,
+    TokenSignatureError,
 )
 
 
@@ -164,11 +164,16 @@ class TokenService:
         bank_signature = self._sign_token_payload(payload)
 
         if not hmac.compare_digest(bank_signature, token.signature):
-            raise TokenSecurityError("Security breach: Tampered token.")
+            raise TokenSignatureError(
+                f"HMAC signature mismatch detected for session token payload "
+                f"{token.cpf}:{token.branch_code}:{token.account_num}'."
+            )
 
         if clock.get_now() > token.expires_at:
             raise ExpiredTokenError(
-                "This token is no longer valid because it has expired"
+                f"Session token for payload "
+                f"{token.cpf}:{token.branch_code}:{token.account_num} "
+                f"has expired at {token.expires_at}."
             )
 
     def _sign_token_payload(self, payload_str: str) -> str:

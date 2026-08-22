@@ -26,10 +26,14 @@ from shared.exceptions import (
     AuthenticationError,
     DataNotFoundError,
     DeniedOperationError,
+    ExpiredSessionError,
+    ExpiredTokenError,
     FrozenAccountError,
     InsufficientFundsError,
     RepositoryError,
     ServiceUnavailableError,
+    SessionIntegrityError,
+    TokenSignatureError,
 )
 from shared.projections import StatementProjectionDTO, SummaryProjectionDTO
 
@@ -120,8 +124,8 @@ class BankingOperationsService(BaseApplicationService):
             TypeError: If arguments are not of expected types.
             RuntimeError: If token claims violate Domain VO invariants, or if financial
                 data is requested using only a primary AuthToken instead of an AccessToken.
-            ExpiredTokenError: If the token's TTL has passed.
-            TokenSecurityError: If the token is invalid, tampered with, or if cryptographic
+            ExpiredSessionError: If the token's TTL has passed.
+            SessionIntegrityError: If the token is invalid, tampered with, or if cryptographic
                 validation against the live database hash fails (Zero Trust enforcement).
             AuthenticationError: If the account or holder no longer exists (TOCTOU mitigation).
         """
@@ -158,7 +162,16 @@ class BankingOperationsService(BaseApplicationService):
             financial_dto = account_obj.financial_info
             pwd_hash = access_info.password_hash
 
-        self._token_service.validate_token_integrity(token, pwd_hash)
+        try:
+            self._token_service.validate_token_integrity(token, pwd_hash)
+        except ExpiredTokenError as e:
+            raise ExpiredSessionError(
+                "The current user session has expired. Re-authentication is required."
+            ) from e
+        except TokenSignatureError as e:
+            raise SessionIntegrityError(
+                "Session token integrity check failed due to invalid cryptographic signature."
+            ) from e
 
         holder_info = account_info.unwrap_holder()
 
@@ -247,8 +260,8 @@ class BankingOperationsService(BaseApplicationService):
         Raises:
             TypeError: If dto is not an instance of WithdrawalDTO.
             RuntimeError: If token claims or withdrawal amount violate Domain VO invariants.
-            ExpiredTokenError: If the token's TTL has passed.
-            TokenSecurityError: If the cryptographic signature of the token is invalid or tampered with.
+            ExpiredSessionError: If the token's TTL has passed.
+            SessionIntegrityError: If the cryptographic signature of the token is invalid or tampered with.
             AuthenticationError: If the account was deleted during the active session.
             AccessDeniedError: If the target account is frozen during the operation.
             DeniedOperationError: If the requested withdrawal is rejected due to insufficient available funds.
@@ -271,9 +284,18 @@ class BankingOperationsService(BaseApplicationService):
 
         access_info = account_info.unwrap_access()
 
-        self._token_service.validate_token_integrity(
-            dto.access_token, access_info.password_hash
-        )
+        try:
+            self._token_service.validate_token_integrity(
+                dto.access_token, access_info.password_hash
+            )
+        except ExpiredTokenError as e:
+            raise ExpiredSessionError(
+                "The current user session has expired. Re-authentication is required."
+            ) from e
+        except TokenSignatureError as e:
+            raise SessionIntegrityError(
+                "Session token integrity check failed due to invalid cryptographic signature."
+            ) from e
 
         try:
             with self._repository.unit_of_work():

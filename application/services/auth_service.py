@@ -26,8 +26,12 @@ from shared.exceptions import (
     AccountStateTransitionError,
     AuthenticationError,
     DataNotFoundError,
+    ExpiredSessionError,
+    ExpiredTokenError,
     RepositoryError,
     ServiceUnavailableError,
+    SessionIntegrityError,
+    TokenSignatureError,
 )
 
 # =====================================================================
@@ -183,13 +187,23 @@ class AuthService(BaseApplicationService):
 
         Raises:
             TypeError: If the provided token is not an AuthToken instance.
-            ExpiredTokenError: If the primary token TTL has expired.
-            TokenSecurityError: If token signature verification fails.
+            ExpiredSessionError: If the primary token TTL has expired.
+            SessionIntegrityError: If token signature verification fails.
             AuthenticationError: If the account no longer exists in persistence.
             RuntimeError: If token claims fail Domain VO invariants.
         """
         verify.verify_instance(auth_token, AuthToken)
-        self._token_service.validate_token_integrity(auth_token)
+
+        try:
+            self._token_service.validate_token_integrity(auth_token)
+        except ExpiredTokenError as e:
+            raise ExpiredSessionError(
+                "The current user session has expired. Re-authentication is required."
+            ) from e
+        except TokenSignatureError as e:
+            raise SessionIntegrityError(
+                "Session token integrity check failed due to invalid cryptographic signature."
+            ) from e
 
         branch_code = self._instantiate_vo(BranchCode, auth_token.branch_code)
         account_num = self._instantiate_vo(AccountNumber, auth_token.account_num)
@@ -223,15 +237,25 @@ class AuthService(BaseApplicationService):
         Raises:
             TypeError: If the provided DTO is of an invalid type.
             RuntimeError: If DTO or token payload attributes violate Domain VO invariants.
-            ExpiredTokenError: If the provided AuthToken has expired.
-            TokenSecurityError: If token integrity verification fails.
+            ExpiredSessionError: If the provided AuthToken has expired.
+            SessionIntegrityError: If token integrity verification fails.
             AccessDeniedError: If the account is already frozen or becomes frozen due to brute-force protection.
             AuthenticationError: If password verification fails or account does not exist.
             ServiceUnavailableError: If security state mutations cannot be transactionally persisted.
         """
         verify.verify_instance(dto, VaultAccessDTO)
 
-        self._token_service.validate_token_integrity(dto.auth_token)
+        try:
+            self._token_service.validate_token_integrity(dto.auth_token)
+        except ExpiredTokenError as e:
+            raise ExpiredSessionError(
+                "The current user session has expired. Re-authentication is required."
+            ) from e
+        except TokenSignatureError as e:
+            raise SessionIntegrityError(
+                "Session token integrity check failed due to invalid cryptographic signature."
+            ) from e
+
         auth_token = dto.auth_token
 
         branch_code = self._instantiate_vo(BranchCode, auth_token.branch_code)

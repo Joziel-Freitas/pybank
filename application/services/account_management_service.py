@@ -23,10 +23,14 @@ from shared.exceptions import (
     AuthenticationError,
     DataNotFoundError,
     DeniedOperationError,
+    ExpiredSessionError,
+    ExpiredTokenError,
     FrozenAccountError,
     NotEmptyAccountError,
     RepositoryError,
     ServiceUnavailableError,
+    SessionIntegrityError,
+    TokenSignatureError,
 )
 
 # =====================================================================
@@ -106,8 +110,8 @@ class AccountManagementService(BaseApplicationService):
         Raises:
             TypeError: If dto is not an instance of UpdatePasswordDTO.
             RuntimeError: If token payload or proposed password violates Domain VO invariants.
-            ExpiredTokenError: If the token's TTL has passed.
-            TokenSecurityError: If the token's cryptographic signature is invalid or tampered with.
+            ExpiredSessionError: If the token's TTL has passed.
+            SessionIntegrityError: If the token's cryptographic signature is invalid or tampered with.
             AuthenticationError: If the account no longer exists during the active session.
             AccessDeniedError: If the account is currently frozen, blocking credential updates.
             ServiceUnavailableError: If the update could not be persisted due to a repository error.
@@ -130,9 +134,18 @@ class AccountManagementService(BaseApplicationService):
 
                 access_info = account_info.unwrap_access()
 
-                self._token_service.validate_token_integrity(
-                    access_token, access_info.password_hash
-                )
+                try:
+                    self._token_service.validate_token_integrity(
+                        access_token, access_info.password_hash
+                    )
+                except ExpiredTokenError as e:
+                    raise ExpiredSessionError(
+                        "The current user session has expired. Re-authentication is required."
+                    ) from e
+                except TokenSignatureError as e:
+                    raise SessionIntegrityError(
+                        "Session token integrity check failed due to invalid cryptographic signature."
+                    ) from e
 
                 if account_info.is_frozen:
                     raise AccessDeniedError(
@@ -167,14 +180,24 @@ class AccountManagementService(BaseApplicationService):
         Raises:
             TypeError: If dto is not an instance of UnfreezeAccountDTO.
             RuntimeError: If token payload or new password violates Domain VO invariants.
-            ExpiredTokenError: If the token's TTL has passed.
-            TokenSecurityError: If the token's cryptographic signature is invalid or tampered with.
+            ExpiredSessionError: If the token's TTL has passed.
+            SessionIntegrityError: If the token's cryptographic signature is invalid or tampered with.
             AuthenticationError: If the birth date is incorrect, or if the account/holder no longer exists.
             AccountAlreadyActiveError: If the account is already operational.
             ServiceUnavailableError: If the unfreeze operation could not be persisted due to a repository error.
         """
         verify.verify_instance(dto, UnfreezeAccountDTO)
-        self._token_service.validate_token_integrity(dto.auth_token)
+
+        try:
+            self._token_service.validate_token_integrity(dto.auth_token)
+        except ExpiredTokenError as e:
+            raise ExpiredSessionError(
+                "The current user session has expired. Re-authentication is required."
+            ) from e
+        except TokenSignatureError as e:
+            raise SessionIntegrityError(
+                "Session token integrity check failed due to invalid cryptographic signature."
+            ) from e
 
         branch_code, account_num, password = self._get_common_vos(
             dto.auth_token, dto.new_password
@@ -241,8 +264,8 @@ class AccountManagementService(BaseApplicationService):
         Raises:
             TypeError: If access_token is not an instance of AccessToken.
             RuntimeError: If token claims violate Domain VO invariants.
-            ExpiredTokenError: If the token's TTL has passed.
-            TokenSecurityError: If the token signature is invalid or tampered with.
+            ExpiredSessionError: If the token's TTL has passed.
+            SessionIntegrityError: If the token signature is invalid or tampered with.
             AuthenticationError: If the account no longer exists (TOCTOU mitigation).
             AccessDeniedError: If the account is frozen (translating FrozenAccountError).
             DeniedOperationError: If the account has a non-zero financial balance.
@@ -266,9 +289,18 @@ class AccountManagementService(BaseApplicationService):
                 access_info = account_info.unwrap_access()
                 holder_info = account_info.unwrap_holder()
 
-                self._token_service.validate_token_integrity(
-                    access_token, access_info.password_hash
-                )
+                try:
+                    self._token_service.validate_token_integrity(
+                        access_token, access_info.password_hash
+                    )
+                except ExpiredTokenError as e:
+                    raise ExpiredSessionError(
+                        "The current user session has expired. Re-authentication is required."
+                    ) from e
+                except TokenSignatureError as e:
+                    raise SessionIntegrityError(
+                        "Session token integrity check failed due to invalid cryptographic signature."
+                    ) from e
 
                 account_db_snap = self._repository.get_account_snapshot(
                     branch_code, account_num
