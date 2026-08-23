@@ -6,38 +6,30 @@ for UI navigation states, user decision prompts, and operation routing,
 promoting type safety and eliminating magic numbers in user interface menus.
 """
 
-from collections.abc import Callable
 from datetime import date
 from decimal import Decimal
 from enum import Enum
-from typing import Any, TypedDict
+from typing import TypedDict
 
 from settings import ADMIN_EXIT_CODE
 
 type InputType = str | int | float | Decimal | date
 type PresentationT = InputType | MenuType
 
-type ConfigMap = dict[str, InnerConfig[Any, Any]]
+type ConfigMap = dict[str, InnerConfig]
 
 
-class InnerConfig[In_Type: InputType, PT: PresentationT](TypedDict):
+class InnerConfig(TypedDict):
     """Typed dictionary defining the structural schema of a configuration entry.
 
     Attributes:
         info (str): Short description or label for the configuration option.
         prompt (str): Text shown to the user when input is required.
-        input_type (Callable[[str], In_Type]): A parser that casts raw string input
-            to the intermediate primitive input type.
-        validation_fn (Callable[[In_Type], PT]): Validator function or Enum parser
-            responsible for enforcing domain or presentation invariants and returning
-            the final strongly-typed value.
         error_msg (str): Error message displayed when input parsing or validation fails.
     """
 
     info: str
     prompt: str
-    input_type: Callable[[str], In_Type]
-    validation_fn: Callable[[In_Type], PT]
     error_msg: str
 
 

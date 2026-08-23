@@ -29,10 +29,11 @@ def parse_input_date(str_date: str) -> date:
 
 
 def get_user_input[In_T: InputType, Out_T: PresentationT](
-    field_config: InnerConfig[In_T, Out_T],
-    use_timeout: bool = True,
+    field_config: InnerConfig,
+    input_type: Callable[[str], In_T],
+    validation_fn: Callable[[In_T], Out_T],
     loop_header: Callable[[], None] | None = None,
-    callback_fn: Callable[[In_T], Out_T] | None = None,
+    use_timeout: bool = True,
 ) -> Out_T:
     """Collects user input from the terminal, parses types, and applies validation.
 
@@ -59,9 +60,7 @@ def get_user_input[In_T: InputType, Out_T: PresentationT](
     """
     info = field_config["info"]
     prompt = field_config["prompt"]
-    input_type = field_config["input_type"]
     error_msg = field_config["error_msg"]
-    validation_fn = callback_fn or field_config["validation_fn"]
 
     while True:
         print("\033[2J\033[3J\033[H", end="", flush=True)
