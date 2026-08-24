@@ -16,6 +16,7 @@ from settings import ADMIN_EXIT_CODE
 type InputType = str | int | float | Decimal | date
 type PresentationT = InputType | MenuType
 
+type MessageMap = dict[str, dict[str, str]]
 type ConfigMap = dict[str, InnerConfig]
 
 

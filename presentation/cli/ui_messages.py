@@ -6,7 +6,9 @@ i18n/localization, mapping domain and application status context keys to localiz
 Portuguese messages.
 """
 
-ONBOARDING_MESSAGES: dict[str, dict[str, str]] = {
+from presentation.types import MessageMap
+
+ONBOARDING_MESSAGES: MessageMap = {
     "info": {
         "already_account_holder": "Bem-vindo de volta ao PyBank!",
         "new_account_holder": "Bem vindo ao PyBank! Faça o seu cadastro de titular",
@@ -21,7 +23,7 @@ ONBOARDING_MESSAGES: dict[str, dict[str, str]] = {
         "acc_duplicated": "Essa conta já se encontra registrada no sistema. Crie uma nova conta",
     },
 }
-SYSTEM_MESSAGES: dict[str, dict[str, str]] = {
+SYSTEM_MESSAGES: MessageMap = {
     "info": {
         "auth_ok": "Autenticado com sucesso",
         "access_ok": "Acesso Concedido",
@@ -57,7 +59,7 @@ SYSTEM_MESSAGES: dict[str, dict[str, str]] = {
 }
 
 
-TRANSACTION_MESSAGES: dict[str, dict[str, str]] = {
+TRANSACTION_MESSAGES: MessageMap = {
     "info": {
         "deposit_ok": "Depósito realizado com sucesso",
         "min_value": "Valor mínimo para transação: R$ {min_atm}",
