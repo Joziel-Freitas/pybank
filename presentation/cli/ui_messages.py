@@ -72,6 +72,6 @@ TRANSACTION_MESSAGES: MessageMap = {
     },
     "withdrawal_errors": {
         "access_denied": "Sua conta foi BLOQUEADA por segurança. Desbloqueie a conta pra usá-la novamente",
-        "value": "Valor indisponível para saque. Transação não autorizada",
+        "denied_operation": "Valor indisponível para saque. Transação não autorizada",
     },
 }

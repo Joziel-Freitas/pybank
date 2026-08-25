@@ -97,6 +97,14 @@ class BankingOperationsService(BaseApplicationService):
         return class_repr
 
     # --------------------------------------------------------------------------
+    # Properties (Public Read Model Interface)
+    # --------------------------------------------------------------------------
+    @property
+    def min_transaction_amount(self) -> Decimal:
+        """Exposes the minimum allowed transaction amount defined by domain rules."""
+        return Money.MIN_ATM_TRANSACTION
+
+    # --------------------------------------------------------------------------
     # Public API
     # --------------------------------------------------------------------------
 
