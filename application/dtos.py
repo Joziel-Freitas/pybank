@@ -104,29 +104,6 @@ class VaultAccessDTO(ApplicationDTO):
 
 
 @dataclass(frozen=True, slots=True)
-class DepositTargetDTO(ApplicationDTO):
-    """A read-only, sanitized snapshot of an account intended exclusively
-    for public deposit confirmation screens.
-
-    Contains masked sensitive information (like CPF) to prevent data leaks
-    during unauthenticated queries, adhering to Zero Trust principles.
-
-    Attributes:
-        holder_name (str): The full name of the account holder.
-        holder_cpf (str): The masked 11-digit CPF string.
-        branch_code (str): The target account branch code.
-        account_num (str): The target account number.
-        account_type (str): The semantic name of the account type.
-    """
-
-    holder_name: str
-    holder_cpf: str
-    branch_code: str
-    account_num: str
-    account_type: str
-
-
-@dataclass(frozen=True, slots=True)
 class DepositDTO(ApplicationDTO):
     """Command Data Transfer Object encapsulating the criteria for a deposit operation.
 

@@ -9,7 +9,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from decimal import Decimal
 
-from application.dtos import DepositDTO, StatementDTO, WithdrawalDTO
+from application.dtos import AccountDataDTO, DepositDTO, StatementDTO, WithdrawalDTO
 from application.protocols import (
     HasherProtocol,
     RepositoryProtocol,
@@ -35,7 +35,11 @@ from shared.exceptions import (
     SessionIntegrityError,
     TokenSignatureError,
 )
-from shared.projections import StatementProjectionDTO, SummaryProjectionDTO
+from shared.projections import (
+    DepositTargetProjectionDTO,
+    StatementProjectionDTO,
+    SummaryProjectionDTO,
+)
 
 # =====================================================================
 # BankingOperationsService
@@ -182,6 +186,45 @@ class BankingOperationsService(BaseApplicationService):
             account_type=account_info.account_type,
             is_frozen=account_info.is_frozen,
             financial_info=financial_dto,
+        )
+
+    def get_deposit_target(
+        self, target_account: AccountDataDTO
+    ) -> DepositTargetProjectionDTO:
+        """Retrieves a sanitized, read-only snapshot of an account for public deposit confirmation.
+
+        Args:
+            target_account (AccountDataDTO): The branch and account coordinates of the target.
+
+        Returns:
+            DepositTargetProjectionDTO: A sanitized snapshot containing masked holder information.
+
+        Raises:
+            AccountNotFoundError: If the specified account coordinates do not exist in the bank system.
+        """
+        verify.verify_instance(target_account, AccountDataDTO)
+
+        branch_code = self._instantiate_vo(BranchCode, target_account.branch_code)
+        account_num = self._instantiate_vo(AccountNumber, target_account.account_num)
+
+        try:
+            account_info = self._repository.get_account_projection(
+                branch_code, account_num, holder_info=True
+            )
+        except DataNotFoundError as e:
+            raise AccountNotFoundError(
+                "The requested account does not exist in our records"
+            ) from e
+
+        holder_info = account_info.unwrap_holder()
+        masked_cpf = f"***{holder_info.cpf[3:9]}**"
+
+        return DepositTargetProjectionDTO(
+            holder_name=holder_info.name,
+            holder_masked_cpf=masked_cpf,
+            branch_code=account_info.branch_code,
+            account_num=account_info.account_num,
+            account_type=account_info.account_type,
         )
 
     def execute_deposit(self, dto: DepositDTO) -> None:
