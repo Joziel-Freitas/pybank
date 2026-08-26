@@ -8,7 +8,7 @@ from application.services.onboarding_service import OnboardingService
 from application.types import NewAccountType
 from presentation.cli import config, io_utils, ui_messages
 from presentation.controllers.base_controller import BaseController
-from presentation.mixins import SharedPromptsMixin
+from presentation.controllers.mixins import SharedPromptsMixin
 from presentation.types import AccountTypeMenu
 from shared.exceptions import (
     AccountHolderNotFoundError,

@@ -11,7 +11,7 @@ from application.dtos import AccountDataDTO, CheckDataDTO, VaultAccessDTO
 from application.services.auth_service import AuthService
 from presentation.cli import config, io_utils, views
 from presentation.controllers.base_controller import BaseController
-from presentation.mixins import SharedPromptsMixin
+from presentation.controllers.mixins import SharedPromptsMixin
 from presentation.types import UserConfirmType
 from shared.credentials import AccessToken, AccountCard, AuthToken
 from shared.exceptions import (

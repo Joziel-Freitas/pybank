@@ -53,7 +53,6 @@ SYSTEM_MESSAGES: MessageMap = {
         "exp_session": "Sessão expirada. Por favor, autentique-se novamente",
         "denied_operation": "Operação não autorizada. Verifique os critérios e tente novamente",
         "invalid_data": "Dados fornecidos inválidos. Verifique as informações inseridas",
-        "other_branch": "Operação negada. O encerramento de conta deve ser realizado presencialmente na sua agência de origem",
         "unavailable": "O sistema do PyBank está temporariamente indisponível. Tente novamente mais tarde",
     },
 }
