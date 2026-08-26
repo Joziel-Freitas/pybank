@@ -12,6 +12,7 @@ from application.protocols import (
     TokenServiceProtocol,
 )
 from application.services.base_service import BaseApplicationService
+from application.services.mixins import AccountSummaryMixin
 from domain.account import Account
 from domain.value_objects import CPF, AccountNumber, BranchCode, Password
 from shared import verify
@@ -38,19 +39,17 @@ from shared.exceptions import (
 # =====================================================================
 
 
-class AccountManagementService(BaseApplicationService):
+class AccountManagementService(BaseApplicationService, AccountSummaryMixin):
     """Application Service responsible for orchestrating account management workflows.
 
     Acts as the entry point in the Application layer for updating security credentials,
-    recovering frozen accounts via secondary identity verification, and performing
-    permanent account closures. Coordinates Domain entities (`Account`), delegates password
-    hashing, enforces session security via `TokenServiceProtocol`, and ensures
-    transactional consistency using `RepositoryProtocol.unit_of_work()`.
+    recovering frozen accounts via secondary identity verification, retrieving account
+    summaries, and performing permanent account closures. Inherits account summary
+    resolution capabilities from `AccountSummaryMixin`.
 
-    Attributes:
-        _hasher (HasherProtocol): The cryptographic hashing interface inherited from BaseApplicationService.
-        _repository (RepositoryProtocol): The persistence interface inherited from BaseApplicationService.
-        _token_service (TokenServiceProtocol): The stateless session token management interface.
+    Coordinates Domain entities (`Account`), delegates password hashing, enforces session
+    security via `TokenServiceProtocol`, and ensures transactional consistency using
+    `RepositoryProtocol.unit_of_work()`.
     """
 
     # --------------------------------------------------------------------------

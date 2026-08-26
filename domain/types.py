@@ -4,7 +4,11 @@ Defines the core business enumerations and classifiers required to label financi
 events, transaction movements, and time-based adjustments within the PyBank domain.
 """
 
+from datetime import date
+from decimal import Decimal
 from enum import StrEnum
+
+type VOValueTypes = str | Decimal | date
 
 
 class FinancialType(StrEnum):

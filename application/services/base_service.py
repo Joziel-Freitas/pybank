@@ -1,7 +1,8 @@
 from abc import ABC
 
 from application.protocols import HasherProtocol, RepositoryProtocol
-from domain.value_objects import DomainVO, ValueTypes
+from domain.types import VOValueTypes
+from domain.value_objects import DomainVO
 from shared.exceptions import DomainVOError
 
 # =====================================================================
@@ -55,7 +56,7 @@ class BaseApplicationService(ABC):
         return f"{class_name}(hasher={self._hasher!r}, repository={self._repository!r})"
 
     def _instantiate_vo[VO_T: DomainVO](
-        self, vo_type: type[VO_T], vo_value: ValueTypes
+        self, vo_type: type[VO_T], vo_value: VOValueTypes
     ) -> VO_T:
         """Centralizes Fail-Fast Domain Value Object instantiation in the Application layer.
 

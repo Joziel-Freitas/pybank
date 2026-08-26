@@ -12,7 +12,7 @@ from datetime import date
 from decimal import Decimal
 from typing import ClassVar
 
-from domain.types import AccrualType, FinancialType
+from domain.types import AccrualType, FinancialType, VOValueTypes
 from shared import clock, validators, verify
 from shared.exceptions import (
     InvalidAccountError,
@@ -27,10 +27,9 @@ from shared.exceptions import (
 # =====================================================================
 # Domain Primitive Value Objects (Auto-validating)
 # =====================================================================
-type ValueTypes = str | Decimal | date
 
 
-class DomainVO[ValueT: ValueTypes](ABC):
+class DomainVO[ValueT: VOValueTypes](ABC):
     """Abstract Base Class for all Domain Value Objects.
 
     Establishes the mandatory 'value' attribute contract and forces
