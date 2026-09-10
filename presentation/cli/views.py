@@ -112,22 +112,20 @@ def system_output(
 
 
 def confirm_deposit(deposit_info: dict[str, Any], amount: Decimal) -> None:
-    """
-    Renders the deposit confirmation screen for the ATM terminal.
+    """Renders the deposit confirmation screen for the ATM terminal.
 
     Displays a formatted, read-only summary of the target account and the
-    transaction amount. Applies dynamic abbreviation to the account holder's
-    middle names to ensure visual compliance with the 45-character screen limit.
-    Relies on the upstream Domain layer to provide pre-sanitized sensitive
-    data (e.g., masked CPF).
+    transaction amount using the provided data dictionary. Applies dynamic
+    abbreviation to the account holder's middle names to ensure visual compliance
+    with terminal character limits.
 
     Args:
-        deposit_info (dict[str, Any]): A dictionary representation of the
-            DepositTargetDTO containing the target routing and identity data.
+        deposit_info (dict[str, Any]): A dictionary containing target routing,
+            account identification, and pre-formatted holder details.
         amount (Decimal): The exact financial value to be deposited.
     """
     raw_name = deposit_info["holder_name"]
-    raw_cpf = deposit_info["holder_cpf"]
+    raw_cpf = deposit_info["holder_masked_cpf"]
     branch_code = deposit_info["branch_code"]
     account_num = deposit_info["account_num"]
     account_type = TRANSLATION_MAP["account_type"][deposit_info["account_type"]]
