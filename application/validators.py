@@ -16,6 +16,7 @@ re-wrapped inside an Application-level InvalidDataError.
 from datetime import date
 from decimal import Decimal
 
+from domain.types import VOValueTypes
 from domain.value_objects import (
     CPF,
     AccountHolderName,
@@ -25,12 +26,11 @@ from domain.value_objects import (
     DomainVO,
     Money,
     Password,
-    ValueTypes,
 )
 from shared.exceptions import DomainVOError, InvalidDataError
 
 
-def _validate_primitives[PrimitiveT: ValueTypes](
+def _validate_primitives[PrimitiveT: VOValueTypes](
     primitive: PrimitiveT, obj_type: type[DomainVO[PrimitiveT]]
 ) -> PrimitiveT:
     """Helper function to validate a primitive value by attempting DomainVO instantiation.
