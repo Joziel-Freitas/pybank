@@ -13,7 +13,7 @@ from typing import Any
 from application import validators
 from application.dtos import AccountDataDTO, DepositDTO, StatementDTO, WithdrawalDTO
 from application.services.banking_operations_service import BankingOperationsService
-from presentation.cli import config, io_utils, ui_messages, views
+from presentation.cli import config, io_utils, views
 from presentation.controllers.base_controller import BaseController
 from presentation.types import StatementPeriodType, TransactionMenuType, UserConfirmType
 from shared import clock, verify
@@ -77,7 +77,6 @@ class BankingOperationsController(BaseController[BankingOperationsService]):
         self._transaction_type = transaction_type
         self._token = token
         self._config_mapper = config.auth_config | config.transaction_config
-        self._ui_message_map = ui_messages.TRANSACTION_MESSAGES
 
     # --------------------------------------------------------------------------
     # Dunder methods

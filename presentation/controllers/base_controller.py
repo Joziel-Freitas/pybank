@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 
 from application.services.base_service import BaseApplicationService
 from presentation.cli import views
+from presentation.cli.ui_messages import UI_MESSAGE_CATALOG
 from presentation.types import (
     MessageMap,
 )
@@ -34,8 +35,6 @@ class BaseController[ServiceT: BaseApplicationService, ReturnType = None](ABC):
             for stateful authentication/orchestration controllers.
     """
 
-    _ui_message_map: MessageMap
-
     # --------------------------------------------------------------------------
     # Constructor
     # --------------------------------------------------------------------------
@@ -48,6 +47,7 @@ class BaseController[ServiceT: BaseApplicationService, ReturnType = None](ABC):
         """
         verify.verify_instance(service, BaseApplicationService)
         self._service = service
+        self._ui_message_catalog: MessageMap = UI_MESSAGE_CATALOG
 
     # --------------------------------------------------------------------------
     # Dunder methods
@@ -99,7 +99,7 @@ class BaseController[ServiceT: BaseApplicationService, ReturnType = None](ABC):
                 into the message template.
         """
         error_key = exceptions.map_exceptions(error)
-        error_msg = self._ui_message_map[context_key][error_key]
+        error_msg = self._ui_message_catalog[context_key][error_key]
 
         views.system_output(error_msg, wait=True, clean=True, kwargs=kwargs)
 
@@ -125,6 +125,6 @@ class BaseController[ServiceT: BaseApplicationService, ReturnType = None](ABC):
             **kwargs: Dynamic values (e.g., holder names, transaction amounts) to be
                 formatted into the message template.
         """
-        info_msg = self._ui_message_map[context_key][info_key]
+        info_msg = self._ui_message_catalog[context_key][info_key]
 
         views.system_output(info_msg, wait=wait, clean=clean, kwargs=kwargs)

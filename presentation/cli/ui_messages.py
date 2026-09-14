@@ -8,30 +8,18 @@ Portuguese messages.
 
 from presentation.types import MessageMap
 
-ONBOARDING_MESSAGES: MessageMap = {
+UI_MESSAGE_CATALOG: MessageMap = {
     "info": {
+        # Onboarding
         "already_account_holder": "Bem-vindo de volta ao PyBank!",
-        "new_account_holder": "Bem vindo ao PyBank! Faça o seu cadastro de titular",
-        "pwd_confirm": "Confirme a sua nova senha",
-        "pwd_error": "As senhas não conferem. Tente novamente",
-        "pwd_input": "Insira a sua nova senha (6 dígitos)",
-        "pwd_ok": "Senha criada com sucesso",
+        "new_account_holder": "Bem-vindo ao PyBank! Faça o seu cadastro de titular",
         "register_ok": "Conta registrada com sucesso",
-        "user_cancel": "Operação cancelada pelo usuário",
-    },
-    "errors": {
-        "acc_duplicated": "Essa conta já se encontra registrada no sistema. Crie uma nova conta",
-    },
-}
-SYSTEM_MESSAGES: MessageMap = {
-    "info": {
+        # Auth & Session
         "auth_ok": "Autenticado com sucesso",
         "access_ok": "Acesso Concedido",
-        "close_acc_negative": "Você possui dívida de R$ {balance}. Realize o DEPÓSITO do valor total antes de encerrar a conta.",
-        "close_acc_positive": "Você possui saldo de R$ {balance}. Realize o SAQUE do valor total antes de encerrar a conta",
-        "close_acc_ok": "Sua conta foi encerrada corretamente e seus dados removidos do sistema",
         "lobby_hello": "Olá, {user_name}! Seja bem-vindo ao PyBank",
         "lobby_restrict": "Sua conta {acc_type} está bloqueada. Seu acesso ao menu foi restringido",
+        # Passwords
         "pwd_confirm": "Confirme a sua nova senha",
         "pwd_error": "As senhas não conferem. Tente novamente",
         "pwd_wrong": "Senha incorreta. Tente novamente",
@@ -40,37 +28,43 @@ SYSTEM_MESSAGES: MessageMap = {
         "pwd_ok": "Senha criada com sucesso",
         "pwd_update_ok": "Senha alterada com sucesso",
         "unfreeze_acc_ok": "Conta desbloqueada com sucesso",
+        # Account Management
+        "close_acc_negative": "Você possui dívida de R$ {balance}. Realize o DEPÓSITO do valor total antes de encerrar a conta.",
+        "close_acc_positive": "Você possui saldo de R$ {balance}. Realize o SAQUE do valor total antes de encerrar a conta",
+        "close_acc_ok": "Sua conta foi encerrada corretamente e seus dados removidos do sistema",
+        # Transactions
+        "deposit_ok": "Depósito realizado com sucesso",
+        "withdrawal_ok": "Saque realizado com sucesso",
+        "min_value": "Valor mínimo para transação: R$ {min_atm}",
+        "use_limit": "Valor insuficiente em conta. Para continuar, autorize o uso de R$ {required} do cheque especial",
+        # Generic
         "user_cancel": "Operação cancelada pelo usuário",
     },
     "errors": {
+        # General & System Errors
+        "acc_duplicated": "Essa conta já se encontra registrada no sistema. Crie uma nova conta",
         "acc_not_frozen": "Essa conta está ativa. Impossível desbloquear",
-        "access_denied": "Conta BLOQUEADA por segurança. Desbloqueie a conta para usá-la novamente",
+        "acc_not_found": "Conta inexistente no sistema do PyBank",
         "auth_failed": "Falha na autenticação. Verifique os seus dados com o banco",
         "integrity_fail": "Sessão encerrada por falha de segurança. Voltando à tela inicial",
         "ctrl_credentials": "Sessão encerrada. Voltando à tela inicial",
         "ctrl_operation": "Operação cancelada",
         "ctrl_register": "Falha ao registrar sua conta. Tente novamente",
         "exp_session": "Sessão expirada. Por favor, autentique-se novamente",
-        "denied_operation": "Operação não autorizada. Verifique os critérios e tente novamente",
         "invalid_data": "Dados fornecidos inválidos. Verifique as informações inseridas",
         "unavailable": "O sistema do PyBank está temporariamente indisponível. Tente novamente mais tarde",
+        # Default / Account Owner Security Errors
+        "access_denied": "Conta BLOQUEADA por segurança. Desbloqueie a conta para usá-la novamente",
+        "denied_operation": "Operação não autorizada. Verifique os critérios e tente novamente",
     },
-}
-
-
-TRANSACTION_MESSAGES: MessageMap = {
-    "info": {
-        "deposit_ok": "Depósito realizado com sucesso",
-        "min_value": "Valor mínimo para transação: R$ {min_atm}",
-        "use_limit": "Valor insuficiente em conta. Para continuar, Autorize o uso de R$ {required} do cheque especial",
-        "withdrawal_ok": "Saque realizado com sucesso",
-    },
+    # Context-Specific Errors (Privacy Boundaries)
     "deposit_errors": {
         "access_denied": "Transação não permitida para esta conta no momento. Entre em contato com o titular",
+        "denied_operation": "Transação não permitida. Verifique os dados do favorecido e tente novamente",
         "acc_not_found": "Conta inexistente no sistema do PyBank",
     },
     "withdrawal_errors": {
-        "access_denied": "Sua conta foi BLOQUEADA por segurança. Desbloqueie a conta pra usá-la novamente",
+        "access_denied": "Sua conta foi BLOQUEADA por segurança. Desbloqueie a conta para usá-la novamente",
         "denied_operation": "Valor indisponível para saque. Transação não autorizada",
     },
 }

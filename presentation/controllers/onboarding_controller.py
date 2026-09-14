@@ -6,7 +6,7 @@ from application import validators
 from application.dtos import AccountDataDTO, CheckDataDTO, NewAccountDTO
 from application.services.onboarding_service import OnboardingService
 from application.types import NewAccountType
-from presentation.cli import config, io_utils, ui_messages
+from presentation.cli import config, io_utils
 from presentation.controllers.base_controller import BaseController
 from presentation.controllers.mixins import SharedPromptsMixin
 from presentation.types import AccountTypeMenu
@@ -39,7 +39,10 @@ class OnboardingController(BaseController[OnboardingService], SharedPromptsMixin
         service: OnboardingService,
         branch_code: str = settings.BRANCH_CODE,
     ):
-        """Initializes the onboarding controller with required application services and UI configs.
+        """Initializes the onboarding controller for new client registration.
+
+        Delegates base application service binding and UI message catalog mapping
+        to the BaseController.
 
         Args:
             service (OnboardingService): The concrete application service for client onboarding.
@@ -48,7 +51,6 @@ class OnboardingController(BaseController[OnboardingService], SharedPromptsMixin
         super().__init__(service)
 
         self._branch_code = branch_code
-        self._ui_message_map = ui_messages.ONBOARDING_MESSAGES
         self._config_mapper = (
             config.auth_config
             | config.identification_config
