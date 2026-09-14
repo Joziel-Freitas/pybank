@@ -15,7 +15,7 @@ from time import sleep
 from typing import Any
 
 from infra import terminal_input
-from settings import BANK_NAME, INACTIVITY_TIMEOUT, TOTAL_TIMEOUT
+from settings import BANK_NAME, TOTAL_TIMEOUT
 from shared import clock
 from shared.exceptions import InactiveUserError
 
@@ -235,8 +235,7 @@ def _balance_statement_footer(financial_info: dict[str, Any]) -> None:
 
     try:
         terminal_input.custom_input(
-            prompt="Pressione ENTER para sair...",
-            inactive_timeout=INACTIVITY_TIMEOUT,
+            prompt="Pressione ENTER para sair...\n",
             total_timeout=TOTAL_TIMEOUT,
         )
     except TimeoutError as e:

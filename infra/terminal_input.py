@@ -115,7 +115,7 @@ def custom_input(
     prompt: str = "",
     inactive_timeout: float | None = None,
     total_timeout: float | None = None,
-    only_alphanumeric: bool = True,
+    only_alphanumeric: bool = False,
 ):
     """Prompts for and captures a line of text character-by-character with custom filtering
     and dual-timeout support.
@@ -133,7 +133,7 @@ def custom_input(
         total_timeout (float | None, optional): Maximum total allowed duration for the
             entire input session in seconds. `None` disables this limit. Defaults to None.
         only_alphanumeric (bool, optional): If True, restricts character input to letters,
-            digits, and spaces. Defaults to True.
+            digits, and spaces. Defaults to False.
 
     Returns:
         str: The string containing the input typed by the user up to the Enter key.
