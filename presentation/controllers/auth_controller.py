@@ -249,16 +249,22 @@ class AuthController(
     def _select_card(self, cards_list: list[AccountCard]) -> AccountCard:
         """Displays available hardware cards for the active client and prompts for selection.
 
+        Sorts detected cards by routing credentials and presents an interactive prompt.
+        Enforces strict index boundary validation to prevent out-of-bounds selection.
+
         Args:
             cards_list (list[AccountCard]): Collection array of detected profile card records.
 
         Returns:
-            AccountCard: The selected card object matching interaction indexes.
+            AccountCard: The selected card object matching the user-specified index.
         """
-        cards_list.sort(key=lambda card: (card.branch_code, card.account_num))
 
-        expected_size = len(cards_list)
-        validation_fn = lambda x: 0 <= x < expected_size
+        def validation_fn(x: int) -> int:
+            if not (0 <= x < len(cards_list)):
+                raise ValueError("Input value outside of limits")
+            return x
+
+        cards_list.sort(key=lambda card: (card.branch_code, card.account_num))
         cards_views: list[str] = [str(card) for card in cards_list]
         card_idx = io_utils.get_user_input(
             self._config_mapper["card"],
