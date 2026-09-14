@@ -52,7 +52,7 @@ class AccountManagementController(
 
         self._token = token
         self._operation = operation
-        self._config_mapper = config.identification_config
+        self._config_mapper = config.identification_config | config.auth_config
 
     # --------------------------------------------------------------------------
     # Dunder methods
