@@ -118,6 +118,8 @@ class InvalidPasswordError(DomainVOError):
 class ApplicationError(SystemBaseException):
     """Base exception for all Application Layer failures."""
 
+    code: str
+
 
 # --- Application Service / Workflow Exceptions ---
 
@@ -129,41 +131,61 @@ class ApplicationServiceError(ApplicationError):
 class AccessDeniedError(ApplicationServiceError):
     """Raised when vault or feature access is denied (e.g., frozen account)."""
 
+    code = "access_denied"
+
 
 class AccountAlreadyActiveError(ApplicationServiceError):
     """Raised when trying to unfreeze an already active account."""
+
+    code = "acc_not_frozen"
 
 
 class AccountHolderNotFoundError(ApplicationServiceError):
     """Raised when an account holder record cannot be resolved by the application service."""
 
+    code = "not_account_holder"
+
 
 class AccountNotFoundError(ApplicationServiceError):
     """Raised when an account record cannot be resolved by the application service."""
+
+    code = "acc_not_found"
 
 
 class AuthenticationError(ApplicationServiceError):
     """Raised when primary or vault authentication credentials fail."""
 
+    code = "auth_failed"
+
 
 class DeniedOperationError(ApplicationServiceError):
     """Raised when a business operation requested by presentation is rejected by application policy."""
+
+    code = "denied_operation"
 
 
 class DuplicatedAccountError(ApplicationServiceError):
     """Raised during onboarding if an account already exists."""
 
+    code = "acc_duplicated"
+
 
 class DuplicatedAccountHolderError(ApplicationServiceError):
     """Raised during onboarding if an account holder is already registered."""
+
+    code = "already_account_holder"
 
 
 class InvalidDataError(ApplicationServiceError):
     """Raised when an application payload (DTO) or field input fails contract/domain validation."""
 
+    code = "invalid_data"
+
 
 class ServiceUnavailableError(ApplicationServiceError):
     """Raised when an application workflow cannot commit state due to internal failure."""
+
+    code = "unavailable"
 
 
 # --- Application Security Exceptions ---
@@ -176,9 +198,13 @@ class ApplicationSecurityError(ApplicationError):
 class ExpiredSessionError(ApplicationSecurityError):
     """Raised when an application session token has expired."""
 
+    code = "exp_session"
+
 
 class SessionIntegrityError(ApplicationSecurityError):
     """Raised when a session token fails cryptographic or integrity verification."""
+
+    code = "integrity_fail"
 
 
 # =====================================================================
@@ -235,17 +261,25 @@ class PresentationError(SystemBaseException):
 class ControllerError(PresentationError):
     """Base exception for presentation flow and navigation errors."""
 
+    code: str
+
 
 class ControllerCredentialsError(ControllerError):
     """Raised when credentials flow fails at presentation level."""
+
+    code = "ctrl_credentials"
 
 
 class ControllerOperationError(ControllerError):
     """Raised when a presentation workflow is interrupted."""
 
+    code = "ctrl_operation"
+
 
 class ControllerRegisterError(ControllerError):
     """Raised when onboarding UI presentation flow fails."""
+
+    code = "ctrl_register"
 
 
 # --- Terminal I/O & Interrupt Exceptions ---
@@ -265,73 +299,3 @@ class InactiveUserError(SystemIOError):
 
 class UserAbortError(SystemIOError):
     """Raised when the user manually cancels an operation in terminal prompts."""
-
-
-# =====================================================================
-# Error Metadata Mappers
-# =====================================================================
-
-APPLICATION_SERVICE_ERROR_MAP = {
-    AccessDeniedError: "access_denied",
-    AccountAlreadyActiveError: "acc_not_frozen",
-    AccountHolderNotFoundError: "not_account_holder",
-    AccountNotFoundError: "acc_not_found",
-    AuthenticationError: "auth_failed",
-    DeniedOperationError: "denied_operation",
-    DuplicatedAccountError: "acc_duplicated",
-    DuplicatedAccountHolderError: "already_account_holder",
-    InvalidDataError: "invalid_data",
-    ServiceUnavailableError: "unavailable",
-}
-
-APPLICATION_SECURITY_ERROR_MAP = {
-    ExpiredSessionError: "exp_session",
-    SessionIntegrityError: "integrity_fail",
-}
-
-CONTROLLER_ERROR_MAP = {
-    ControllerCredentialsError: "ctrl_credentials",
-    ControllerOperationError: "ctrl_operation",
-    ControllerRegisterError: "ctrl_register",
-}
-
-
-def map_exceptions(
-    error: ApplicationError | ControllerError,
-) -> str:
-    """Maps system exceptions to standardized UI context keys.
-
-    Args:
-        error (ApplicationError | ControllerError): The exception instance raised by
-            application services or controller workflows.
-
-    Returns:
-        str: The corresponding UI context lookup key.
-
-    Raises:
-        TypeError: If error is not an instance of ApplicationError or ControllerError.
-        NotImplementedError: If an exception class is not mapped in the metadata dictionaries.
-    """
-    if not isinstance(error, (ApplicationError, ControllerError)):
-        raise TypeError(
-            f"Function expects ApplicationError or ControllerError. Got {type(error).__name__}"
-        )
-
-    match error:
-        case ApplicationServiceError():
-            context_map = APPLICATION_SERVICE_ERROR_MAP
-        case ApplicationSecurityError():
-            context_map = APPLICATION_SECURITY_ERROR_MAP
-        case ControllerError():
-            context_map = CONTROLLER_ERROR_MAP
-        case _:
-            context_map = {}
-
-    error_context = context_map.get(type(error))
-
-    if error_context is None:
-        raise NotImplementedError(
-            f"Exception {type(error).__name__} is missing from metadata mappers"
-        )
-
-    return error_context

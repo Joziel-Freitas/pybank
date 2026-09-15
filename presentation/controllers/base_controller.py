@@ -6,7 +6,7 @@ from presentation.cli.ui_messages import UI_MESSAGE_CATALOG
 from presentation.types import (
     MessageMap,
 )
-from shared import exceptions, verify
+from shared import verify
 from shared.exceptions import (
     ApplicationError,
     ControllerError,
@@ -98,7 +98,7 @@ class BaseController[ServiceT: BaseApplicationService, ReturnType = None](ABC):
             **kwargs: Dynamic values (e.g., balance, minimum amounts) to be formatted
                 into the message template.
         """
-        error_key = exceptions.map_exceptions(error)
+        error_key = error.code
         error_msg = self._ui_message_catalog[context_key][error_key]
 
         views.system_output(error_msg, wait=True, clean=True, kwargs=kwargs)
