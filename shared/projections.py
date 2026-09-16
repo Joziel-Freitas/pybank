@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from domain.value_objects import AccountFinancial
+from domain.projections import AccountFinancial
 
 
 class ProjectionDTO(ABC):

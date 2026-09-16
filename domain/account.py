@@ -17,15 +17,14 @@ from abc import ABC, abstractmethod
 from decimal import Decimal
 from typing import ClassVar, cast
 
+from domain.projections import AccountFinancial, WithdrawalSimulation
 from domain.snapshots import AccountSnapshot
 from domain.types import AccrualType, TransactionType
 from domain.value_objects import (
-    AccountFinancial,
     AccountNumber,
     BranchCode,
     LedgerEvent,
     Money,
-    WithdrawalSimulation,
 )
 from shared import clock, verify
 from shared.exceptions import (

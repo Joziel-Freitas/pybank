@@ -18,7 +18,8 @@ from application.protocols import (
 from application.services.base_service import BaseApplicationService
 from application.services.mixins import AccountSummaryMixin
 from domain.account import Account
-from domain.value_objects import AccountNumber, BranchCode, Money, WithdrawalSimulation
+from domain.projections import WithdrawalSimulation
+from domain.value_objects import AccountNumber, BranchCode, Money
 from shared import verify
 from shared.exceptions import (
     AccessDeniedError,
