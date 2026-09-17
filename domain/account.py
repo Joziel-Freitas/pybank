@@ -430,26 +430,13 @@ class Account(ABC):
             InsufficientFundsError: If the requested amount exceeds '_available_funds'.
             TypeError: If the provided amount is not an instance of Money Value Object.
         """
-        if self._is_frozen:
-            raise FrozenAccountError(
-                "Impossible to perform withdraw operation on a frozen account"
-            )
 
         verify.verify_instance(amount, Money)
+        amount_val = amount.value
 
-        inner_amount = amount.value
-
-        if inner_amount > self._available_funds:
-            raise InsufficientFundsError(
-                "The given amount exceeds the account's available funds"
-            )
-
-        accrual_event = self._apply_accrual()
-        start_balance = self._ledger_balance
-        self._update_balance(-inner_amount)
-
+        accrual_event, start_balance = self._process_debit_mutation(amount_val)
         events = self._compose_withdrawal_event(
-            inner_amount, accrual_event, start_balance
+            amount_val, accrual_event, start_balance
         )
 
         return events
@@ -487,6 +474,38 @@ class Account(ABC):
             return (accrual_event, transfer_event)
 
         return (transfer_event,)
+
+    def transfer_out(self, amount: Money) -> tuple[LedgerEvent, ...]:
+        """Orchestrates an outgoing fund transfer from the account.
+
+        Enforces domain invariants requiring active account status and sufficient available
+        funds (including credit limits where applicable). Executes internal debit mutation,
+        materializes pending accruals, and delegates to '_compose_debit_event' to produce
+        atomic TRANSFER_OUT and/or CREDIT_TRANSFER ledger events.
+
+        Args:
+            amount (Money): The monetary Value Object to transfer.
+
+        Returns:
+            tuple[LedgerEvent, ...]: A chronological sequence of ledger events representing
+                the outgoing transfer transaction, accounting for potential credit limit usage.
+
+        Raises:
+            FrozenAccountError: If the account is locked and cannot transfer funds.
+            InsufficientFundsError: If the requested amount exceeds total available funds.
+            TypeError: If the provided amount is not an instance of Money Value Object.
+        """
+        verify.verify_instance(amount, Money)
+        amount_val = amount.value
+        accrual_event, start_balance = self._process_debit_mutation(amount_val)
+
+        return self._compose_debit_event(
+            amount=amount_val,
+            accrual_event=accrual_event,
+            start_balance=start_balance,
+            balance_debit_type=TransactionType.TRANSFER_OUT,
+            credit_debit_type=TransactionType.CREDIT_TRANSFER,
+        )
 
     # --------------------------------------------------------------------------
     # Abstract Hook Methods (Internal Orchestration)
@@ -547,6 +566,121 @@ class Account(ABC):
         self._update_balance(amount)
 
         return (accrual_event, start_balance)
+
+    def _process_debit_mutation(
+        self, amount: Decimal
+    ) -> tuple[LedgerEvent | None, Decimal]:
+        """Applies internal financial state mutation for outgoing debit operations.
+
+        Executes essential domain invariants prior to balance modification: verifies
+        unfrozen status, validates liquidity against total available funds, materializes
+        time-based accruals, records the starting balance point, and decrements
+        the internal ledger balance.
+
+        Args:
+            amount (Decimal): The unwrapped monetary decimal amount to debit.
+
+        Returns:
+            tuple[LedgerEvent | None, Decimal]: A tuple containing the optional accrual
+                materialization event and the accurate starting ledger balance prior
+                to the transaction update.
+
+        Raises:
+            FrozenAccountError: If the account is locked and cannot dispense funds.
+            InsufficientFundsError: If amount exceeds available purchasing power.
+        """
+
+        if self._is_frozen:
+            raise FrozenAccountError(
+                "Impossible to perform operation on a frozen account"
+            )
+
+        if amount > self._available_funds:
+            raise InsufficientFundsError(
+                "The given amount exceeds the account's available funds"
+            )
+
+        accrual_event = self._apply_accrual()
+        start_balance = self._ledger_balance
+        self._update_balance(-amount)
+
+        return (accrual_event, start_balance)
+
+    def _compose_debit_event(
+        self,
+        amount: Decimal,
+        accrual_event: LedgerEvent | None,
+        start_balance: Decimal,
+        balance_debit_type: TransactionType,
+        credit_debit_type: TransactionType | None = None,
+    ) -> tuple[LedgerEvent, ...]:
+        """Constructs the chronological ledger event sequence for debit transactions.
+
+        Encapsulates universal zero-crossing logic for all debit operations (withdrawals
+        and transfers). Strategically decomposes the transaction into standard positive
+        balance debits and credit limit debits based on starting balance boundaries.
+
+        Args:
+            amount (Decimal): The unwrapped monetary amount debited.
+            accrual_event (LedgerEvent | None): The materialized accrual event, if any.
+            start_balance (Decimal): The authoritative balance prior to mutation.
+            balance_debit_type (TransactionType): Semantic event label for standard balance debit.
+            credit_debit_type (TransactionType | None): Semantic event label for credit limit debit.
+
+        Returns:
+            tuple[LedgerEvent, ...]: The chronological sequence of finalized ledger events.
+
+        Raises:
+            RuntimeError: If transaction crosses into credit territory without 'credit_debit_type'.
+        """
+
+        events_list: list[LedgerEvent] = []
+
+        if accrual_event:
+            events_list.append(accrual_event)
+
+        # Case 1: Fully covered by positive balance (including exact withdrawal)
+        if start_balance >= amount:
+            events_list.append(
+                LedgerEvent(
+                    previous_balance=start_balance,
+                    amount=-amount,
+                    event_type=balance_debit_type,
+                )
+            )
+
+        elif not credit_debit_type:
+            raise RuntimeError(
+                "A credit debit TransactionType is required when exceeding positive balance"
+            )
+
+        # Case 2: Fully operating within credit limits (including starting exactly at zero)
+        elif start_balance <= 0:
+            events_list.append(
+                LedgerEvent(
+                    previous_balance=start_balance,
+                    amount=-amount,
+                    event_type=credit_debit_type,
+                )
+            )
+        # Case 3: Zero-crossing (Partial standard, partial credit)
+        else:
+            remaining = amount - start_balance
+            events_list.append(
+                LedgerEvent(
+                    previous_balance=start_balance,
+                    amount=-start_balance,
+                    event_type=balance_debit_type,
+                )
+            )
+            events_list.append(
+                LedgerEvent(
+                    previous_balance=Decimal("0.00"),
+                    amount=-remaining,
+                    event_type=credit_debit_type,
+                )
+            )
+        return tuple(events_list)
 
     def _update_balance(self, amount: Decimal) -> None:
         """Mutates the account balance and synchronizes the domain clock.
@@ -727,26 +861,24 @@ class SavingsAccount(Account):
     ) -> tuple[LedgerEvent, ...]:
         """Constructs the ledger event sequence for a savings account withdrawal.
 
-        Since savings accounts do not support overdraft, this simply chains the
-        optional accrual event (if materialized) with a standard withdrawal entry.
+        Delegates to '_compose_debit_event' using WITHDRAWAL as the standard balance
+        debit type. Since savings accounts do not support credit limits, no credit
+        type is passed, enforcing positive balance constraints.
 
         Args:
-            amount (Decimal): The primitive numeric amount withdrawn.
+            amount (Decimal): The unwrapped monetary amount withdrawn.
             accrual_event (LedgerEvent | None): The materialized yield event, if any.
-            start_balance (Decimal): The balance prior to mutation.
+            start_balance (Decimal): The authoritative balance prior to mutation.
 
         Returns:
-            tuple[LedgerEvent, ...]: The sequence of events for the savings audit trail.
+            tuple[LedgerEvent, ...]: The chronological audit trail for the savings withdrawal.
         """
-        withdrawal_event = LedgerEvent(
-            previous_balance=start_balance,
-            amount=-amount,
-            event_type=TransactionType.WITHDRAWAL,
+        return self._compose_debit_event(
+            amount=amount,
+            accrual_event=accrual_event,
+            start_balance=start_balance,
+            balance_debit_type=TransactionType.WITHDRAWAL,
         )
-        if accrual_event:
-            return (accrual_event, withdrawal_event)
-
-        return (withdrawal_event,)
 
     # --------------------------------------------------------------------------
     # Class Factory Methods
@@ -894,59 +1026,25 @@ class CheckingAccount(Account):
         accrual_event: LedgerEvent | None,
         start_balance: Decimal,
     ) -> tuple[LedgerEvent, ...]:
-        """Constructs the ledger event sequence for a checking account, handling zero-crossing logic.
+        """Constructs the ledger event sequence for a checking account withdrawal.
 
-        This implementation handles the credit complexity by strategically splitting
-        the transaction into 'Standard' and 'Credit' events when the requested
-        amount crosses the zero-balance threshold.
+        Delegates zero-crossing and overdraft handling to '_compose_debit_event' by
+        supplying both standard WITHDRAWAL and CREDIT_WITHDRAWAL transaction types.
 
         Args:
-            amount (Decimal): The primitive numeric amount withdrawn.
+            amount (Decimal): The unwrapped monetary amount withdrawn.
             accrual_event (LedgerEvent | None): The materialized interest event, if any.
-            start_balance (Decimal): The balance prior to mutation.
+            start_balance (Decimal): The authoritative balance prior to mutation.
 
         Returns:
             tuple[LedgerEvent, ...]: The chronological audit trail accounting for both
                 balance usage and credit limit consumption.
         """
-        events_list: list[LedgerEvent] = []
 
-        if accrual_event:
-            events_list.append(accrual_event)
-
-        # Case 1: Fully covered by positive balance (including exact withdrawal)
-        if start_balance >= amount:
-            events_list.append(
-                LedgerEvent(
-                    previous_balance=start_balance,
-                    amount=-amount,
-                    event_type=TransactionType.WITHDRAWAL,
-                )
-            )
-        # Case 2: Fully operating within credit limits (including starting exactly at zero)
-        elif start_balance <= 0:
-            events_list.append(
-                LedgerEvent(
-                    previous_balance=start_balance,
-                    amount=-amount,
-                    event_type=TransactionType.CREDIT_WITHDRAWAL,
-                )
-            )
-        # Case 3: Zero-crossing (Partial standard, partial credit)
-        else:
-            remaining = amount - start_balance
-            events_list.append(
-                LedgerEvent(
-                    previous_balance=start_balance,
-                    amount=-start_balance,
-                    event_type=TransactionType.WITHDRAWAL,
-                )
-            )
-            events_list.append(
-                LedgerEvent(
-                    previous_balance=Decimal("0.00"),
-                    amount=-remaining,
-                    event_type=TransactionType.CREDIT_WITHDRAWAL,
-                )
-            )
-        return tuple(events_list)
+        return self._compose_debit_event(
+            amount=amount,
+            accrual_event=accrual_event,
+            start_balance=start_balance,
+            balance_debit_type=TransactionType.WITHDRAWAL,
+            credit_debit_type=TransactionType.CREDIT_WITHDRAWAL,
+        )
