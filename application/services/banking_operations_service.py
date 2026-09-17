@@ -18,7 +18,7 @@ from application.protocols import (
 from application.services.base_service import BaseApplicationService
 from application.services.mixins import AccountSummaryMixin
 from domain.account import Account
-from domain.projections import WithdrawalSimulation
+from domain.projections import DebitSimulation
 from domain.value_objects import AccountNumber, BranchCode, Money
 from shared import verify
 from shared.exceptions import (
@@ -195,7 +195,7 @@ class BankingOperationsService(BaseApplicationService, AccountSummaryMixin):
             ) from e
 
     @contextmanager
-    def execute_withdrawal(self, dto: WithdrawalDTO) -> Generator[WithdrawalSimulation]:
+    def execute_withdrawal(self, dto: WithdrawalDTO) -> Generator[DebitSimulation]:
         """Orchestrates a secure withdrawal operation using a state-locked context manager.
 
         Acts as a transactional gatekeeper under a strict Zero Trust model. Verifies cryptographic
@@ -205,7 +205,7 @@ class BankingOperationsService(BaseApplicationService, AccountSummaryMixin):
 
         Execution Flow:
         1. Validates token integrity and locks the Account entity in the database.
-        2. Yields a `WithdrawalSimulation` Value Object to the caller (Controller), pausing execution.
+        2. Yields a `DebitSimulation` Value Object to the caller (Controller), pausing execution.
         3. The caller uses this simulation to optionally prompt the user for consent (e.g., if
            overdraft is required) and either continues or aborts the context.
         4. Upon resumption, executes the withdrawal and ledger event generation against the
@@ -215,7 +215,7 @@ class BankingOperationsService(BaseApplicationService, AccountSummaryMixin):
             dto (WithdrawalDTO): Command payload containing the AccessToken and withdrawal amount.
 
         Yields:
-            WithdrawalSimulation: Value Object detailing authorization status and exact credit/overdraft requirements.
+            DebitSimulation: Value Object detailing authorization status and exact credit/overdraft requirements.
 
         Raises:
             TypeError: If dto is not an instance of WithdrawalDTO.
@@ -263,7 +263,7 @@ class BankingOperationsService(BaseApplicationService, AccountSummaryMixin):
                     branch_code, account_num, for_update=True
                 )
                 account_obj = Account.from_snapshot(account_db_snap)
-                simulation = account_obj.simulate_withdrawal(money)
+                simulation = account_obj.simulate_debit(money)
                 yield simulation
                 try:
                     events = account_obj.withdrawal(money)

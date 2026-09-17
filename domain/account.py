@@ -17,7 +17,7 @@ from abc import ABC, abstractmethod
 from decimal import Decimal
 from typing import ClassVar, cast
 
-from domain.projections import AccountFinancial, WithdrawalSimulation
+from domain.projections import AccountFinancial, DebitSimulation
 from domain.snapshots import AccountSnapshot
 from domain.types import AccrualType, TransactionType
 from domain.value_objects import (
@@ -366,11 +366,11 @@ class Account(ABC):
 
         return (deposit_event,)
 
-    def simulate_withdrawal(self, amount: Money) -> WithdrawalSimulation:
-        """Simulates the financial projection of a withdrawal without mutating state.
+    def simulate_debit(self, amount: Money) -> DebitSimulation:
+        """Simulates the financial projection of a debit operation without mutating state.
 
-        Acts as a universal financial oracle for all account types. It evaluates
-        transaction viability strictly based on the polymorphic '_available_funds'
+        Acts as a universal financial oracle for all account types and debit operations.
+        It evaluates transaction viability strictly based on the polymorphic '_available_funds'
         and explicitly checks the subclass contracts for credit support ('_credit_limit').
         If the transaction exceeds total available capacity (unauthorized), credit projection
         fields strictly evaluate to None to preserve domain semantic integrity.
@@ -379,31 +379,29 @@ class Account(ABC):
             amount (Money): The intended monetary Value Object to be evaluated.
 
         Returns:
-            WithdrawalSimulation: A detailed projection detailing authorization status,
-                the necessity of utilizing an overdraft, and the precise monetary value
-                required from the credit line.
+            DebitSimulation: A detailed projection detailing authorization status,
+                the necessity of utilizing an overdraft/credit limit, and the precise monetary
+                value required from the credit line.
 
         Raises:
             TypeError: If the provided amount is not an instance of Money Value Object.
         """
         verify.verify_instance(amount, Money)
-        inner_amount = amount.value
-        authorized = inner_amount <= self._available_funds
+        amount_val = amount.value
+        authorized = amount_val <= self._available_funds
         balance = self._balance
         use_credit = None
         credit_required = None
 
         if authorized and self._credit_limit is not None:
-            use_credit = inner_amount > balance
+            use_credit = amount_val > balance
 
             if use_credit:
-                credit_required = (
-                    inner_amount - balance if balance > 0 else inner_amount
-                )
+                credit_required = amount_val - balance if balance > 0 else amount_val
             else:
                 credit_required = Decimal("0.00")
 
-        return WithdrawalSimulation(
+        return DebitSimulation(
             authorized=authorized,
             use_credit=use_credit,
             credit_required=credit_required,

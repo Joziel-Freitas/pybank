@@ -13,12 +13,13 @@ from domain.types import AccrualType
 
 
 @dataclass(frozen=True, slots=True)
-class WithdrawalSimulation:
-    """Value Object representing the projected outcome of a withdrawal evaluation.
+class DebitSimulation:
+    """Value Object representing the projected outcome of a debit operation evaluation.
 
     Utilized by domain aggregates and application use cases to safely evaluate
-    the financial and operational impact of a withdrawal before committing to state
-    mutation. It provides the necessary data to evaluate whether credit limits are required.
+    the financial and operational impact of a debit operation (withdrawal or outgoing transfer)
+    before committing to state mutation. It provides the necessary data to evaluate whether
+    credit limits are required.
 
     Attributes:
         authorized (bool): Indicates if the operation is mathematically and operationally
