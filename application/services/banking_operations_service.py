@@ -9,7 +9,13 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from decimal import Decimal
 
-from application.dtos import AccountDataDTO, DepositDTO, StatementDTO, WithdrawalDTO
+from application.dtos import (
+    AccountDataDTO,
+    DepositDTO,
+    StatementDTO,
+    TransferDTO,
+    WithdrawalDTO,
+)
 from application.protocols import (
     HasherProtocol,
     RepositoryProtocol,
@@ -280,6 +286,126 @@ class BankingOperationsService(BaseApplicationService, AccountSummaryMixin):
         except DataNotFoundError as e:
             raise AuthenticationError(
                 "Authentication failed: Account no longer exists"
+            ) from e
+        except RepositoryError as e:
+            raise ServiceUnavailableError(
+                "The intended operation could not be persisted due to an internal error"
+            ) from e
+
+    @contextmanager
+    def execute_transfer(self, dto: TransferDTO) -> Generator[DebitSimulation]:
+        """Orchestrates an authenticated account-to-account funds transfer.
+
+        Performs fail-fast input and session token validations, ensuring the source account
+        differs from the target account. Executes within an isolation-level Unit of Work,
+        simulating debit viability and yielding execution control back to the caller to allow
+        overdraft/credit limit confirmation prior to state mutation.
+
+        Upon caller resumption, atomically applies 'transfer_out' on source and 'transfer_in'
+        on target, persisting snapshot state updates and domain ledger events transactionally.
+
+        Args:
+            dto (TransferDTO): Application DTO encapsulating the authenticated AccessToken,
+                target AccountDataDTO, and monetary amount to transfer.
+
+        Yields:
+            DebitSimulation: A financial projection detailing transaction viability,
+                authorization status, and overdraft usage requirements for the source account.
+
+        Raises:
+            DeniedOperationError: If source and target accounts are identical, if funds are
+                insufficient, or if target account is frozen. Attaches the violating argument
+                context when triggered by domain rule rejections.
+            AuthenticationError: If source or target account records cannot be found in persistence.
+            ExpiredSessionError: If the user session token has expired.
+            SessionIntegrityError: If the token fails cryptographic signature verification.
+            AccessDeniedError: If the source account is frozen.
+            ServiceUnavailableError: If an underlying repository fault prevents atomic commit.
+            TypeError: If the input DTO is invalid.
+        """
+        verify.verify_instance(dto, TransferDTO)
+
+        source_acc_branch, source_acc_num, money = self._get_operation_vos(
+            dto.access_token.branch_code, dto.access_token.account_num, dto.amount
+        )
+
+        target_acc = dto.target_account
+        target_acc_branch = self._instantiate_vo(BranchCode, target_acc.branch_code)
+        target_acc_num = self._instantiate_vo(AccountNumber, target_acc.account_num)
+
+        # 1. Self-transfer validation invariant
+        if (source_acc_branch, source_acc_num) == (target_acc_branch, target_acc_num):
+            raise DeniedOperationError(
+                "Denied operation: Source and target accounts cannot be identical"
+            )
+
+        try:
+            source_acc_info = self._repository.get_account_projection(
+                source_acc_branch, source_acc_num, access_info=True
+            )
+        except DataNotFoundError as e:
+            raise AuthenticationError(
+                "Authentication failed: Account no longer exists"
+            ) from e
+
+        access_info = source_acc_info.unwrap_access()
+
+        try:
+            self._token_service.validate_token_integrity(
+                dto.access_token, access_info.password_hash
+            )
+        except ExpiredTokenError as e:
+            raise ExpiredSessionError(
+                "The current user session has expired. Re-authentication is required."
+            ) from e
+        except TokenSignatureError as e:
+            raise SessionIntegrityError(
+                "Session token integrity check failed due to invalid cryptographic signature."
+            ) from e
+
+        try:
+            with self._repository.unit_of_work():
+                source_acc_db_snap = self._repository.get_account_snapshot(
+                    source_acc_branch, source_acc_num, for_update=True
+                )
+                source_acc_obj = Account.from_snapshot(source_acc_db_snap)
+                simulation = source_acc_obj.simulate_debit(money)
+
+                yield simulation
+
+                target_acc_db_snap = self._repository.get_account_snapshot(
+                    target_acc_branch, target_acc_num, for_update=True
+                )
+                target_acc_obj = Account.from_snapshot(target_acc_db_snap)
+
+                try:
+                    debit_events = source_acc_obj.transfer_out(money)
+                except FrozenAccountError as e:
+                    raise AccessDeniedError(
+                        "Source account is frozen and cannot perform operations"
+                    ) from e
+                except InsufficientFundsError as e:
+                    raise DeniedOperationError(
+                        "Transfer denied: Insufficient available funds",
+                        argument=dto.amount,
+                    ) from e
+
+                try:
+                    credit_events = target_acc_obj.transfer_in(money)
+                except FrozenAccountError as e:
+                    raise DeniedOperationError(
+                        "Transfer denied: Target account is frozen and cannot receive funds",
+                        argument=target_acc,
+                    ) from e
+
+                source_acc_snap = source_acc_obj.to_snapshot()
+                target_acc_snap = target_acc_obj.to_snapshot()
+                self._repository.save_transaction(source_acc_snap, debit_events)
+                self._repository.save_transaction(target_acc_snap, credit_events)
+
+        except DataNotFoundError as e:
+            raise AuthenticationError(
+                "Transfer operation failed: One of the accounts no longer exists"
             ) from e
         except RepositoryError as e:
             raise ServiceUnavailableError(
