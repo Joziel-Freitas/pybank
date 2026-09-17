@@ -26,17 +26,23 @@ class TransactionType(FinancialType):
 
     Acts as the official ledger entry type, ensuring the core domain records
     the exact nature of the movement (e.g., distinguishing a standard withdrawal
-    from an overdraft usage).
+    from an overdraft usage or credit-backed transfer).
 
     Attributes:
         DEPOSIT: Represents funds added to the account.
         WITHDRAWAL: Represents funds removed using standard positive balance.
         CREDIT_WITHDRAWAL: Represents funds removed utilizing the account's credit limit.
+        TRANSFER_IN: Represents funds received from another account.
+        TRANSFER_OUT: Represents funds sent utilizing standard positive balance.
+        CREDIT_TRANSFER: Represents funds sent utilizing the account's credit limit.
     """
 
     DEPOSIT = "DEPOSIT"
     WITHDRAWAL = "WITHDRAWAL"
     CREDIT_WITHDRAWAL = "CREDIT_WITHDRAWAL"
+    TRANSFER_IN = "TRANSFER_IN"
+    TRANSFER_OUT = "TRANSFER_OUT"
+    CREDIT_TRANSFER = "CREDIT_TRANSFER"
 
 
 class AccrualType(FinancialType):
