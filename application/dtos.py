@@ -185,3 +185,21 @@ class UnfreezeAccountDTO(ApplicationDTO):
     auth_token: AuthToken
     birth_date: date
     new_password: str
+
+
+@dataclass(frozen=True, slots=True)
+class TransferDTO(ApplicationDTO):
+    """Command Data Transfer Object encapsulating an authenticated account transfer request.
+
+    Binds a cryptographically signed AccessToken proving source account authorization in the
+    Vault context together with the target account coordinates and requested monetary amount.
+
+    Attributes:
+        access_token (AccessToken): The active, verified cryptographic token of the source session.
+        target_account (AccountDataDTO): Identification coordinates (branch and account) of the recipient.
+        amount (Decimal): The strictly positive monetary value requested for the transfer.
+    """
+
+    access_token: AccessToken
+    target_account: AccountDataDTO
+    amount: Decimal
