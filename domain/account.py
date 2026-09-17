@@ -335,9 +335,8 @@ class Account(ABC):
         """Performs a standard deposit operation.
 
         Enforces the strict domain rule that an account must be active to receive funds.
-        Validates the input Money Value Object, processes any pending time-based accruals,
-        and increments the account balance. This implementation serves as the default
-        behavior for all concrete account types.
+        Validates the input Money Value Object, materializes any pending time-based
+        accruals via credit mutation helper, and increments the account balance.
 
         Args:
             amount (Money): The monetary Value Object representing the deposit amount.
@@ -352,26 +351,18 @@ class Account(ABC):
             FrozenAccountError: If the account is currently frozen.
             TypeError: If the amount is not an instance of Money Value Object.
         """
-        if self._is_frozen:
-            raise FrozenAccountError(
-                "Impossible to perform deposit operation on a frozen account"
-            )
-
         verify.verify_instance(amount, Money)
-
-        inner_amount = amount.value
-        accruals_event = self._apply_accrual()
-        start_balance = self._ledger_balance
-        self._update_balance(inner_amount)
+        amount_val = amount.value
+        accrual_event, start_balance = self._process_credit_mutation(amount_val)
 
         deposit_event = LedgerEvent(
             previous_balance=start_balance,
-            amount=inner_amount,
+            amount=amount_val,
             event_type=TransactionType.DEPOSIT,
         )
 
-        if accruals_event:
-            return (accruals_event, deposit_event)
+        if accrual_event:
+            return (accrual_event, deposit_event)
 
         return (deposit_event,)
 
@@ -463,6 +454,40 @@ class Account(ABC):
 
         return events
 
+    def transfer_in(self, amount: Money) -> tuple[LedgerEvent, ...]:
+        """Processes an incoming fund transfer into the account.
+
+        Enforces domain invariants requiring the target account to be active and unblocked.
+        Leverages internal credit mutation to process pending accruals before applying
+        the incoming amount to the ledger balance, returning an atomic TRANSFER_IN ledger event.
+
+        Args:
+            amount (Money): The monetary Value Object representing the transferred amount.
+
+        Returns:
+            tuple[LedgerEvent, ...]: A sequence of ledger events representing the incoming
+                transfer transaction, including potential preceding accrual materialization.
+
+        Raises:
+            FrozenAccountError: If the account is currently frozen and cannot receive transfers.
+            TypeError: If the amount is not an instance of Money Value Object.
+        """
+
+        verify.verify_instance(amount, Money)
+        amount_val = amount.value
+        accrual_event, start_balance = self._process_credit_mutation(amount_val)
+
+        transfer_event = LedgerEvent(
+            previous_balance=start_balance,
+            amount=amount_val,
+            event_type=TransactionType.TRANSFER_IN,
+        )
+
+        if accrual_event:
+            return (accrual_event, transfer_event)
+
+        return (transfer_event,)
+
     # --------------------------------------------------------------------------
     # Abstract Hook Methods (Internal Orchestration)
     # --------------------------------------------------------------------------
@@ -492,6 +517,37 @@ class Account(ABC):
     # --------------------------------------------------------------------------
     # Protected Methods (Internal Helpers)
     # --------------------------------------------------------------------------
+    def _process_credit_mutation(
+        self, amount: Decimal
+    ) -> tuple[LedgerEvent | None, Decimal]:
+        """Applies internal financial state mutation for incoming credit operations.
+
+        Executes essential domain invariants prior to balance modification: verifies
+        unfrozen status, materializes time-based accruals (yield/interest), records the
+        starting balance point, and updates the internal ledger balance.
+
+        Args:
+            amount (Decimal): The unwrapped monetary decimal amount to credit.
+
+        Returns:
+            tuple[LedgerEvent | None, Decimal]: A tuple containing the optional accrual
+                materialization event and the accurate starting ledger balance prior
+                to the transaction update.
+
+        Raises:
+            FrozenAccountError: If the account is locked and cannot receive funds.
+        """
+        if self._is_frozen:
+            raise FrozenAccountError(
+                "Impossible to perform operation on a frozen account"
+            )
+
+        accrual_event = self._apply_accrual()
+        start_balance = self._ledger_balance
+        self._update_balance(amount)
+
+        return (accrual_event, start_balance)
+
     def _update_balance(self, amount: Decimal) -> None:
         """Mutates the account balance and synchronizes the domain clock.
 
