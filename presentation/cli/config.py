@@ -12,8 +12,8 @@ menu_config: ConfigMap = {
     },
     "operations_menu": {
         "info": "Operações",
-        "prompt": "1 - Depósito\n2 - Saque\n3 - Saldo/Extrato\n4 - Mudança de senha\n5 - Encerrar conta\nSua opção: ",
-        "error_msg": "Opção inválida. Escolha entre as opções de 1 a 5",
+        "prompt": "1 - Depósito\n2 - Saque\n3 - Transferência\n4 - Saldo/Extrato\n5 - Mudança de senha\n6 - Encerrar conta\nSua opção: ",
+        "error_msg": "Opção inválida. Escolha entre as opções de 1 a 6",
     },
     "restricted_menu": {
         "info": "Acesso restrito",
@@ -93,9 +93,9 @@ transaction_config: ConfigMap = {
         "prompt": "Valor a sacar: ",
         "error_msg": "Valor inválido para saque. Tente novamente",
     },
-    "limit": {
-        "info": "Transação - Cheque Especial",
-        "prompt": "Deseja usar o cheque especial?\n1 - Sim\n2 - Não\nSua opção: ",
+    "credit_limit": {
+        "info": "Transação - Limite de crédito",
+        "prompt": "Deseja usar o limite de crédito da conta?\n1 - Sim\n2 - Não\nSua opção: ",
         "error_msg": "Opção inválida. Escolha entre as opções 1 ou 2",
     },
     "statement": {
@@ -107,5 +107,23 @@ transaction_config: ConfigMap = {
         "info": "Transação - Confirmação",
         "prompt": "1 - Confirmar\n2 - Cancelar\nSua opção: ",
         "error_msg": "Opção inválida. Escolha entre as opções 1 ou 2",
+    },
+}
+
+transfer_config: ConfigMap = {
+    "target_branch": {
+        "info": "Transação - Transferência - Agência de destino",
+        "prompt": "Agência de destino (4 dígitos): ",
+        "error_msg": "Agência inválida. A agência deve conter exatamente 4 dígitos numéricos",
+    },
+    "target_account": {
+        "info": "Transação - Transferência - Conta de destino",
+        "prompt": "Conta de destino (8 dígitos): ",
+        "error_msg": "Conta inválida. A conta deve conter exatamente 8 dígitos numéricos",
+    },
+    "amount": {
+        "info": "Transação - Transferência - Valor",
+        "prompt": "Valor a transferir: ",
+        "error_msg": "Valor inválido para transferência. Tente novamente",
     },
 }
