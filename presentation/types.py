@@ -91,16 +91,18 @@ class OperationMenuType(MenuType):
     Attributes:
         DEPOSIT (1): Routes to a logged-in money deposit operation.
         WITHDRAWAL (2): Routes to a money withdrawal operation.
-        STATEMENT (3): Routes to a bank statement inquiry.
-        CHANGE_PASSWORD (4): Triggers the secure workflow to change the account password.
-        CLOSE_ACCOUNT (5): Triggers the irreversible process of closing the bank account.
+        TRANSFER (3): Routes to an account-to-account transfer operation.
+        STATEMENT (4): Routes to a bank statement inquiry.
+        CHANGE_PASSWORD (5): Triggers the secure workflow to change the account password.
+        CLOSE_ACCOUNT (6): Triggers the irreversible process of closing the bank account.
     """
 
     DEPOSIT = 1
     WITHDRAWAL = 2
-    STATEMENT = 3
-    CHANGE_PASSWORD = 4
-    CLOSE_ACCOUNT = 5
+    TRANSFER = 3
+    STATEMENT = 4
+    CHANGE_PASSWORD = 5
+    CLOSE_ACCOUNT = 6
 
 
 class RestrictedMenuType(MenuType):
@@ -125,12 +127,14 @@ class TransactionMenuType(MenuType):
     Attributes:
         DEPOSIT (1): Flags the controller to execute the deposit workflow.
         WITHDRAWAL (2): Flags the controller to execute the withdrawal workflow.
-        STATEMENT (3): Flags the controller to execute the statement retrieval workflow.
+        TRANSFER (3): Flags the controller to execute the transfer workflow.
+        STATEMENT (4): Flags the controller to execute the statement retrieval workflow.
     """
 
     DEPOSIT = 1
     WITHDRAWAL = 2
-    STATEMENT = 3
+    TRANSFER = 3
+    STATEMENT = 4
 
 
 class AccountTypeMenu(MenuType):
