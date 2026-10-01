@@ -76,7 +76,9 @@ class BankingOperationsController(BaseController[BankingOperationsService]):
 
         self._transaction_type = transaction_type
         self._token = token
-        self._config_mapper = config.auth_config | config.transaction_config
+        self._config_mapper = (
+            config.auth_config | config.transaction_config | config.transfer_config
+        )
 
     # --------------------------------------------------------------------------
     # Dunder methods
@@ -266,8 +268,9 @@ class BankingOperationsController(BaseController[BankingOperationsService]):
             RuntimeError: If called from an unsupported transaction operational type.
         """
         transaction_mapper = {
-            TransactionMenuType.WITHDRAWAL: "withdrawal",
             TransactionMenuType.DEPOSIT: "deposit",
+            TransactionMenuType.WITHDRAWAL: "withdrawal",
+            TransactionMenuType.TRANSFER: "transfer",
         }
 
         if self._transaction_type not in transaction_mapper:
@@ -352,7 +355,7 @@ class BankingOperationsController(BaseController[BankingOperationsService]):
             UserConfirmType: The structured confirmation selection state from the user.
         """
         confirm = io_utils.get_user_input(
-            self._config_mapper["limit"],
+            self._config_mapper["credit_limit"],
             int,
             UserConfirmType,
         )

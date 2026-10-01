@@ -121,7 +121,7 @@ transfer_config: ConfigMap = {
         "prompt": "Conta de destino (8 dígitos): ",
         "error_msg": "Conta inválida. A conta deve conter exatamente 8 dígitos numéricos",
     },
-    "amount": {
+    "transfer": {
         "info": "Transação - Transferência - Valor",
         "prompt": "Valor a transferir: ",
         "error_msg": "Valor inválido para transferência. Tente novamente",
