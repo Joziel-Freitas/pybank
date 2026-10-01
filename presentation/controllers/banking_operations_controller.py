@@ -179,7 +179,7 @@ class BankingOperationsController(BaseController[BankingOperationsService]):
                 AccountDataDTO(branch_code=branch_code, account_num=account_num)
             )
         except AccountNotFoundError as e:
-            self._handle_exception_ui("deposit_errors", e)
+            self._handle_exception_ui("errors", e)
             raise ControllerOperationError from e
 
         self._confirm_deposit(target_info, amount)
@@ -191,7 +191,10 @@ class BankingOperationsController(BaseController[BankingOperationsService]):
                 )
             )
             self._handle_info_ui("info", "deposit_ok", wait=True)
-        except (AccountNotFoundError, AccessDeniedError) as e:
+        except AccountNotFoundError as e:
+            self._handle_exception_ui("errors", e)
+            raise ControllerOperationError from e
+        except AccessDeniedError as e:
             self._handle_exception_ui("deposit_errors", e)
             raise ControllerOperationError from e
 
@@ -206,8 +209,9 @@ class BankingOperationsController(BaseController[BankingOperationsService]):
 
         Raises:
             ControllerOperationError: If underlying balances or total credit limits are
-                insufficient, if session validation fails, or if infrastructural errors emerge.
+                insufficient, if the account is frozen, or if underlying session/service faults emerge.
             UserAbortError: If credit limit approval is explicitly declined by the user.
+            RuntimeError: If an impossible financial validation state occurs during context execution.
         """
         amount = self._get_transaction_value()
 
@@ -217,7 +221,7 @@ class BankingOperationsController(BaseController[BankingOperationsService]):
             ) as simulation:
 
                 if not simulation.authorized:
-                    self._handle_info_ui("withdrawal_errors", "value", wait=True)
+                    self._handle_info_ui("info", "unauthorized", wait=True)
                     raise ControllerOperationError
 
                 if simulation.use_credit is True:
@@ -233,9 +237,13 @@ class BankingOperationsController(BaseController[BankingOperationsService]):
                         raise UserAbortError
 
             self._handle_info_ui("info", "withdrawal_ok", wait=True)
-        except (AccessDeniedError, DeniedOperationError) as e:
-            self._handle_exception_ui("withdrawal_errors", e)
+        except AccessDeniedError as e:
+            self._handle_exception_ui("errors", e)
             raise ControllerOperationError from e
+        except DeniedOperationError as e:
+            raise RuntimeError(
+                "Invalid state: Inconsistent financial validation"
+            ) from e
 
     def _handle_transfer(self) -> None: ...
 
@@ -371,7 +379,7 @@ class BankingOperationsController(BaseController[BankingOperationsService]):
             UserConfirmType: The structured confirmation selection state from the user.
         """
         confirm = io_utils.get_user_input(
-            self._config_mapper["credit_limit"],
+            self._config_mapper["use_credit"],
             int,
             UserConfirmType,
         )

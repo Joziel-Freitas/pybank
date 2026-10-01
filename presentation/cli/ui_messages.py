@@ -37,6 +37,7 @@ UI_MESSAGE_CATALOG: MessageMap = {
         "withdrawal_ok": "Saque realizado com sucesso",
         "transfer_ok": "Transferência realizada com sucesso",
         "min_value": "Valor mínimo para transação: R$ {min_atm}",
+        "unauthorized": "Valor insuficiente em conta. Transação não autorizada",
         "use_limit": "Valor insuficiente em conta. Para continuar, autorize o uso de R$ {required} do cheque especial",
         # Generic
         "user_cancel": "Operação cancelada pelo usuário",
@@ -61,21 +62,12 @@ UI_MESSAGE_CATALOG: MessageMap = {
     # Context-Specific Errors (Privacy Boundaries)
     "deposit_errors": {
         "access_denied": "Transação não permitida para esta conta no momento. Entre em contato com o titular",
-        "acc_not_found": "Conta inexistente no sistema do PyBank",
         "denied_operation": "Transação não permitida. Verifique os dados do favorecido e tente novamente",
     },
-    "withdrawal_errors": {
-        "access_denied": "Sua conta está BLOQUEADA. Desbloqueie a conta para realizar o saque",
-        "denied_operation": "Valor insuficiente em conta. Saque não autorizado",
-    },
-    "transfer_errors": {
-        "access_denied": "Sua conta está BLOQUEADA. Desbloqueie a conta para realizar a transferência",
+    "transfer_equal_acc_error": {
         "denied_operation": "Falha na operação. As contas de origem e destino não podem ser iguais",
     },
-    "transfer_amount_error": {
-        "denied_operation": "Valor insuficiente em conta. Transferência não autorizada"
-    },
-    "transfer_acc_error": {
+    "transfer_blocked_acc_error": {
         "denied_operation": "A conta de destino não pode receber transferências no momento. Entre em contato com o titular"
     },
 }

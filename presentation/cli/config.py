@@ -93,7 +93,7 @@ transaction_config: ConfigMap = {
         "prompt": "Valor a sacar: ",
         "error_msg": "Valor inválido para saque. Tente novamente",
     },
-    "credit_limit": {
+    "use_credit": {
         "info": "Transação - Limite de crédito",
         "prompt": "Deseja usar o limite de crédito da conta?\n1 - Sim\n2 - Não\nSua opção: ",
         "error_msg": "Opção inválida. Escolha entre as opções 1 ou 2",
