@@ -11,7 +11,12 @@ from functools import partial
 from typing import Any
 
 from application import validators
-from application.dtos import AccountDataDTO, DepositDTO, StatementDTO, WithdrawalDTO
+from application.dtos import (
+    AccountDataDTO,
+    DepositDTO,
+    StatementDTO,
+    WithdrawalDTO,
+)
 from application.services.banking_operations_service import BankingOperationsService
 from presentation.cli import config, io_utils, views
 from presentation.controllers.base_controller import BaseController
@@ -161,8 +166,11 @@ class BankingOperationsController(BaseController[BankingOperationsService]):
             ControllerOperationError: If the destination target account coordinates
                 do not resolve, if the target is blocked, or if database mutations fail.
         """
-        target_account = self._get_target_account()
-        branch_code, account_num = target_account
+        branch_code, account_num = (
+            (self._token.branch_code, self._token.account_num)
+            if self._token
+            else self._get_target_account()
+        )
 
         amount = self._get_transaction_value()
 
@@ -229,6 +237,8 @@ class BankingOperationsController(BaseController[BankingOperationsService]):
             self._handle_exception_ui("withdrawal_errors", e)
             raise ControllerOperationError from e
 
+    def _handle_transfer(self) -> None: ...
+
     def _handle_balance_statement(self) -> None:
         """Orchestrates the display sequence for account metrics and chronological statements.
 
@@ -293,25 +303,31 @@ class BankingOperationsController(BaseController[BankingOperationsService]):
         )
         return value
 
-    def _get_target_account(self) -> tuple[str, str]:
-        """Determines the destination routing coordinates for the deposit.
+    def _get_target_account(
+        self, operation_keys: tuple[str, str] | None = None
+    ) -> tuple[str, str]:
+        """Prompts and retrieves validated destination account routing coordinates from CLI input.
 
-        Implements dual-mode routing. Extracts account indices directly from active tokens
-        if session configurations allow. Otherwise, triggers conversational manual boundary inputs.
+        Queries the interface boundaries using provided configuration keys (or defaults to
+        standard authentication keys) and validates input primitives for branch code and account number.
+
+        Args:
+            operation_keys (tuple[str, str] | None, optional): A 2-tuple specifying
+                the custom mapper keys for (branch_code, account_num). Defaults to None.
 
         Returns:
             tuple[str, str]: A pair containing the validated branch_code and account_num.
         """
-        if self._token:
-            branch_code = self._token.branch_code
-            account_num = self._token.account_num
-        else:
-            branch_code = io_utils.get_user_input(
-                self._config_mapper["branch_code"], str, validators.validate_branch_code
-            )
-            account_num = io_utils.get_user_input(
-                self._config_mapper["account_num"], str, validators.validate_account_num
-            )
+        branch_code_key, acc_num_key = operation_keys or ("branch_code", "account_num")
+
+        branch_code = io_utils.get_user_input(
+            self._config_mapper[branch_code_key],
+            str,
+            validators.validate_branch_code,
+        )
+        account_num = io_utils.get_user_input(
+            self._config_mapper[acc_num_key], str, validators.validate_account_num
+        )
 
         return (branch_code, account_num)
 
