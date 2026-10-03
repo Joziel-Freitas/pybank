@@ -15,6 +15,7 @@ from application.dtos import (
     AccountDataDTO,
     DepositDTO,
     StatementDTO,
+    TransferDTO,
     WithdrawalDTO,
 )
 from application.services.banking_operations_service import BankingOperationsService
@@ -147,6 +148,8 @@ class BankingOperationsController(BaseController[BankingOperationsService]):
                 self._handle_deposit()
             case TransactionMenuType.WITHDRAWAL:
                 self._handle_withdrawal()
+            case TransactionMenuType.TRANSFER:
+                self._handle_transfer()
             case TransactionMenuType.STATEMENT:
                 self._handle_balance_statement()
             case _:
@@ -245,7 +248,68 @@ class BankingOperationsController(BaseController[BankingOperationsService]):
                 "Invalid state: Inconsistent financial validation"
             ) from e
 
-    def _handle_transfer(self) -> None: ...
+    def _handle_transfer(self) -> None:
+        """Orchestrates the authenticated account-to-account funds transfer flow.
+
+        Collects destination routing coordinates (branch and account) and the monetary value.
+        Initiates the application service transfer generator within a two-stage execution context,
+        evaluating debit viability and overdraft usage terms. Prompts for explicit client consent
+        if credit lines are required before finalizing the atomic ledger transfer.
+
+        Raises:
+            ControllerOperationError: If source/target accounts are invalid, blocked, identical,
+                or if session/persistence exceptions emerge during execution.
+            UserAbortError: If credit limit usage is explicitly declined by the user.
+            RuntimeError: If an unexpected domain rejection or invalid state occurs.
+        """
+        target_branch, target_account = self._get_target_account(
+            ("target_branch", "target_account")
+        )
+        amount = self._get_transaction_value()
+        target_account = AccountDataDTO(
+            branch_code=target_branch, account_num=target_account
+        )
+
+        try:
+            with self._service.execute_transfer(
+                TransferDTO(
+                    access_token=self._active_access_token,
+                    target_account=target_account,
+                    amount=amount,
+                )
+            ) as simulation:
+
+                if not simulation.authorized:
+                    self._handle_info_ui("info", "unauthorized", wait=True)
+                    raise ControllerOperationError
+
+                if simulation.use_credit is True:
+                    self._handle_info_ui(
+                        "info",
+                        "use_limit",
+                        wait=True,
+                        required=simulation.credit_required,
+                    )
+
+                    proceed = self._confirm_credit_limit()
+
+                    if proceed == UserConfirmType.NO:
+                        raise UserAbortError
+
+            self._handle_info_ui("info", "transfer_ok", wait=True)
+        except AccessDeniedError as e:
+            self._handle_exception_ui("errors", e)
+            raise ControllerOperationError from e
+        except DeniedOperationError as e:
+            if not e.argument:
+                self._handle_exception_ui("transfer_equal_acc_error", e)
+                raise ControllerOperationError from e
+
+            if e.argument is target_account:
+                self._handle_exception_ui("transfer_blocked_acc_error", e)
+                raise ControllerOperationError from e
+
+            raise RuntimeError("Invalid state: Inconsistent transfer validation") from e
 
     def _handle_balance_statement(self) -> None:
         """Orchestrates the display sequence for account metrics and chronological statements.
@@ -339,6 +403,21 @@ class BankingOperationsController(BaseController[BankingOperationsService]):
 
         return (branch_code, account_num)
 
+    def _confirm_credit_limit(self) -> UserConfirmType:
+        """Prompts for explicit client authorization to utilize the account's credit limit.
+
+        Queries the interface to ask permission for credit lines activation to cover balance deficits.
+
+        Returns:
+            UserConfirmType: The structured confirmation selection state from the user.
+        """
+        confirm = io_utils.get_user_input(
+            self._config_mapper["use_credit"],
+            int,
+            UserConfirmType,
+        )
+        return confirm
+
     def _confirm_deposit(
         self, target_dto: DepositTargetProjectionDTO, amount: Decimal
     ) -> None:
@@ -369,21 +448,6 @@ class BankingOperationsController(BaseController[BankingOperationsService]):
 
         if confirm == UserConfirmType.NO:
             raise UserAbortError
-
-    def _confirm_credit_limit(self) -> UserConfirmType:
-        """Prompts for explicit client authorization to utilize the account's credit limit.
-
-        Queries the interface to ask permission for credit lines activation to cover balance deficits.
-
-        Returns:
-            UserConfirmType: The structured confirmation selection state from the user.
-        """
-        confirm = io_utils.get_user_input(
-            self._config_mapper["use_credit"],
-            int,
-            UserConfirmType,
-        )
-        return confirm
 
     def _get_start_date(self) -> date:
         """Captures the chronological filtering boundary for account activity history.
