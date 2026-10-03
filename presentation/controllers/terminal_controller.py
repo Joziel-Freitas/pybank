@@ -269,25 +269,6 @@ class TerminalController(BaseController[AccountManagementService]):
             self._handle_info_ui("info", "user_cancel", wait=True)
             return None
 
-    def _main_menu(self) -> MainMenuType:
-        """Displays the root entry point of the ATM.
-
-        Includes a hidden verification for the ADMIN_EXIT_CODE inside io_utils
-        to safely shut down the terminal application.
-
-        Returns:
-            MainMenuType: The selected root menu option.
-        """
-        user_in = io_utils.get_user_input(
-            self._config_mapper["main_menu"],
-            int,
-            MainMenuType,
-            loop_header=views.welcome,
-            use_timeout=False,
-        )
-
-        return user_in
-
     def _dispatch_operation(
         self, operation: OperationMenuType | RestrictedMenuType
     ) -> None:
@@ -309,6 +290,8 @@ class TerminalController(BaseController[AccountManagementService]):
                 self._run_banking_operations_controller(TransactionMenuType.DEPOSIT)
             case OperationMenuType.WITHDRAWAL:
                 self._run_banking_operations_controller(TransactionMenuType.WITHDRAWAL)
+            case OperationMenuType.TRANSFER:
+                self._run_banking_operations_controller(TransactionMenuType.TRANSFER)
             case OperationMenuType.STATEMENT:
                 self._run_banking_operations_controller(TransactionMenuType.STATEMENT)
             case OperationMenuType.CHANGE_PASSWORD | OperationMenuType.CLOSE_ACCOUNT:
@@ -401,6 +384,25 @@ class TerminalController(BaseController[AccountManagementService]):
             transaction_type,
             self._access_token or self._auth_token,
         ).run_controller()
+
+    def _main_menu(self) -> MainMenuType:
+        """Displays the root entry point of the ATM.
+
+        Includes a hidden verification for the ADMIN_EXIT_CODE inside io_utils
+        to safely shut down the terminal application.
+
+        Returns:
+            MainMenuType: The selected root menu option.
+        """
+        user_in = io_utils.get_user_input(
+            self._config_mapper["main_menu"],
+            int,
+            MainMenuType,
+            loop_header=views.welcome,
+            use_timeout=False,
+        )
+
+        return user_in
 
     def _greet_user(self, account_summary: SummaryProjectionDTO) -> None:
         """Extracts the account holder's first name and dispatches the welcome UI.
