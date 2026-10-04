@@ -297,7 +297,7 @@ class BankingOperationsController(BaseController[BankingOperationsService]):
                         raise UserAbortError
 
             self._handle_info_ui("info", "transfer_ok", wait=True)
-        except AccessDeniedError as e:
+        except (AccessDeniedError, AccountNotFoundError) as e:
             self._handle_exception_ui("errors", e)
             raise ControllerOperationError from e
         except DeniedOperationError as e:

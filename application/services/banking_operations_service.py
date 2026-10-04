@@ -316,7 +316,8 @@ class BankingOperationsService(BaseApplicationService, AccountSummaryMixin):
             DeniedOperationError: If source and target accounts are identical, if funds are
                 insufficient, or if target account is frozen. Attaches the violating argument
                 context when triggered by domain rule rejections.
-            AuthenticationError: If source or target account records cannot be found in persistence.
+            AccountNotFoundError: If the specified target account does not exist in persistence.
+            AuthenticationError: If the source account record cannot be found in persistence.
             ExpiredSessionError: If the user session token has expired.
             SessionIntegrityError: If the token fails cryptographic signature verification.
             AccessDeniedError: If the source account is frozen.
@@ -365,17 +366,29 @@ class BankingOperationsService(BaseApplicationService, AccountSummaryMixin):
 
         try:
             with self._repository.unit_of_work():
-                source_acc_db_snap = self._repository.get_account_snapshot(
-                    source_acc_branch, source_acc_num, for_update=True
-                )
+                try:
+                    source_acc_db_snap = self._repository.get_account_snapshot(
+                        source_acc_branch, source_acc_num, for_update=True
+                    )
+                except DataNotFoundError as e:
+                    raise AuthenticationError(
+                        "Authentication failed: Account no longer exists"
+                    ) from e
+
                 source_acc_obj = Account.from_snapshot(source_acc_db_snap)
                 simulation = source_acc_obj.simulate_debit(money)
 
                 yield simulation
 
-                target_acc_db_snap = self._repository.get_account_snapshot(
-                    target_acc_branch, target_acc_num, for_update=True
-                )
+                try:
+                    target_acc_db_snap = self._repository.get_account_snapshot(
+                        target_acc_branch, target_acc_num, for_update=True
+                    )
+                except DataNotFoundError as e:
+                    raise AccountNotFoundError(
+                        "The destination account does not exist in our records"
+                    ) from e
+
                 target_acc_obj = Account.from_snapshot(target_acc_db_snap)
 
                 try:
@@ -402,11 +415,6 @@ class BankingOperationsService(BaseApplicationService, AccountSummaryMixin):
                 target_acc_snap = target_acc_obj.to_snapshot()
                 self._repository.save_transaction(source_acc_snap, debit_events)
                 self._repository.save_transaction(target_acc_snap, credit_events)
-
-        except DataNotFoundError as e:
-            raise AuthenticationError(
-                "Transfer operation failed: One of the accounts no longer exists"
-            ) from e
         except RepositoryError as e:
             raise ServiceUnavailableError(
                 "The intended operation could not be persisted due to an internal error"
