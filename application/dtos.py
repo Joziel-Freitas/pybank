@@ -5,7 +5,6 @@ These objects carry user input, security tokens, and command criteria from the
 Presentation/CLI layer into the Application orchestrators.
 """
 
-from abc import ABC
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -14,17 +13,8 @@ from application.types import NewAccountType
 from shared.credentials import AccessToken, AuthToken
 
 
-class ApplicationDTO(ABC):
-    """Abstract base marker class for all Application Layer DTOs.
-
-    Establishes a unified base type for command payloads, request criteria,
-    and input parameters passed from Presentation controllers to Application
-    Services, ensuring consistent static typing across the use case layer.
-    """
-
-
 @dataclass(frozen=True, slots=True)
-class AccountDataDTO(ApplicationDTO):
+class AccountDataDTO:
     """Represents the identification data for a bank account.
 
     Encapsulates the branch code and account number pair used for search,
@@ -40,7 +30,7 @@ class AccountDataDTO(ApplicationDTO):
 
 
 @dataclass(frozen=True, slots=True)
-class CheckDataDTO(ApplicationDTO):
+class CheckDataDTO:
     """Input DTO for checking data eligibility or prior existence.
 
     Used by OnboardingService (or related services) to verify the availability
@@ -58,7 +48,7 @@ class CheckDataDTO(ApplicationDTO):
 
 
 @dataclass(frozen=True, slots=True)
-class NewAccountDTO(ApplicationDTO):
+class NewAccountDTO:
     """Data Transfer Object containing the validated data required to open a new Account.
 
     Transports user choices and onboarding information into a unified payload.
@@ -88,7 +78,7 @@ class NewAccountDTO(ApplicationDTO):
 
 
 @dataclass(frozen=True, slots=True)
-class VaultAccessDTO(ApplicationDTO):
+class VaultAccessDTO:
     """Data Transfer Object representing credentials required for vault access authentication.
 
     Encapsulates the raw password and the primary authentication token required
@@ -104,7 +94,7 @@ class VaultAccessDTO(ApplicationDTO):
 
 
 @dataclass(frozen=True, slots=True)
-class DepositDTO(ApplicationDTO):
+class DepositDTO:
     """Command Data Transfer Object encapsulating the criteria for a deposit operation.
 
     Transports target account coordinates and the monetary amount from unauthenticated
@@ -122,7 +112,7 @@ class DepositDTO(ApplicationDTO):
 
 
 @dataclass(frozen=True, slots=True)
-class WithdrawalDTO(ApplicationDTO):
+class WithdrawalDTO:
     """Command Data Transfer Object encapsulating an authenticated withdrawal request.
 
     Binds a cryptographically signed AccessToken proving user authorization in the Vault
@@ -138,7 +128,7 @@ class WithdrawalDTO(ApplicationDTO):
 
 
 @dataclass(frozen=True, slots=True)
-class StatementDTO(ApplicationDTO):
+class StatementDTO:
     """Command Data Transfer Object encapsulating an account statement request.
 
     Binds a cryptographically signed AccessToken proving user authorization in the Vault
@@ -154,7 +144,7 @@ class StatementDTO(ApplicationDTO):
 
 
 @dataclass(frozen=True, slots=True)
-class UpdatePasswordDTO(ApplicationDTO):
+class UpdatePasswordDTO:
     """Command Data Transfer Object encapsulating a password change request.
 
     Binds a cryptographically signed AccessToken proving user authorization in the Vault
@@ -170,7 +160,7 @@ class UpdatePasswordDTO(ApplicationDTO):
 
 
 @dataclass(frozen=True, slots=True)
-class UnfreezeAccountDTO(ApplicationDTO):
+class UnfreezeAccountDTO:
     """Command Data Transfer Object encapsulating an account unfreeze/recovery request.
 
     Transports secondary identity validation credentials (birth date) alongside the
@@ -188,7 +178,7 @@ class UnfreezeAccountDTO(ApplicationDTO):
 
 
 @dataclass(frozen=True, slots=True)
-class TransferDTO(ApplicationDTO):
+class TransferDTO:
     """Command Data Transfer Object encapsulating an authenticated account transfer request.
 
     Binds a cryptographically signed AccessToken proving source account authorization in the

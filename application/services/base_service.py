@@ -1,3 +1,10 @@
+"""Base Application Service Module.
+
+Provides the abstract base class BaseApplicationService, centralizing common
+infrastructure dependencies and fail-fast value object instantiation logic
+shared across all application use cases.
+"""
+
 from abc import ABC
 
 from application.protocols import HasherProtocol, RepositoryProtocol
@@ -55,6 +62,9 @@ class BaseApplicationService(ABC):
 
         return f"{class_name}(hasher={self._hasher!r}, repository={self._repository!r})"
 
+    # --------------------------------------------------------------------------
+    # Internal Helpers
+    # --------------------------------------------------------------------------
     def _instantiate_vo[VO_T: DomainVO](
         self, vo_type: type[VO_T], vo_value: VOValueTypes
     ) -> VO_T:
@@ -65,7 +75,7 @@ class BaseApplicationService(ABC):
 
         Args:
             vo_type (type[VO_T]): The concrete DomainVO class to instantiate.
-            vo_value (ValueTypes): The primitive value to be validated and encapsulated.
+            vo_value (VOValueTypes): The primitive value to be validated and encapsulated.
 
         Returns:
             VO_T: A fully validated Domain Value Object instance.
