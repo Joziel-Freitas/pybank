@@ -1,9 +1,15 @@
 """Presentation Layer Types and Navigation Enumerations Module.
 
-This module defines common enumerations used across the PyBank Terminal CLI
+This module defines common enumerations and type aliases used across the PyBank Terminal CLI
 presentation and controller layers. It serves as a single source of truth
 for UI navigation states, user decision prompts, and operation routing,
 promoting type safety and eliminating magic numbers in user interface menus.
+
+Type Aliases:
+    InputType: Primitive type union supported for parsing CLI user inputs.
+    PresentationT: Union of input primitives and navigation menu enums.
+    MessageMap: Structural schema for the human-readable UI message catalog.
+    ConfigMap: Dictionary mapping field keys to screen configuration schemas.
 """
 
 from datetime import date
@@ -11,11 +17,19 @@ from decimal import Decimal
 from enum import Enum
 from typing import TypedDict
 
+# =====================================================================
+# Presentation Type Aliases
+# =====================================================================
+
 type InputType = str | int | float | Decimal | date
 type PresentationT = InputType | MenuType
 
 type MessageMap = dict[str, dict[str, str]]
 type ConfigMap = dict[str, InnerConfig]
+
+# =====================================================================
+# UI Configuration Schemas
+# =====================================================================
 
 
 class InnerConfig(TypedDict):
@@ -30,6 +44,11 @@ class InnerConfig(TypedDict):
     info: str
     prompt: str
     error_msg: str
+
+
+# =====================================================================
+# Navigation Menu Enumerations
+# =====================================================================
 
 
 class MenuType(Enum):
