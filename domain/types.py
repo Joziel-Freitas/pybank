@@ -8,7 +8,17 @@ from datetime import date
 from decimal import Decimal
 from enum import StrEnum
 
+# =====================================================================
+# Domain Type Aliases
+# =====================================================================
+
 type VOValueTypes = str | Decimal | date
+"""Type union representing primitive underlying values encapsulated by Value Objects."""
+
+
+# =====================================================================
+# Domain Event Enumerations
+# =====================================================================
 
 
 class FinancialType(StrEnum):

@@ -135,6 +135,10 @@ class AccountHolderName(DomainVO[str]):
         InvalidNameError: If the name contains less than 3 letters or contains numbers/special characters.
     """
 
+    NAME_PATTERN: ClassVar[re.Pattern[str]] = re.compile(
+        r"^[A-Za-zÀ-ÿ]+(?: [A-Za-zÀ-ÿ]+)*$"
+    )
+
     value: str
 
     def __post_init__(self) -> None:
@@ -145,14 +149,10 @@ class AccountHolderName(DomainVO[str]):
                 f"Value '{self.value}' must have at least three letters"
             )
 
-        pattern = r"^[A-Za-zÀ-ÿ]+(?: [A-Za-zÀ-ÿ]+)*$"
-        if not re.match(pattern, self.value):
+        if not self.NAME_PATTERN.match(self.value):
             raise InvalidNameError(
                 f"Value '{self.value}' is invalid. Use only letters and single spaces."
             )
-
-    def __str__(self) -> str:
-        return self.value
 
 
 @dataclass(frozen=True, slots=True)
