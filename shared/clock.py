@@ -24,8 +24,7 @@ def get_today(timezone: ZoneInfo = SYSTEM_TIMEZONE) -> date:
     Returns:
         date: The current system calendar date.
     """
-    dt = datetime.now(tz=timezone)
-    return dt.date()
+    return datetime.now(tz=timezone)
 
 
 def get_now(timezone: ZoneInfo = SYSTEM_TIMEZONE) -> datetime:
@@ -43,5 +42,4 @@ def get_now(timezone: ZoneInfo = SYSTEM_TIMEZONE) -> datetime:
     Returns:
         datetime: The current system date and time with timezone info.
     """
-    dt = datetime.now(tz=timezone)
-    return dt
+    return datetime.now(tz=timezone)

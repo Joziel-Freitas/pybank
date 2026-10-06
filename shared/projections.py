@@ -5,7 +5,6 @@ used across Application Services and the Presentation layer to render account st
 security details, and statements without hydrating full Domain entities.
 """
 
-from abc import ABC
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -13,17 +12,8 @@ from typing import Any
 from domain.projections import AccountFinancial
 
 
-class ProjectionDTO(ABC):
-    """Abstract base marker class for all read-only Projection DTOs.
-
-    Establishes a unified base type for lightweight data transfer objects that
-    transport non-mutating state projections across application boundaries,
-    ensuring consistent static typing for presentation and query layers.
-    """
-
-
 @dataclass(frozen=True, slots=True)
-class AccessProjectionDTO(ProjectionDTO):
+class AccessProjectionDTO:
     """Data Transfer Object holding security and access credentials.
 
     Acts as a nested projection representing the account's vault security state.
@@ -40,7 +30,7 @@ class AccessProjectionDTO(ProjectionDTO):
 
 
 @dataclass(frozen=True, slots=True)
-class HolderProjectionDTO(ProjectionDTO):
+class HolderProjectionDTO:
     """Data Transfer Object holding the account holder's personal information.
 
     Acts as a nested projection containing Personally Identifiable Information (PII)
@@ -59,7 +49,7 @@ class HolderProjectionDTO(ProjectionDTO):
 
 
 @dataclass(frozen=True, slots=True)
-class AccountProjectionDTO(ProjectionDTO):
+class AccountProjectionDTO:
     """Root Data Transfer Object representing a dynamic, lightweight projection of an Account.
 
     Utilizes Composition over Inheritance to structure raw persistence results.
@@ -96,15 +86,15 @@ class AccountProjectionDTO(ProjectionDTO):
 
 
 @dataclass(frozen=True, slots=True)
-class SummaryProjectionDTO(ProjectionDTO):
+class SummaryProjectionDTO:
     """A comprehensive, multi-stage read-only snapshot of an account's state.
 
     Functions as a flexible, read-only projection for the Presentation layer.
     It operates in two distinct execution phases:
     1. Lobby Phase: Contains only basic routing and non-sensitive identity
-       data to safely render general menus.
+        data to safely render general menus.
     2. Vault Phase: Composes rich, real-time financial and temporal metrics
-       (AccountFinancial) after strict cryptographic authorization.
+        (AccountFinancial) after strict cryptographic authorization.
 
     Attributes:
         holder_name (str): The full name of the account holder.
@@ -130,14 +120,14 @@ class SummaryProjectionDTO(ProjectionDTO):
 
 
 @dataclass(frozen=True, slots=True)
-class StatementProjectionDTO(ProjectionDTO):
+class StatementProjectionDTO:
     """Data Transfer Object representing a mathematically consistent account statement.
 
     Acts as an immutable payload combining a read-only representation of the account's
     current state with its chronological ledger event history.
 
     Attributes:
-        account_info (AccountSummaryDTO): The account's full summary.
+        account_info (SummaryProjectionDTO): The account's full summary projection.
         financial_events (tuple[dict[str, Any], ...]): Sequence of ledger events.
     """
 
@@ -146,7 +136,7 @@ class StatementProjectionDTO(ProjectionDTO):
 
 
 @dataclass(frozen=True, slots=True)
-class DepositTargetProjectionDTO(ProjectionDTO):
+class DepositTargetProjectionDTO:
     """A read-only, sanitized snapshot of an account intended exclusively
     for public deposit confirmation screens.
 

@@ -1,49 +1,15 @@
 """Shared Validators Module.
 
-Provides functional decorator adapters to convert raise-based validation logic
-from Domain and Application modules into boolean-based responses for Presentation IO loops.
+Provides pure infrastructure data integrity and mathematical validation functions
+for baseline data types, such as official CPF checksum verification.
 """
 
-from collections.abc import Callable
-from typing import Any
-
 from shared import verify
-from shared.exceptions import ApplicationError, DomainError
-
-type ValidatorCallback = Callable[[Any], bool]
-
-
-def boolean_validator_dec(validation_fn: Callable[[Any], Any]) -> ValidatorCallback:
-    """Wraps a raise-based validation function to return a boolean instead of raising exceptions.
-
-    Adapts 'Raise-Based' validation logic (from Domain Entity static validators or
-    Application field validators) to 'Boolean-Based' validation required by Presentation
-    CLI IO loops.
-
-    Catches expected DomainErrors (field structure rules) and ApplicationErrors
-    (format/policy rules), swallowing them to return False. Standard Python errors
-    (TypeError, ValueError) are intentionally allowed to propagate as developer faults.
-
-    Args:
-        validation_fn (Callable): The raise-based validation function to wrap.
-
-    Returns:
-        ValidatorCallback: A adapted callback returning True if valid, False if invalid.
-    """
-
-    def wrapper(*args, **kwargs) -> bool:
-        try:
-            result: bool | None = validation_fn(*args, **kwargs)
-            return result is not False
-        except (DomainError, ApplicationError):
-            return False
-
-    return wrapper
 
 
 def _calculate_verifier_digit(cpf_sequence: str, factor: int) -> int:
-    """
-    Calculates a single verifier digit following the official CPF rule checksum.
+    """Calculates a single verifier digit following the official CPF rule checksum.
+
     This is an internal helper for the full CPF validation.
 
     Args:
@@ -75,7 +41,6 @@ def validate_cpf(cpf: str) -> None:
         ValueError: If the CPF has an invalid length, consists of all repeated
             digits, or fails the mathematical checksum validation.
     """
-
     verify.verify_instance(cpf, str)
     verify.verify_digits(cpf, 11)
 
