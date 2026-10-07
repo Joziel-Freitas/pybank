@@ -12,8 +12,7 @@ from settings import SYSTEM_TIMEZONE
 
 
 def get_today(timezone: ZoneInfo = SYSTEM_TIMEZONE) -> date:
-    """
-    Returns the current system calendar date fixed to the specified timezone.
+    """Returns the current system calendar date fixed to the specified timezone.
 
     Ensures deterministic accrual calculations regardless of the host OS timezone.
 
@@ -24,12 +23,11 @@ def get_today(timezone: ZoneInfo = SYSTEM_TIMEZONE) -> date:
     Returns:
         date: The current system calendar date.
     """
-    return datetime.now(tz=timezone)
+    return datetime.now(tz=timezone).date()
 
 
 def get_now(timezone: ZoneInfo = SYSTEM_TIMEZONE) -> datetime:
-    """
-    Returns the current system date and time fixed to the specified timezone.
+    """Returns the current system date and time fixed to the specified timezone.
 
     Provides the canonical timestamp for all time-sensitive operations,
     ensuring deterministic behavior regardless of the host operating
