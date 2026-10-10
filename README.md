@@ -71,8 +71,11 @@ graph TD
     UI[Terminal / Views] --> IO[IO Utils / Validação]
     IO --> Controller[Controllers]
 
-    subgraph Core Domain
+    subgraph Application Layer
         Controller --> Services[Application Services]
+    end
+
+    subgraph Core Domain
         Services --> Account[Account Entity]
         Services --> Person[AccountHolder]
     end
@@ -86,7 +89,7 @@ graph TD
     end
 
     classDef domain fill:#1f2937,stroke:#3b82f6,stroke-width:2px,color:#fff;
-    class Services,Account,Person domain;
+    class Account,Person domain;
 ```
 
 ### Decisões Principais de Engenharia:
